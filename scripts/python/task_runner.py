@@ -1,0 +1,1265 @@
+import os
+import math
+import pandas as pd
+import logging
+import sys
+import traceback
+import subprocess
+import multiprocessing
+from collections import OrderedDict
+from calculate_params import process_structure_file
+
+# 配置日志系统
+def setup_logging(log_file="raspa_calculation.log"):
+    """设置日志系统"""
+    # 获取根日志记录器
+    root_logger = logging.getLogger()
+
+    # 如果已经有处理器，先清除它们以避免重复
+    if root_logger.handlers:
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+
+    # 设置日志级别
+    root_logger.setLevel(logging.INFO)
+
+    # 创建格式化器
+    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    # 文件处理器
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(log_formatter)
+    root_logger.addHandler(file_handler)
+
+    # 控制台处理器
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(log_formatter)
+    root_logger.addHandler(console_handler)
+
+    return root_logger
+
+# 初始化日志系统
+logger = setup_logging()
+CURRENT_SUBDIR = None
+CURRENT_TOPDIR = None
+
+def _get_slurm_summary():
+    """备用：获取SLURM聚合CPU统计信息"""
+    try:
+        result = subprocess.run(['sinfo', '-h', '-o', '%C'],
+                                capture_output=True, text=True, timeout=15)
+        if result.returncode == 0 and result.stdout.strip():
+            parts = result.stdout.strip().split('/')
+            if len(parts) == 4:
+                allocated = int(parts[0])
+                idle = int(parts[1])
+                other = int(parts[2])
+                total = int(parts[3])
+                return {
+                    'total_cpus': total,
+                    'allocated_cpus': allocated,
+                    'other_cpus': other,
+                    'available_cpus': idle,
+                    'nodes': [],
+                    'method': 'sinfo_summary',
+                    'available': True
+                }
+        logger.warning(f"SLURM sinfo聚合命令执行失败或输出为空: {result.stderr}")
+        return {'available': False}
+    except subprocess.TimeoutExpired:
+        logger.warning("SLURM聚合命令超时")
+        return {'available': False}
+    except FileNotFoundError:
+        logger.warning("未找到SLURM命令，可能不在SLURM环境中")
+        return {'available': False}
+    except Exception as e:
+        logger.warning(f"获取SLURM聚合资源信息时出错: {e}")
+        return {'available': False}
+
+
+def get_slurm_cluster_resources():
+    """获取SLURM集群的CPU资源信息（考虑节点负载与超线程）"""
+    format_spec = '%N|%c|%C|%O|%z'
+    try:
+        result = subprocess.run(['sinfo', '-N', '-h', '-o', format_spec],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode != 0 or not result.stdout.strip():
+            logger.warning(f"SLURM节点级命令执行失败或输出为空: {result.stderr}")
+            return _get_slurm_summary()
+
+        total_cpus = allocated_cpus = other_cpus = 0
+        total_free_cpus = 0
+        nodes = []
+
+        for line in result.stdout.strip().splitlines():
+            parts = line.strip().split('|')
+            if len(parts) < 4:
+                continue
+
+            node_name = parts[0]
+            try:
+                node_total = int(parts[1])
+            except ValueError:
+                continue
+
+            summary = parts[2]
+            summary_parts = summary.split('/')
+            if len(summary_parts) != 4:
+                continue
+
+            try:
+                node_alloc = int(summary_parts[0])
+                node_other = int(summary_parts[2])
+                node_total_from_summary = int(summary_parts[3])
+            except ValueError:
+                continue
+
+            node_total = node_total_from_summary or node_total
+
+            load_str = parts[3]
+            load_value = None
+            if load_str and load_str.lower() not in ('unknown', '(null)', 'n/a', '-'):
+                try:
+                    load_value = float(load_str)
+                except ValueError:
+                    load_value = None
+
+            topology = parts[4] if len(parts) > 4 else ''
+            sockets = cores_per_socket = threads_per_core = None
+            physical_cpus = None
+            if topology:
+                topo_parts = topology.split(':')
+                if len(topo_parts) == 3:
+                    try:
+                        sockets = int(topo_parts[0])
+                        cores_per_socket = int(topo_parts[1])
+                        threads_per_core = int(topo_parts[2])
+                        if threads_per_core > 0:
+                            physical_cpus = (node_total // threads_per_core)
+                    except ValueError:
+                        threads_per_core = None
+
+            node_free = max(0, node_total - node_alloc - node_other)
+
+            nodes.append({
+                'node': node_name,
+                'total_cpus': node_total,
+                'allocated_cpus': node_alloc,
+                'other_cpus': node_other,
+                'load': load_value,
+                'topology': topology,
+                'sockets': sockets,
+                'cores_per_socket': cores_per_socket,
+                'threads_per_core': threads_per_core,
+                'physical_cpus': physical_cpus,
+                'free_cpus': node_free
+            })
+
+            total_cpus += node_total
+            allocated_cpus += node_alloc
+            other_cpus += node_other
+            total_free_cpus += node_free
+
+        if not nodes:
+            logger.warning("未能解析到任何节点资源信息，回退到聚合统计")
+            return _get_slurm_summary()
+
+        return {
+            'total_cpus': total_cpus,
+            'allocated_cpus': allocated_cpus,
+            'other_cpus': other_cpus,
+            'available_cpus': int(total_free_cpus),
+            'nodes': nodes,
+            'method': 'sinfo_per_node',
+            'available': True
+        }
+
+    except subprocess.TimeoutExpired:
+        logger.warning("SLURM节点级命令超时")
+        return _get_slurm_summary()
+    except FileNotFoundError:
+        logger.warning("未找到SLURM命令，可能不在SLURM环境中")
+        return {'available': False}
+    except Exception as e:
+        logger.warning(f"获取SLURM节点资源信息时出错: {e}")
+        return _get_slurm_summary()
+
+
+def build_node_plan(cluster_info, cpu_cores):
+    """根据集群资源信息生成节点分配计划"""
+    if not cluster_info or not cluster_info.get('available'):
+        return "", []
+
+    nodes = cluster_info.get('nodes') or []
+    if not nodes or cpu_cores <= 0:
+        return "", []
+
+    def sort_group(group):
+        return sorted(
+            group,
+            key=lambda n: (
+                -(n.get('free_cpus', 0) or 0),
+                n.get('load') if n.get('load') is not None else 0
+            )
+        )
+
+    ht_nodes = [n for n in nodes if (n.get('threads_per_core') or 1) > 1]
+    other_nodes = [n for n in nodes if (n.get('threads_per_core') or 1) <= 1]
+    ordered_ht = sort_group(ht_nodes)
+    ordered_other = sort_group(other_nodes)
+
+    plan_counts = OrderedDict()
+    plan_queue = []
+    remaining = cpu_cores
+
+    def expand_nodes(nodes_list, remaining_slots):
+        queue = []
+        if not nodes_list or remaining_slots <= 0:
+            return queue, remaining_slots
+        caps = []
+        for n in nodes_list:
+            cap = int(n.get('free_cpus', 0) or 0)
+            if cap < 0:
+                cap = 0
+            caps.append(cap)
+        max_cap = max(caps) if caps else 0
+        if max_cap <= 0:
+            return queue, remaining_slots
+        for step in range(max_cap):
+            if remaining_slots <= 0:
+                break
+            for idx, node in enumerate(nodes_list):
+                if remaining_slots <= 0:
+                    break
+                if caps[idx] > step:
+                    queue.append(node['node'])
+                    remaining_slots -= 1
+        return queue, remaining_slots
+
+    segment, remaining = expand_nodes(ordered_ht, remaining)
+    plan_queue.extend(segment)
+    segment, remaining = expand_nodes(ordered_other, remaining)
+    plan_queue.extend(segment)
+
+    if remaining > 0:
+        # 仍有剩余并发，按负载从低到高轮询补齐
+        fallback_nodes = sorted(
+            nodes,
+            key=lambda n: (n.get('load') if n.get('load') is not None else 0)
+        )
+        idx = 0
+        while remaining > 0 and fallback_nodes:
+            node = fallback_nodes[idx % len(fallback_nodes)]
+            plan_queue.append(node['node'])
+            remaining -= 1
+            idx += 1
+
+    for node_name in plan_queue:
+        plan_counts[node_name] = plan_counts.get(node_name, 0) + 1
+
+    plan_pairs = [(node, count) for node, count in plan_counts.items() if count > 0]
+    plan_string = ",".join(f"{node}:{count}" for node, count in plan_pairs)
+    return plan_string, plan_pairs
+
+def get_directory_setup():
+    """获取输出目录设置"""
+    logger.info("=== 步骤1：设置输出目录 ===")
+
+    # 尝试从环境变量读取
+    output_dir_env = os.environ.get('RASPA_OUTPUT_DIR')
+    if output_dir_env:
+        logger.info(f"从配置文件读取输出目录: {output_dir_env}")
+        return output_dir_env
+
+    while True:
+        try:
+            subdir = input("请输入用于存放输出文件的目录名 (e.g., '302'): ").strip()
+            if subdir:
+                # 验证目录名格式
+                if not all(c.isalnum() or c in '-_' for c in subdir):
+                    logger.warning("目录名包含非法字符，请使用字母、数字、下划线或连字符")
+                    continue
+
+                # 检查目录是否已存在
+                if os.path.exists(subdir):
+                    overwrite = input(f"目录 '{subdir}' 已存在。覆盖? (y/n): ").strip().lower()
+                    if overwrite != 'y':
+                        continue
+
+                return subdir
+            logger.warning("目录名不能为空，请重新输入")
+        except KeyboardInterrupt:
+            logger.info("用户取消操作")
+            sys.exit(130)  # 使用SIGINT的标准退出码
+        except Exception as e:
+            logger.error(f"获取目录名时出错: {str(e)}")
+
+def get_framework_data():
+    """获取并处理CSV文件数据"""
+    logger.info("=== 步骤2：选择框架结构 ===")
+
+    # 尝试从环境变量读取CSV文件路径
+    csv_path_env = os.environ.get('RASPA_CSV_FILE')
+    if csv_path_env:
+        csv_path = csv_path_env
+        logger.info(f"从配置文件读取CSV文件路径: {csv_path}")
+    else:
+        while True:
+            try:
+                csv_path = input("请输入CSV文件路径: ").strip()
+                if not os.path.exists(csv_path):
+                    logger.warning(f"文件不存在: {csv_path}")
+                    continue
+                break
+            except KeyboardInterrupt:
+                logger.info("用户取消操作")
+                sys.exit(130)
+
+    # 验证CSV文件
+    if not os.path.exists(csv_path):
+        logger.error(f"CSV文件不存在: {csv_path}")
+        return None, None
+
+    try:
+        # 读取CSV文件，处理BOM编码问题
+        try:
+            df = pd.read_csv(csv_path, encoding='utf-8-sig')  # utf-8-sig可以自动处理BOM
+        except UnicodeDecodeError:
+            try:
+                df = pd.read_csv(csv_path, encoding='utf-8')
+            except UnicodeDecodeError:
+                df = pd.read_csv(csv_path, encoding='gbk')
+    except Exception as e:
+        logger.error(f"无法读取CSV文件: {str(e)}")
+        return None, None
+
+    df = df.dropna(subset=[df.columns[0]])
+    columns = df.columns.tolist()
+
+    logger.info("可用的列名:")
+    for i, col in enumerate(columns):
+        print(f"{i+1}. {col}")
+
+    # 尝试从环境变量读取框架列名
+    framework_column_env = os.environ.get('RASPA_FRAMEWORK_COLUMN')
+    if framework_column_env:
+        if framework_column_env in columns:
+            framework_column = framework_column_env
+            logger.info(f"从配置文件读取框架列名: {framework_column}")
+        else:
+            logger.warning(f"配置文件中的框架列名 '{framework_column_env}' 不存在，使用默认列")
+            framework_column = columns[0]  # 使用第一列作为默认
+    else:
+        # 选择列名
+        while True:
+            try:
+                choice = input("\n请选择包含框架名称的列名 (输入序号或列名): ")
+                if choice.isdigit() and 1 <= int(choice) <= len(columns):
+                    framework_column = columns[int(choice)-1]
+                    break
+                elif choice in columns:
+                    framework_column = choice
+                    break
+                else:
+                    logger.warning("无效的选择，请重新输入")
+            except KeyboardInterrupt:
+                logger.info("用户取消操作")
+                sys.exit(130)  # 使用SIGINT的标准退出码
+
+    logger.info(f"已选择列名: {framework_column}")
+
+    # 获取框架名称列表
+    framework_names = df[framework_column].dropna().tolist()
+    framework_names = [name for name in framework_names if str(name).strip()]
+    total_structures = len(framework_names)
+
+    if total_structures == 0:
+        logger.warning("没有找到有效的框架结构，请检查CSV文件")
+        return None, None
+
+    logger.info(f"从CSV文件中读取到总共 {total_structures} 个有效框架结构")
+
+    # 选择处理数量 (支持从环境变量读取)
+    # 从现在起不再从配置读取 max_structures；交互式让用户选择数量
+    while True:
+        try:
+            x = int(input(f"\n请输入要处理的结构数量 (1-{total_structures}): "))
+            if 1 <= x <= total_structures:
+                framework_names = framework_names[:x]
+                break
+            logger.warning(f"请输入1到{total_structures}之间的数字")
+        except ValueError:
+            logger.warning("请输入有效的数字")
+        except KeyboardInterrupt:
+            logger.info("用户取消操作")
+            sys.exit(130)  # 使用SIGINT的标准退出码
+
+    return framework_names, x
+
+def get_computation_setup(total_tasks, cif_dir=None):
+    """获取计算设置"""
+    logger.info("=== 步骤3：设置计算参数 ===")
+
+    # 获取系统可用总核心数
+    system_cores = multiprocessing.cpu_count()
+    logger.info(f"当前节点CPU核心数: {system_cores}")
+    
+    # 获取SLURM集群资源信息
+    cluster_info = get_slurm_cluster_resources()
+    globals()['LAST_CLUSTER_INFO'] = cluster_info
+    if cluster_info['available']:
+        logger.info(f"SLURM集群总 CPU核心数: {cluster_info['total_cpus']}")
+        logger.info(f"SLURM集群已分配 CPU核心数: {cluster_info['allocated_cpus']}")
+        logger.info(f"SLURM集群当前可用 CPU核心数: {cluster_info['available_cpus']}")
+
+        if cluster_info.get('nodes'):
+            logger.info("节点资源详情（线程总数/负载/建议可用线程）：")
+            for node in cluster_info['nodes']:
+                load_txt = f"{node['load']:.2f}" if node['load'] is not None else "未知"
+                topo_txt = node.get('topology') or "?"
+                free_cpus = node.get('free_cpus', 0)
+                physical = node.get('physical_cpus')
+                if physical:
+                    logger.info(
+                        f"  {node['node']}: 总{node['total_cpus']}线程 (物理{physical}, 拓扑{topo_txt}), "
+                        f"已分配{node['allocated_cpus']}, CPULoad={load_txt}, 估计可用={free_cpus}"
+                    )
+                else:
+                    logger.info(
+                        f"  {node['node']}: 总{node['total_cpus']}线程, 已分配{node['allocated_cpus']}, "
+                        f"CPULoad={load_txt}, 估计可用={free_cpus}"
+                    )
+        
+        recommended_cores = min(cluster_info['available_cpus'], total_tasks)
+        if recommended_cores > 0:
+            logger.info(f"建议使用CPU核心数: {recommended_cores} (基于集群空闲资源)")
+        else:
+            logger.info("集群当前无空闲CPU资源，请谨慎选择使用数量")
+    else:
+        logger.info("未检测到SLURM集群环境，使用当前节点信息")
+
+    # 获取CPU核心数
+    # 不再从配置读取 cpu_cores；交互式让用户输入并发
+    while True:
+        try:
+            cpu_cores = int(input(f"\n请输入需要运行的CPU核心数 (1-{total_tasks}): "))
+            if 1 <= cpu_cores <= total_tasks:
+                break
+            logger.warning(f"CPU核心数必须在1到{total_tasks}之间")
+        except ValueError:
+            logger.warning("请输入有效的数字")
+        except KeyboardInterrupt:
+            logger.info("用户取消操作")
+            sys.exit(130)  # 使用SIGINT的标准退出码
+
+    # 构建节点分配计划，便于后续提交阶段指定 nodelist
+    if cluster_info.get('available'):
+        plan_string, plan_pairs = build_node_plan(cluster_info, cpu_cores)
+        if plan_string:
+            os.environ['RASPA_NODE_PLAN'] = plan_string
+            logger.info(f"节点分配计划: {plan_string}")
+            plan_path = None
+            if CURRENT_TOPDIR and CURRENT_SUBDIR:
+                plan_path = os.path.join(CURRENT_TOPDIR, CURRENT_SUBDIR, ".raspa_node_plan")
+                try:
+                    with open(plan_path, 'w', encoding='utf-8') as pf:
+                        pf.write(plan_string + "\n")
+                    logger.info(f"节点分配计划已写入: {plan_path}")
+                except Exception as exc:
+                    logger.warning(f"写入节点分配计划失败: {exc}")
+        else:
+            os.environ.pop('RASPA_NODE_PLAN', None)
+            if CURRENT_TOPDIR and CURRENT_SUBDIR:
+                plan_path = os.path.join(CURRENT_TOPDIR, CURRENT_SUBDIR, ".raspa_node_plan")
+                if os.path.exists(plan_path):
+                    try:
+                        os.remove(plan_path)
+                        logger.info(f"已清理旧的节点分配计划: {plan_path}")
+                    except Exception as exc:
+                        logger.warning(f"删除节点分配计划失败: {exc}")
+    else:
+        os.environ.pop('RASPA_NODE_PLAN', None)
+        if CURRENT_TOPDIR and CURRENT_SUBDIR:
+            plan_path = os.path.join(CURRENT_TOPDIR, CURRENT_SUBDIR, ".raspa_node_plan")
+            if os.path.exists(plan_path):
+                try:
+                    os.remove(plan_path)
+                    logger.info(f"已清理旧的节点分配计划: {plan_path}")
+                except Exception as exc:
+                    logger.warning(f"删除节点分配计划失败: {exc}")
+
+    # 获取截断半径
+    while True:
+        try:
+            # 尝试从环境变量读取
+            cutoff_env = os.environ.get('RASPA_CUTOFF_RADIUS')
+            if cutoff_env:
+                cutoff = float(cutoff_env)
+                logger.info(f"从配置文件读取截断半径: {cutoff}")
+            else:
+                cutoff = float(input("请输入截断半径 (e.g., '12'): "))
+
+            if cutoff <= 0:
+                logger.warning("截断半径必须大于0")
+                continue
+            if cutoff > 100:  # 合理性检查
+                if cutoff_env:
+                    logger.warning(f"警告: 截断半径 {cutoff} 非常大")
+                else:
+                    confirm = input("警告: 截断半径非常大，确认使用此值? (y/n): ").strip().lower()
+                    if confirm != 'y':
+                        continue
+            break
+        except ValueError:
+            logger.warning("请输入有效的数字")
+        except KeyboardInterrupt:
+            logger.info("用户取消操作")
+            sys.exit(130)  # 使用SIGINT的标准退出码
+
+    # CIF文件目录已在前面的步骤中设置
+    cif_dir = cif_dir  # 使用已经设置的CIF目录
+
+    # 获取分子名称
+    molecules_env = os.environ.get('RASPA_DEFAULT_MOLECULES')
+    if molecules_env:
+        molecule_name = molecules_env
+        logger.info(f"从配置文件读取分子: {molecule_name}")
+    else:
+        molecule_name = input("请输入分子名称 (默认为'I2', 支持多种分子用空格分隔): ").strip()
+        if not molecule_name:
+            molecule_name = "I2"
+
+    logger.info(f"将使用分子: {molecule_name}")
+
+    # 支持多种气体分子
+    molecule_list = molecule_name.split()
+    if len(molecule_list) > 1:
+        logger.info(f"检测到多种气体分子: {', '.join(molecule_list)}")
+
+    # 询问是否使用自定义simulation.input模板
+    use_custom_template_env = os.environ.get('RASPA_USE_CUSTOM_TEMPLATE')
+    template_path_env = os.environ.get('RASPA_TEMPLATE_PATH')
+
+    if use_custom_template_env:
+        use_custom_template = use_custom_template_env.lower() == 'true'
+        logger.info(f"从配置文件读取模板设置: {'使用' if use_custom_template else '不使用'}自定义模板")
+    else:
+        use_custom_template = input("是否使用自定义simulation.input模板? (y/n): ").strip().lower() == 'y'
+
+    template_path = None
+
+    if use_custom_template:
+        if template_path_env:
+            template_path = template_path_env
+            if os.path.exists(template_path):
+                logger.info(f"从配置文件读取模板路径: {template_path}")
+            else:
+                logger.warning(f"配置文件中的模板文件不存在: {template_path}")
+                template_path = None
+        else:
+            while True:
+                template_path = input("请输入simulation.input模板文件路径: ").strip()
+                if not template_path:
+                    logger.warning("模板路径不能为空")
+                    continue
+                if not os.path.exists(template_path):
+                    logger.warning(f"模板文件不存在: {template_path}")
+                    continue
+                logger.info(f"将使用自定义模板: {template_path}")
+                break
+
+    # 询问是否使用CSV文件获取空隙率
+    use_void_csv_env = os.environ.get('RASPA_USE_VOID_CSV')
+    void_csv_file_env = os.environ.get('RASPA_VOID_CSV_FILE')
+    void_column_env = os.environ.get('RASPA_VOID_COLUMN')
+
+    if use_void_csv_env:
+        use_void_csv = use_void_csv_env.lower() == 'true'
+        logger.info(f"从配置文件读取空隙率设置: {'使用' if use_void_csv else '不使用'}CSV文件")
+    else:
+        use_void_csv = input("是否使用CSV文件获取空隙率? (y/n): ").strip().lower() == 'y'
+
+    void_csv_file = None
+    void_fraction_column = None
+
+    if use_void_csv:
+        if void_csv_file_env:
+            void_csv_file = void_csv_file_env
+            if os.path.exists(void_csv_file):
+                logger.info(f"从配置文件读取空隙率CSV文件: {void_csv_file}")
+            else:
+                logger.warning(f"配置文件中的空隙率CSV文件不存在: {void_csv_file}")
+                void_csv_file = None
+        else:
+            while True:
+                void_csv_file = input("请输入包含空隙率的CSV文件路径: ").strip()
+                if not void_csv_file:
+                    logger.warning("文件路径不能为空")
+                    continue
+                if not os.path.exists(void_csv_file):
+                    logger.warning(f"文件不存在: {void_csv_file}")
+                    continue
+                break
+
+        # 读取CSV文件并显示列名
+        try:
+            df = pd.read_csv(void_csv_file)
+            columns = df.columns.tolist()
+
+            logger.info("可用的列名:")
+            for i, col in enumerate(columns):
+                print(f"{i+1}. {col}")
+
+            # 尝试从环境变量读取空隙率列名
+            if void_column_env:
+                if void_column_env in columns:
+                    void_fraction_column = void_column_env
+                    logger.info(f"从配置文件读取空隙率列名: {void_fraction_column}")
+                else:
+                    logger.warning(f"配置文件中的空隙率列名 '{void_column_env}' 不存在，使用默认列")
+                    void_fraction_column = columns[0]  # 使用第一列作为默认
+            else:
+                # 选择列名
+                while True:
+                    try:
+                        choice = input("\n请选择包含空隙率的列名 (输入序号或列名): ")
+                        if choice.isdigit() and 1 <= int(choice) <= len(columns):
+                            void_fraction_column = columns[int(choice)-1]
+                            break
+                        elif choice in columns:
+                            void_fraction_column = choice
+                            break
+                        else:
+                            logger.warning("无效的选择，请重新输入")
+                    except KeyboardInterrupt:
+                        logger.info("用户取消操作")
+                        sys.exit(130)  # 使用SIGINT的标准退出码
+
+            logger.info(f"已选择空隙率列: {void_fraction_column}")
+
+        except Exception as e:
+            logger.error(f"读取CSV文件时出错: {e}")
+            void_csv_file = None
+            void_fraction_column = None
+
+    return cpu_cores, cutoff, void_csv_file, void_fraction_column, template_path, molecule_name, cif_dir
+
+def update_all_files(topdir, total_tasks, subdir, cpu_cores):
+    """更新所有配置文件"""
+    try:
+        # 获取安装目录
+        tool_dir = os.path.join(os.environ.get('HOME', ''), 'raspa2-calc/.raspa_tools')
+        logger.info(f"工具目录: {tool_dir}")
+        logger.info(f"工作目录: {topdir}")
+
+        # 注：作业日志的目录与开关通过环境变量传递（由 raspa_calc.py 读取 config 并设置），
+        # 此处不直接读取配置对象，避免在本模块中依赖全局 config。
+        # 创建job_templates目录（如果不存在）
+        job_templates_dir = os.path.join(topdir, "job_templates")
+        os.makedirs(job_templates_dir, exist_ok=True)
+
+        # 从安装目录复制所需文件到工作目录
+        template_files = ['runjobs.sh', 'job_submit_ht.sh', 'job_submit.sh', 'tasksrun.sh', 'pbs.sh', 'sbatch.sh', 'local.sh']
+        logger.info(f"准备复制 {len(template_files)} 个模板文件到 {job_templates_dir}")
+        for file in template_files:
+            src = os.path.join(tool_dir, 'job_templates', file)
+            dst = os.path.join(job_templates_dir, file)
+            logger.info(f"复制 {file}: {src} -> {dst}")
+            if os.path.exists(src):
+                import shutil
+                shutil.copy2(src, dst)
+                # 设置执行权限
+                os.chmod(dst, 0o755)
+                logger.info(f"已复制并设置权限: {file}")
+            else:
+                logger.warning(f"Warning: Template file {file} not found in installation directory")
+
+        logger.info("模板脚本已复制到工作目录，运行时将通过环境变量注入参数，无需额外重写。")
+
+        # 提交前清理旧任务队列与指针，避免使用陈旧列表
+        try:
+            queue_path = os.path.join(topdir, subdir, ".raspa_task_queue")
+            lock_path = queue_path + ".lock"
+            for p in (queue_path, lock_path):
+                if os.path.exists(p):
+                    os.remove(p)
+            logger.info("已清理旧的 .raspa_task_queue 队列文件")
+        except Exception as _e:
+            logger.warning(f"清理队列文件失败: {_e}")
+
+        try:
+            pointer_dir = os.path.join(topdir, subdir, ".raspa_queue")
+            if os.path.isdir(pointer_dir):
+                import shutil
+                shutil.rmtree(pointer_dir)
+                logger.info("已重置 .raspa_queue 指针目录")
+        except Exception as _e:
+            logger.warning(f"重置 .raspa_queue 失败: {_e}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"更新配置文件时出错: {e}")
+        return False
+
+def check_structure_files(framework_name, custom_cif_dir=None):
+    """检查CIF结构文件是否存在
+
+    Args:
+        framework_name (str): 框架名称
+        custom_cif_dir (str, optional): 自定义CIF文件目录. 默认为None.
+
+    Returns:
+        str: CIF结构文件路径，如果找不到则返回None
+    """
+    # 处理框架名称，确保它没有.cif后缀
+    if framework_name.lower().endswith('.cif'):
+        framework_name = framework_name[:-4]  # 移除.cif后缀
+
+    # 使用自定义CIF目录或默认目录
+    if custom_cif_dir:
+        cif_dir = custom_cif_dir
+    else:
+        # 从环境变量读取CIF目录，如果没有则使用默认值
+        cif_dir = os.environ.get('RASPA_CIF_DIR')
+        if not cif_dir:
+            current_dir = os.getcwd()
+            cif_dir = os.path.join(current_dir, "data", "cif")
+
+    # 检查标准CIF文件名
+    cif_file = os.path.join(cif_dir, f"{framework_name}.cif")
+    if os.path.exists(cif_file):
+        return cif_file
+
+    # 尝试其他可能的文件名形式
+    alternative_files = [
+        os.path.join(cif_dir, f"{framework_name.upper()}.cif"),  # 全大写
+        os.path.join(cif_dir, f"{framework_name.lower()}.cif"),  # 全小写
+        os.path.join(cif_dir, f"{framework_name}")  # 无后缀
+    ]
+
+    for alt_file in alternative_files:
+        if os.path.exists(alt_file):
+            logger.info(f"找到框架 {framework_name} 的替代CIF文件: {alt_file}")
+            return alt_file
+
+    # 尝试使用新的检查函数查找文件
+    from calculate_params import check_structure_files as check_cif_files
+    cif_file = check_cif_files(framework_name, cif_dir)
+    if cif_file:
+        return cif_file
+
+    # 列出目录中的所有文件，便于调试
+    if os.path.exists(cif_dir):
+        logger.debug(f"CIF目录 {cif_dir} 中的文件:")
+        for file in os.listdir(cif_dir):
+            logger.debug(f"  - {file}")
+
+    logger.error(f"找不到框架 {framework_name} 的CIF结构文件")
+    return None
+
+def process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_file=None, void_fraction_column=None, template_path=None, molecule_name="I2", cif_dir=None, framework_column=None):
+    """处理单个框架结构
+
+    Args:
+        topdir (str): 主目录路径
+        subdir (str): 子目录路径
+        counter (int): 结构计数器
+        framework_name (str): 框架名称
+        cutoff (float): 截断半径
+        void_csv_file (str, optional): 包含空隙率的CSV文件路径. 默认为None.
+        void_fraction_column (str, optional): 空隙率列的列名. 默认为None.
+        framework_column (str, optional): 框架名称列的列名. 默认为None.
+        template_path (str, optional): 自定义simulation.input模板路径. 默认为None.
+        molecule_name (str, optional): 分子名称. 默认为"I2".
+        cif_dir (str, optional): 自定义CIF文件目录. 默认为None.
+
+    Returns:
+        bool: 处理成功返回True，失败返回False
+    """
+    try:
+        # 检查wei文件
+        structure_file = check_structure_files(framework_name, cif_dir)
+        if structure_file is None:
+            logger.error(f"找不到框架 {framework_name} 的结构文件")
+            return False
+
+        # 使用calculate_params.py处理结构文件
+        success, unit_cells, void_fraction = process_structure_file(
+            structure_file,
+            cutoff,
+            csv_file=void_csv_file,
+            void_fraction_column=void_fraction_column,
+            framework_column=framework_column
+        )
+        if not success:
+            return False
+
+        # 创建目录结构
+        md_dir = os.path.join(topdir, subdir, f"mc{counter}")
+        os.makedirs(md_dir, exist_ok=True)
+
+        # 确定使用哪个simulation.input模板
+        if template_path and os.path.isfile(template_path):
+            # 使用自定义模板
+            sim_input_file = template_path
+            logger.info(f"使用自定义模板: {template_path}")
+        else:
+            # 使用默认模板
+            tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
+            sim_input_file = os.path.join(tool_dir, "config", "simulation.input")
+            if not os.path.isfile(sim_input_file):
+                logger.error(f"Error: Missing source file simulation.input in {os.path.join(tool_dir, 'config')}")
+                return False
+
+        # 复制simulation.input文件
+        import subprocess
+        try:
+            subprocess.run(f"cp -rf {sim_input_file} {md_dir}/", shell=True, check=True, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError:
+            return False
+
+        # 更新模拟输入文件
+        sim_input_path = os.path.join(md_dir, "simulation.input")
+        if not os.path.exists(sim_input_path):
+            return False
+
+        with open(sim_input_path, "r") as f:
+            lines = f.readlines()
+
+        updated_lines = []
+        # 处理多组分分子名称
+        molecule_list = molecule_name.split() if isinstance(molecule_name, str) else [molecule_name]
+        
+        for line in lines:
+            if line.startswith("FrameworkName"):
+                updated_lines.append(f"FrameworkName {framework_name}\n")
+            elif line.startswith("UnitCells"):
+                updated_lines.append(f"UnitCells {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}\n")
+            elif line.startswith("HeliumVoidFraction"):
+                updated_lines.append(f"HeliumVoidFraction {void_fraction}\n")
+            elif line.startswith("Component ") and "MoleculeName" in line:
+                # 提取Component编号
+                parts = line.split()
+                if len(parts) >= 3 and parts[0] == "Component" and parts[2] == "MoleculeName":
+                    try:
+                        component_idx = int(parts[1])
+                        if component_idx < len(molecule_list):
+                            # 使用对应的分子名称
+                            molecule = molecule_list[component_idx]
+                            # 保持原有的格式和空格
+                            prefix = line[:line.find("MoleculeName") + len("MoleculeName")]
+                            updated_lines.append(f"{prefix}   {molecule}\n")
+                        else:
+                            # 如果组分编号超出分子列表范围，使用第一个分子
+                            molecule = molecule_list[0]
+                            prefix = line[:line.find("MoleculeName") + len("MoleculeName")]
+                            updated_lines.append(f"{prefix}   {molecule}\n")
+                    except (ValueError, IndexError):
+                        # 如果解析失败，使用原有行
+                        updated_lines.append(line)
+                else:
+                    updated_lines.append(line)
+            else:
+                updated_lines.append(line)
+
+        with open(sim_input_path, "w") as f:
+            f.writelines(updated_lines)
+
+        return True
+
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        logger.debug(f"Error processing structure {framework_name}: {e}")
+        return False
+
+def main():
+    try:
+        logger.info("=== RASPA高通量计算设置 ===")
+
+        # 步骤1：检查命令行参数和初始化
+        print("\n步骤1：初始化设置")
+
+        # 尝试从环境变量或命令行参数获取信息
+        framework_column = 'refcode'  # 默认值
+        if len(sys.argv) == 3:
+            # 从命令行参数获取（向后兼容）
+            csv_file = sys.argv[1]
+            column_number = sys.argv[2]
+            # 使用默认的framework_column或从环境变量获取
+            framework_column = os.environ.get('RASPA_FRAMEWORK_COLUMN', 'refcode')
+            logger.info("从命令行参数获取CSV文件信息")
+        else:
+            # 从环境变量获取（配置文件模式）
+            csv_file = os.environ.get('RASPA_CSV_FILE')
+            framework_column = os.environ.get('RASPA_FRAMEWORK_COLUMN', 'refcode')
+
+            if not csv_file:
+                logger.error("错误：未找到CSV文件路径，请在配置文件中设置csv_file_path")
+                sys.exit(1)
+
+            # 将列名转换为列号（简化处理，假设列名就是我们要找的）
+            column_number = framework_column
+            logger.info("从环境变量获取CSV文件信息")
+
+        if not os.path.exists(csv_file):
+            logger.error(f"错误：找不到CSV文件 {csv_file}")
+            sys.exit(1)
+
+        topdir = os.path.abspath(os.getcwd())
+        subdir = get_directory_setup()
+        global CURRENT_TOPDIR, CURRENT_SUBDIR
+        CURRENT_TOPDIR = topdir
+        CURRENT_SUBDIR = subdir
+
+        if not os.path.exists(os.path.join(topdir, subdir)):
+            try:
+                os.makedirs(os.path.join(topdir, subdir))
+            except Exception as e:
+                logger.error(f"无法创建目录: {e}")
+                sys.exit(1)
+
+        # 步骤2：读取和处理CSV文件
+        print("\n步骤2：处理CSV文件")
+        try:
+            # 读取CSV文件，处理BOM编码问题
+            try:
+                df = pd.read_csv(csv_file, encoding='utf-8-sig')
+            except UnicodeDecodeError:
+                try:
+                    df = pd.read_csv(csv_file, encoding='utf-8')
+                except UnicodeDecodeError:
+                    df = pd.read_csv(csv_file, encoding='gbk')
+            df = df.dropna(subset=[df.columns[0]])
+
+            # 处理列名或列号
+            if column_number.isdigit():
+                # 如果是数字，当作列号处理
+                col_index = int(column_number) - 1
+                if 0 <= col_index < len(df.columns):
+                    framework_names = df[df.columns[col_index]].dropna().tolist()
+                else:
+                    logger.error(f"列号 {column_number} 超出范围")
+                    sys.exit(1)
+            else:
+                # 如果是字符串，当作列名处理
+                if column_number in df.columns:
+                    framework_names = df[column_number].dropna().tolist()
+                else:
+                    logger.error(f"列名 '{column_number}' 不存在于CSV文件中")
+                    logger.info(f"可用的列名: {list(df.columns)}")
+                    sys.exit(1)
+
+            framework_names = [name for name in framework_names if str(name).strip()]
+            total_tasks = len(framework_names)
+            initial_total_tasks = total_tasks
+
+            if total_tasks == 0:
+                logger.error("没有找到有效的框架结构，请检查CSV文件")
+                sys.exit(1)
+
+            logger.info(f"找到 {total_tasks} 个有效框架结构")
+
+            # 获取CIF文件目录（从环境变量或配置文件）
+            cif_dir = os.environ.get('RASPA_CIF_DIR')
+            if not cif_dir:
+                current_dir = os.getcwd()
+                default_cif_dir = os.path.join(current_dir, "data", "cif")
+                cif_dir = input(f"\n请输入CIF文件目录 (默认为'{default_cif_dir}'): ").strip()
+                if not cif_dir:
+                    cif_dir = default_cif_dir
+            else:
+                logger.info(f"使用配置文件中的CIF目录: {cif_dir}")
+
+            if not os.path.exists(cif_dir):
+                logger.warning(f"CIF目录不存在: {cif_dir}")
+                create_dir = input("是否创建该目录? (y/n): ").strip().lower()
+                if create_dir == 'y':
+                    try:
+                        os.makedirs(cif_dir, exist_ok=True)
+                        logger.info(f"已创建目录: {cif_dir}")
+                    except Exception as e:
+                        logger.error(f"创建目录失败: {e}")
+
+            logger.info(f"将使用CIF目录: {cif_dir}")
+
+            # 检查每个框架是否有对应的CIF文件
+            logger.info("检查框架对应的CIF文件...")
+            missing_cifs = []
+            skipped_missing_cifs = 0
+            found_cifs = []
+
+            for framework in framework_names:
+                # 处理框架名称，确保它没有.cif后缀
+                clean_name = framework
+                if isinstance(clean_name, str) and clean_name.lower().endswith('.cif'):
+                    clean_name = clean_name[:-4]  # 移除.cif后缀
+
+                # 检查标准文件名
+                cif_file = os.path.join(cif_dir, f"{clean_name}.cif")
+
+                # 尝试各种可能的文件名
+                found = False
+                if os.path.exists(cif_file):
+                    found = True
+                else:
+                    # 尝试其他可能的文件名形式
+                    alternative_files = [
+                        os.path.join(cif_dir, f"{clean_name}"),  # 无后缀
+                        os.path.join(cif_dir, f"{str(clean_name).upper()}.cif"),  # 全大写
+                        os.path.join(cif_dir, f"{str(clean_name).lower()}.cif")   # 全小写
+                    ]
+
+                    for alt_file in alternative_files:
+                        if os.path.exists(alt_file):
+                            found = True
+                            cif_file = alt_file
+                            break
+
+                if found:
+                    found_cifs.append(framework)
+                else:
+                    missing_cifs.append(framework)
+
+            # 显示结果
+            if missing_cifs:
+                logger.warning(f"以下 {len(missing_cifs)} 个框架没有对应的CIF文件:")
+                for i, missing in enumerate(missing_cifs[:10], 1):
+                    logger.warning(f"  {i}. {missing}")
+                if len(missing_cifs) > 10:
+                    logger.warning(f"  ... 及其他 {len(missing_cifs) - 10} 个")
+
+                skipped_missing_cifs = len(missing_cifs)
+                logger.warning("上述框架将被自动跳过，程序继续处理其余结构。")
+
+            # 仅保留存在CIF文件的框架以继续后续步骤
+            framework_names = found_cifs
+            total_tasks = len(framework_names)
+
+            if total_tasks == 0:
+                logger.error("所有框架均缺少CIF文件，无法继续计算。")
+                sys.exit(1)
+
+            logger.info(f"共找到 {len(found_cifs)} 个框架对应的CIF文件")
+
+        except Exception as e:
+            logger.error(f"处理CSV文件时出错: {e}")
+            logger.debug(traceback.format_exc())
+            sys.exit(1)
+
+        cpu_cores, cutoff, void_csv_file, void_fraction_column, template_path, molecule_name, _ = get_computation_setup(total_tasks, cif_dir)
+
+        # 步骤3：显示配置摘要
+        print("\n步骤3：配置摘要")
+        logger.info("计算参数:")
+        logger.info(f"- 输出目录: {subdir}")
+        logger.info(f"- 处理框架数: {total_tasks}")
+        logger.info(f"- CPU核心数: {cpu_cores}")
+        logger.info(f"- 截断半径: {cutoff}")
+        logger.info(f"- 分子名称: {molecule_name}")
+        logger.info(f"- CIF文件目录: {cif_dir}")
+        if template_path:
+            logger.info(f"- 自定义模板路径: {template_path}")
+        if void_csv_file and void_fraction_column:
+            logger.info(f"- 空隙率CSV文件: {void_csv_file}")
+            logger.info(f"- 空隙率列名: {void_fraction_column}")
+        
+        # 显示完整的simulation.input示例
+        print("\n=== 生成的simulation.input示例 ===\n")
+        
+        # 使用第一个框架作为示例
+        if framework_names:
+            first_framework = framework_names[0]
+            
+            # 获取第一个框架的参数
+            try:
+                structure_file = check_structure_files(first_framework, cif_dir)
+                if structure_file:
+                    success, unit_cells, void_fraction = process_structure_file(
+                        structure_file,
+                        cutoff,
+                        csv_file=void_csv_file,
+                        void_fraction_column=void_fraction_column,
+                        framework_column=framework_column
+                    )
+                    
+                    if success:
+                        # 显示模板内容
+                        template_file = template_path if template_path and os.path.isfile(template_path) else None
+                        if not template_file:
+                            tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
+                            template_file = os.path.join(tool_dir, "config", "simulation.input")
+                        
+                        if os.path.exists(template_file):
+                            with open(template_file, 'r') as f:
+                                template_content = f.read()
+                            
+                            # 执行替换逻辑
+                            lines = template_content.split('\n')
+                            molecule_list = molecule_name.split() if isinstance(molecule_name, str) else [molecule_name]
+                            
+                            # 替换参数
+                            for i, line in enumerate(lines):
+                                if line.startswith("FrameworkName"):
+                                    lines[i] = f"FrameworkName {first_framework}"
+                                elif line.startswith("UnitCells"):
+                                    lines[i] = f"UnitCells {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}"
+                                elif line.startswith("HeliumVoidFraction"):
+                                    lines[i] = f"HeliumVoidFraction {void_fraction}"
+                                elif line.startswith("Component ") and "MoleculeName" in line:
+                                    # 提取Component编号
+                                    parts = line.split()
+                                    if len(parts) >= 3 and parts[0] == "Component" and parts[2] == "MoleculeName":
+                                        try:
+                                            component_idx = int(parts[1])
+                                            if component_idx < len(molecule_list):
+                                                molecule = molecule_list[component_idx]
+                                                prefix = line[:line.find("MoleculeName") + len("MoleculeName")]
+                                                lines[i] = f"{prefix}   {molecule}"
+                                            else:
+                                                molecule = molecule_list[0]
+                                                prefix = line[:line.find("MoleculeName") + len("MoleculeName")]
+                                                lines[i] = f"{prefix}   {molecule}"
+                                        except (ValueError, IndexError):
+                                            pass
+                            
+                            # 显示替换后的内容
+                            print('\n'.join(lines[:50]))  # 只显示前50行避免输出过长
+                            if len(lines) > 50:
+                                print(f"... (共{len(lines)}行，仅显示前50行)")
+                            
+                        print("\n" + "="*50)
+                        print(f"📦 此示例使用框架: {first_framework}")
+                        print(f"📦 UnitCells: {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}")
+                        print(f"📦 空隙率: {void_fraction}")
+                        if len(molecule_list) > 1:
+                            print(f"📦 多组分分子: {', '.join(molecule_list)}")
+                        else:
+                            print(f"📦 分子名称: {molecule_list[0]}")
+                        print("="*50)
+                        
+            except Exception as e:
+                logger.warning(f"无法生成示例: {e}")
+
+        if input("\n确认这些设置正确吗？(y/n): ").lower() != 'y':
+            logger.info("程序已终止")
+            sys.exit(0)
+
+        # 步骤4：处理结构文件
+        print("\n步骤4：处理结构文件")
+        successful_structures = 0
+        from tqdm import tqdm
+
+        with tqdm(total=len(framework_names), desc="处理进度", unit="结构") as pbar:
+            for counter, framework_name in enumerate(framework_names, 1):
+                if process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_file, void_fraction_column, template_path, molecule_name, cif_dir, framework_column):
+                    successful_structures += 1
+                pbar.update(1)
+
+        # 步骤5：检查处理结果
+        print("\n步骤5：处理结果")
+        if successful_structures == 0:
+            logger.error("没有成功处理任何结构文件，无法继续计算")
+            logger.error("请确保wei目录或cif目录中存在所需的结构文件")
+            logger.error("计算被取消")
+            sys.exit(1)
+
+        # 更新配置文件
+        actual_cores = min(cpu_cores, successful_structures) if successful_structures != total_tasks else cpu_cores
+        logger.info(f"准备更新配置文件: topdir={topdir}, total_tasks={successful_structures}, subdir={subdir}, actual_cores={actual_cores}")
+        if not update_all_files(topdir, successful_structures, subdir, actual_cores):
+            logger.error("更新配置文件失败，程序终止")
+            sys.exit(1)
+        logger.info("配置文件更新完成")
+
+        # 步骤6：最终总结
+        print("\n步骤6：执行总结")
+        logger.info("计算任务设置完成:")
+        logger.info(f"- 原始结构数: {initial_total_tasks}")
+        logger.info(f"- 成功处理: {successful_structures} 个结构")
+        if skipped_missing_cifs:
+            logger.info(f"- 缺失CIF跳过: {skipped_missing_cifs} 个结构")
+        logger.info(f"- 失败处理: {total_tasks - successful_structures} 个结构")
+        logger.info(f"- 实际使用CPU核心数: {actual_cores}")
+        logger.info("所有配置文件已更新，开始提交计算任务...")
+
+        # 步骤7：提交计算任务
+        print("\n步骤7：提交计算任务")
+        try:
+            # 获取工具目录
+            tool_dir = os.path.expanduser("~/raspa2-calc/.raspa_tools")
+            tasksrun_script = os.path.join(tool_dir, "job_templates", "tasksrun.sh")
+
+            if not os.path.exists(tasksrun_script):
+                logger.error(f"找不到任务提交脚本: {tasksrun_script}")
+                logger.info("请手动运行以下命令提交任务:")
+                logger.info(f"bash {tasksrun_script} {actual_cores}")
+                return
+
+            # 设置环境变量供tasksrun.sh使用
+            os.environ['RASPA_WORK_DIR'] = topdir
+            
+            # 确保CIF目录环境变量传递给子进程
+            if 'RASPA_CIF_DIR' in os.environ:
+                logger.info(f"传递CIF目录环境变量: {os.environ['RASPA_CIF_DIR']}")
+            else:
+                logger.warning("RASPA_CIF_DIR环境变量未设置")
+
+            # 实时回显：正在提交第X个任务…
+            import subprocess, shlex
+            env = os.environ.copy()
+            print(f"将提交 {actual_cores} 个并行作业")
+            # 直接调用 tasksrun.sh，它内部会循环提交 each job；我们解析其输出并实时提示
+            with subprocess.Popen([tasksrun_script, str(actual_cores)],
+                                  cwd=topdir,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT,
+                                  text=True,
+                                  bufsize=1,
+                                  env=env) as proc:
+                submitted = 0
+                for line in proc.stdout:
+                    line_strip = line.strip()
+                    # 透传关键行，同时捕获“正在提交作业 N ...”格式，转换为“正在提交第N个任务…”
+                    if "正在提交作业" in line_strip:
+                        # 提取编号
+                        import re
+                        m = re.search(r"正在提交作业\s+(\d+)", line_strip)
+                        if m:
+                            submitted = max(submitted, int(m.group(1)))
+                            print(f"正在提交第{submitted}个任务…")
+                        else:
+                            print(line_strip)
+                    elif "✅ 作业" in line_strip and "提交完成" in line_strip:
+                        # 已在上一行统计submitted，此处只简要透传
+                        pass
+                    else:
+                        # 其他有用信息按需透传（避免刷屏）
+                        if line_strip:
+                            print(line_strip)
+                ret = proc.wait()
+
+            if ret == 0:
+                logger.info(f"✅ 任务提交完成，共提交 {actual_cores} 个任务")
+                print(f"总计提交 {actual_cores} 个任务")
+            else:
+                logger.error("任务提交失败")
+                logger.info("请手动运行以下命令提交任务:")
+                logger.info(f"bash {tasksrun_script} {actual_cores}")
+
+        except Exception as e:
+            logger.error(f"提交任务时出错: {e}")
+            logger.info("请手动运行以下命令提交任务:")
+            logger.info(f"bash {tasksrun_script} {actual_cores}")
+
+    except KeyboardInterrupt:
+        logger.info("\n用户取消操作，程序已终止")
+        sys.exit(130)
+    except Exception as e:
+        logger.error(f"程序执行时出错: {e}")
+        logger.debug(traceback.format_exc())
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

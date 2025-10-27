@@ -1,0 +1,119 @@
+# RASPA2 计算工具配置文件
+# 版本: 2.2.1 (精确算法版)
+
+# 环境配置
+environment:
+  # 工作目录（所有计算任务、输入文件、输出文件都在此目录下执行和存储）
+  work_dir: "/home/zjp/raspa2-calc/work"
+
+  # RASPA安装目录（系统需要从这里找到bin/simulate可执行文件来运行分子模拟）
+  # 验证当前设置是否正确 （ls /home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/bin/simulate）
+  raspa_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0"
+
+  # CIF文件目录（存放晶体结构文件(.cif)的目录）
+  cif_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif"
+
+# 计算参数
+calculation:
+  # 默认截断半径
+  cutoff_radius: 12.8
+
+  # 默认分子 (支持多种气体分子，用空格分隔)
+  # 示例: "12c" 或 "12c CH4 CO2 N2"
+  default_molecules: "NO2"
+
+  # CPU核心数/结构数量不再从配置读取，提交时由用户交互式设置
+
+  # 是否使用自定义simulation.input模板
+  use_custom_template: true
+
+  # 自定义模板路径
+  template_path: "/home/zjp/raspa2-calc/work/simulation.input"
+
+  # CSV文件路径 (用于批量处理)
+  # 示例: "data/structures.csv"
+  csv_file_path: "/home/zjp/raspa2-calc/work/CAMTET01_ASR_pacman.csv"
+
+  # 框架名称列名（必须与CSV文件中的框架列名一致）
+  # 注意处理警告任务CSV文件和高通量数据CSV文件的列名
+  framework_column: "coreid"
+
+  # 输出目录名
+  output_directory: "1-1965071_ASR_pacman-heat"
+
+  # 是否使用CSV文件获取空隙率
+  use_void_csv: false
+
+  # 空隙率CSV文件路径
+  void_csv_file: "/home/zjp/raspa2-calc/work/missing_coreids_201.csv"
+
+  # 空隙率列名
+  void_column: "孔隙率"
+
+# 参数筛选配置（用于参数筛选模式）
+parameter_screening:
+  # 输出目录名
+  output_directory: "等温线文章1-1965071_ASR_pacman"
+
+  # 是否自动计算UnitCells和空隙率
+  auto_unit_cells: true
+  # auto_void_fraction: true
+
+  # 参数筛选配置 - 可以配置simulation.input中的任意参数
+  # 格式: 参数名: [值1, 值2, 值3, ...]
+  # 程序会自动生成所有参数组合并提交作业
+  parameters:
+    # IMPORTANT: 如果启用auto_unit_cells，必须包含CutOffVDW参数（即使只有一个值）
+    # 因为UnitCells计算需要知道截断半径
+    CutOffVDW: [12.8]
+
+    # 示例: 数值型参数
+    ExternalPressure: [1000, 6666, 13333, 20000, 26666, 33333, 40000, 46666, 53333, 60000, 66666, 73333, 80000, 86666, 93333, 100000]
+
+    # 示例: 字符型参数
+    # ForceField: [huan5, UFF, Dreiding]
+    # ChargeMethod: [Ewald, None]
+
+    # 示例: 组件相关参数
+    # MoleculeName: [CO2, CH4, N2]
+    # TranslationProbability: [0.3, 0.5, 0.7]
+
+  # 注意:
+  # 1. 只需配置要测试的参数,其他参数保持模板默认值
+  # 2. 参数名必须与simulation.input中完全一致(区分大小写)
+  # 3. 程序会生成所有组合: 如果有3个参数各2个值,会生成2×2×2=8个任务
+
+# 性能优化
+performance:
+  # 启用缓存
+  enable_cache: true
+
+  # 缓存过期时间(秒)
+  cache_timeout: 3600
+
+  # 启用进度条
+  show_progress: true
+
+# 日志配置
+logging:
+  # 日志级别
+  level: "INFO"
+
+  # 日志文件
+  file: "raspa_calc.log"
+  # 作业日志输出目录（相对输出目录，默认 1log）
+  output_dir: "1log"
+
+  # 是否生成作业 .out/.err 日志（false/0/no 则写入 /dev/null）
+  enable_job_logs: true
+
+# 高级选项
+advanced:
+  # 自定义模板目录
+  template_dir: ".raspa_tools/job_templates"
+
+  # 超时设置(秒)
+  job_timeout: 3600
+
+  # 重试次数
+  retry_count: 3

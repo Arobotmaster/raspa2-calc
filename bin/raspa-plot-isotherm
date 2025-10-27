@@ -1,0 +1,81 @@
+#!/bin/bash
+
+# raspa-plot-isotherm - 便捷的等温线绘制命令
+# 用于快速批量绘制MOF等温吸附曲线
+
+# 获取工具目录
+TOOL_DIR="$HOME/raspa2-calc/.raspa_tools"
+SCRIPT_PATH="$TOOL_DIR/scripts/python/isotherm_plotter.py"
+
+# 检查脚本是否存在
+if [ ! -f "$SCRIPT_PATH" ]; then
+    echo "错误: 找不到等温线绘制脚本"
+    echo "预期路径: $SCRIPT_PATH"
+    exit 1
+fi
+
+# 显示帮助信息
+show_help() {
+    cat << EOF
+raspa-plot-isotherm - RASPA等温线批量绘制工具
+
+用法:
+  raspa-plot-isotherm [目录] [选项]
+
+参数:
+  目录            包含计算结果的目录路径 (默认: 当前目录)
+
+选项:
+  --component <名称>       指定要绘制的组件 (默认: 全部)
+  --type <类型>           吸附类型: absolute|excess (默认: absolute)
+  --unit <单位>           单位: mol/kg|cm^3/g|mg/g|cm^3/cm^3 (默认: cm^3/g)
+  --pressure-unit <单位>  压力单位: Pa|bar (默认: bar)
+  --linearx               使用线性x轴 (默认: 对数)
+  --outdir <目录>         输出目录 (默认: isotherms)
+  --combine-all           生成组分对比图
+  --include-unfinished    包含未完成的模拟
+  -h, --help              显示此帮助信息
+
+示例:
+  # 绘制当前目录下所有MOF的等温线
+  raspa-plot-isotherm
+
+  # 绘制指定目录的等温线
+  raspa-plot-isotherm ./等温线
+
+  # 仅绘制NO2组分，使用mol/kg单位
+  raspa-plot-isotherm --component NO2 --unit mol/kg
+
+  # 生成对比图，输出到自定义目录
+  raspa-plot-isotherm --combine-all --outdir 我的等温线图
+
+更多信息:
+  运行 'raspa-calc' 并选择模式5可使用交互式界面
+EOF
+}
+
+# 处理帮助参数
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    show_help
+    exit 0
+fi
+
+# 如果第一个参数不是选项，则作为目录路径
+BASE_DIR=""
+if [ -n "$1" ] && [ "${1:0:1}" != "-" ]; then
+    BASE_DIR="$1"
+    shift
+fi
+
+# 构造命令
+CMD="python \"$SCRIPT_PATH\""
+
+if [ -n "$BASE_DIR" ]; then
+    CMD="$CMD --base-dir \"$BASE_DIR\""
+fi
+
+# 添加其他参数
+CMD="$CMD $@"
+
+# 执行命令
+eval $CMD

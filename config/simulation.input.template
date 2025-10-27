@@ -1,0 +1,27 @@
+SimulationType                        MonteCarlo
+NumberOfCycles                        {{$cycles}};
+NumberOfInitializationCycles    {{$init_cycles}};
+NumberOfEquilibrationCycles     {{$equil_cycles}};
+PrintEvery                            500
+RestartFile                           no
+
+UseChargesFromCIFFile      yes
+Forcefield                            forcefiled-cif
+CutOff                                 {{$cutoff}}
+
+RemoveAtomNumberCodeFromLabel yes
+
+Framework                         0
+FrameworkName                {{$framework}}
+UnitCells                             {{$unit_cells}}
+HeliumVoidFraction           {{$void_fraction}}
+ExternalTemperature          {{$temperature}};
+ExternalPressure 		  {{$pressure}};
+
+Component 0 MoleculeName   {{$molecule}}
+            MoleculeDefinition       TraPPE
+            TranslationProbability    0.5
+            RotationProbability        0.5
+            ReinsertionProbability    0.5
+            SwapProbability             1.0
+            CreateNumberOfMolecules  0 

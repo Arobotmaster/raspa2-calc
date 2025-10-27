@@ -1,0 +1,547 @@
+#!/usr/bin/env python3
+import os
+import sys
+import subprocess
+import importlib
+
+# 版本信息
+__version__ = "2.3.0"
+__version_name__ = "集群优化版"
+
+# 全局配置
+config = None
+
+def load_config():
+    """加载配置文件"""
+    global config
+    config_paths = [
+        "config.yaml",  # 当前目录
+        ".raspa_tools/config.yaml",  # 工具目录
+        os.path.join(os.path.dirname(__file__), "../../config.yaml"),  # 脚本相对路径
+        os.path.join(os.path.expanduser("~"), "raspa2-calc", ".raspa_tools", "config.yaml")  # 标准安装路径
+    ]
+
+    try:
+        import yaml
+        config_loaded = False
+
+        for config_file in config_paths:
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+                print(f"✅ 配置文件已加载: {config_file}")
+                config_loaded = True
+                break
+
+        if not config_loaded:
+            config = {}
+            print("ℹ️  未找到配置文件，使用默认设置")
+    except ImportError:
+        config = {}
+        print("⚠️  PyYAML未安装，使用默认设置")
+    except Exception as e:
+        config = {}
+        print(f"⚠️  配置文件加载失败: {e}，使用默认设置")
+
+def check_environment():
+    """检测当前环境是否满足运行要求"""
+    print("🔍 环境检测中...")
+    print("=" * 50)
+
+    all_passed = True
+    issues = []
+
+    # 1. 检查Python依赖
+    print("\n📦 检查Python依赖包:")
+    python_deps = {
+        'gemmi': '必需 - 用于精确CIF文件处理',
+        'numpy': '必需 - 用于数值计算',
+        'pandas': '必需 - 用于数据处理',
+        'tqdm': '可选 - 用于进度条显示'
+    }
+
+    for package, description in python_deps.items():
+        try:
+            importlib.import_module(package)
+            print(f"  ✅ {package} - {description}")
+        except ImportError:
+            if '必需' in description:
+                print(f"  ❌ {package} - {description} (缺失)")
+                issues.append(f"缺少必需的Python包: {package}")
+                all_passed = False
+            else:
+                print(f"  ⚠️  {package} - {description} (缺失)")
+
+    # 2. 检查系统工具
+    print("\n🔧 检查系统工具:")
+    system_tools = ['bash', 'find', 'grep', 'sed', 'chmod']
+
+    for tool in system_tools:
+        try:
+            result = subprocess.run(['which', tool], capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"  ✅ {tool}")
+            else:
+                print(f"  ❌ {tool} (未找到)")
+                issues.append(f"缺少系统工具: {tool}")
+                all_passed = False
+        except Exception:
+            print(f"  ❌ {tool} (检查失败)")
+            issues.append(f"无法检查系统工具: {tool}")
+            all_passed = False
+
+    # 3. 检查环境变量
+    print("\n🌍 检查环境变量:")
+    required_env_vars = ['RASPA_DIR', 'RASPA_WORK_DIR']
+
+    for var in required_env_vars:
+        # 优先使用配置文件中的设置
+        config_value = config.get('environment', {}).get(var.lower(), '')
+        env_value = os.environ.get(var, config_value)
+
+        if env_value:
+            print(f"  ✅ {var} = {env_value}")
+        else:
+            print(f"  ❌ {var} (未设置)")
+            issues.append(f"缺少环境变量: {var}")
+            all_passed = False
+
+    # 4. 检查RASPA可执行文件
+    print("\n⚙️  检查RASPA可执行文件:")
+    raspa_dir = os.environ.get('RASPA_DIR')
+    if raspa_dir:
+        simulate_path = os.path.join(raspa_dir, 'bin', 'simulate')
+        if os.path.exists(simulate_path) and os.access(simulate_path, os.X_OK):
+            print(f"  ✅ RASPA simulate 可执行文件: {simulate_path}")
+        else:
+            print(f"  ❌ RASPA simulate 可执行文件不存在或不可执行: {simulate_path}")
+            issues.append("RASPA simulate 可执行文件不存在或不可执行")
+            all_passed = False
+    else:
+        print("  ❌ 无法检查RASPA可执行文件 (RASPA_DIR未设置)")
+
+    # 5. 检查工具目录
+    print("\n📁 检查工具目录:")
+    tool_dir = os.path.join(os.environ.get('HOME', ''), 'raspa2-calc', '.raspa_tools')
+    if os.path.exists(tool_dir):
+        print(f"  ✅ 工具目录存在: {tool_dir}")
+    else:
+        print(f"  ❌ 工具目录不存在: {tool_dir}")
+        issues.append(f"工具目录不存在: {tool_dir}")
+        all_passed = False
+
+    # 总结
+    print("\n" + "=" * 50)
+    if all_passed:
+        print("🎉 环境检测通过！所有要求都满足。")
+        return True
+    else:
+        print("❌ 环境检测失败！发现以下问题:")
+        for issue in issues:
+            print(f"   • {issue}")
+        print("\n请解决上述问题后再运行工具。")
+        return False
+
+def show_help():
+    """显示帮助信息"""
+    print(f"RASPA2 高通量计算工具 v{__version__} ({__version_name__})")
+    print()
+    print("用法: raspa-calc [选项]")
+    print()
+    print("选项:")
+    print("  -h, --help          显示此帮助信息")
+    print("  -v, --version       显示版本信息")
+    print("  --no-check          跳过环境检测")
+    print()
+    print("计算模式:")
+    print("  1. 参数筛选模式（小批量运算）")
+    print("     - 用于测试和参数优化")
+    print("     - 默认使用2个CPU核心")
+    print("     - 适合少量结构的快速验证")
+    print()
+    print("  2. 高通量计算模式（大规模计算）")
+    print("     - 用于大规模计算")
+    print("     - 支持用户指定CPU核心数")
+    print("     - 支持多节点集群(960+CPU核心)")
+    print("     - 自动检测任务数量并智能分配")
+    print()
+    print("  3. 数据提取模式（从计算结果中提取数据）")
+    print("     - 从计算结果中提取关键数据")
+    print("     - 生成Excel表格")
+    print()
+    print("v2.3.0 新特性:")
+    print("  ✅ 多节点集群支持 - NFS共享存储实现跨节点调度")
+    print("  ✅ 任务提交延迟优化 - 避免调度器过载导致节点异常")
+    print("  ✅ 配置参数化 - 框架列名等参数完全可配置")
+    print("  ✅ CSV空隙率读取 - 支持从CSV文件读取空隙率数据")
+    print()
+    print("示例:")
+    print("  raspa-calc               # 交互式选择模式")
+    print("  raspa-calc -h            # 显示帮助")
+    print("  raspa-calc -v            # 显示版本")
+    print()
+    print("相关命令:")
+    print("  raspa-status             # 查看任务状态")
+    print("  raspa-diagnose           # 运行诊断")
+    print()
+    print("多节点集群使用:")
+    print("  ⚠️  重要: 必须在NFS挂载目录下提交任务")
+    print("  cd /home/zjp/raspa2-calc  # 进入NFS共享目录")
+    print("  raspa-calc               # 启动高通量计算")
+    print()
+
+def show_version():
+    """显示版本信息"""
+    print(f"RASPA2 高通量计算工具 v{__version__} ({__version_name__})")
+    print()
+    print("版本特性:")
+    print("  ✅ 多节点集群支持 - 支持SLURM集群跨节点调度(960+CPU核心)")
+    print("  ✅ 任务提交优化 - 智能延迟避免调度器过载和Prolog error")
+    print("  ✅ 配置参数化 - 支持从配置文件读取所有参数，避免硬编码")
+    print("  ✅ CSV数据集成 - 支持从CSV文件读取空隙率等数据")
+    print("  ✅ 精确UnitCells算法 - 基于向量叉积的精确计算")
+    print("  ✅ gemmi库集成 - 专业CIF文件处理和晶体学计算")
+    print()
+
+def main():
+    """RASPA计算工具主入口"""
+    # 处理命令行参数
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        if arg in ['-h', '--help']:
+            show_help()
+            return
+        elif arg in ['-v', '--version']:
+            show_version()
+            return
+        elif arg == '--no-check':
+            skip_check = True
+        else:
+            print(f"错误: 未知参数 '{arg}'")
+            print("使用 'raspa-calc -h' 查看帮助")
+            sys.exit(1)
+    else:
+        skip_check = False
+
+    print("Welcome to RASPA Calculation System")
+
+    # 第一步：加载配置
+    load_config()
+
+    # 第二步：环境检测
+    if not skip_check and not check_environment():
+        print("\n💡 建议解决方案:")
+        print("   1. 安装Python依赖: pip install gemmi numpy pandas")
+        print("   2. 设置环境变量: export RASPA_DIR=/path/to/raspa")
+        print("   3. 确保RASPA可执行文件存在且可执行")
+        print("   4. 运行install.sh安装工具")
+        sys.exit(1)
+
+    # 显示版本信息
+    print(f"\n🚀 当前版本: {__version__} ({__version_name__})")
+    print("   • 支持多节点集群(NFS共享存储实现跨节点调度)")
+    print("   • 任务提交延迟优化(避免调度器过载导致节点异常)")
+    print("   • 配置参数化(支持从配置文件读取所有参数)")
+    print("   • 集成gemmi库进行专业CIF处理")
+
+    # 显示模式选择菜单
+    print("\n=== RASPA计算模式选择 ===")
+    print("1. 参数筛选模式（小批量运算）")
+    print("2. 高通量计算模式（大规模计算）")
+    print("3. 数据提取模式（从计算结果中提取数据）")
+    print("4. 警告处理模式（处理计算中的警告任务）")
+    print("5. 等温线绘制模式（批量绘制MOF等温吸附曲线）")
+
+    # 获取用户选择
+    try:
+        choice = input("请选择运行模式 (1/2/3/4/5): ").strip()
+
+        if choice == '1':
+            # 参数筛选模式
+            run_auto_sh()
+        elif choice == '2':
+            # 高通量计算模式
+            run_task_runner()
+        elif choice == '3':
+            # 数据提取模式
+            run_data_extractor()
+        elif choice == '4':
+            # 警告处理模式
+            run_warning_processor()
+        elif choice == '5':
+            # 等温线绘制模式
+            run_isotherm_plotter()
+        else:
+            print("无效的选择，请输入1、2、3、4或5")
+            sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n用户取消操作")
+        sys.exit(130)
+    except Exception as e:
+        print(f"发生错误: {str(e)}")
+        sys.exit(1)
+
+def run_auto_sh():
+    """运行参数筛选模式（小批量运算）"""
+    try:
+        # 获取工具目录
+        tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
+        auto_sh = os.path.join(tool_dir, "scripts/shell/auto.sh")
+        
+        if not os.path.exists(auto_sh):
+            print(f"错误: 找不到脚本文件 {auto_sh}")
+            sys.exit(1)
+        
+        # 执行auto.sh脚本
+        os.system(f"bash {auto_sh}")
+    except Exception as e:
+        print(f"运行参数筛选模式时出错: {str(e)}")
+        sys.exit(1)
+
+def run_task_runner():
+    """运行高通量计算模式（大规模计算）"""
+    try:
+        # 设置环境变量以传递配置参数
+        if config:
+            # 从配置文件读取参数并设置为环境变量
+            
+            # 设置CIF目录
+            env_config = config.get('environment', {})
+            if 'cif_dir' in env_config:
+                os.environ['RASPA_CIF_DIR'] = env_config['cif_dir']
+                
+            calc_config = config.get('calculation', {})
+
+            # 设置截断半径
+            if 'cutoff_radius' in calc_config:
+                os.environ['RASPA_CUTOFF_RADIUS'] = str(calc_config['cutoff_radius'])
+
+            # 设置默认分子
+            if 'default_molecules' in calc_config:
+                os.environ['RASPA_DEFAULT_MOLECULES'] = calc_config['default_molecules']
+
+            # 取消从配置文件读取并强制设置 CPU 核心数/最大结构数
+            # cpu_cores 和 max_structures 将在提交高通量任务时由用户交互式设置
+
+            # 设置输出目录
+            if 'output_directory' in calc_config:
+                os.environ['RASPA_OUTPUT_DIR'] = calc_config['output_directory']
+
+            # 设置模板相关参数
+            if 'use_custom_template' in calc_config:
+                os.environ['RASPA_USE_CUSTOM_TEMPLATE'] = str(calc_config['use_custom_template']).lower()
+
+            if 'template_path' in calc_config:
+                os.environ['RASPA_TEMPLATE_PATH'] = calc_config['template_path']
+
+            # 设置空隙率相关参数
+            if 'use_void_csv' in calc_config:
+                os.environ['RASPA_USE_VOID_CSV'] = str(calc_config['use_void_csv']).lower()
+
+            if 'void_csv_file' in calc_config:
+                os.environ['RASPA_VOID_CSV_FILE'] = calc_config['void_csv_file']
+
+            if 'void_column' in calc_config:
+                os.environ['RASPA_VOID_COLUMN'] = calc_config['void_column']
+
+            # 设置CSV文件路径
+            if 'csv_file_path' in calc_config and calc_config['csv_file_path']:
+                os.environ['RASPA_CSV_FILE'] = calc_config['csv_file_path']
+
+            # 设置框架名称列
+            if 'framework_column' in calc_config:
+                os.environ['RASPA_FRAMEWORK_COLUMN'] = calc_config['framework_column']
+
+            logging_config = config.get('logging', {})
+            if 'output_dir' in logging_config and logging_config['output_dir']:
+                os.environ['RASPA_JOB_LOG_DIR'] = logging_config['output_dir']
+            else:
+                os.environ.pop('RASPA_JOB_LOG_DIR', None)
+
+            if 'enable_job_logs' in logging_config:
+                os.environ['RASPA_ENABLE_JOB_LOGS'] = str(logging_config['enable_job_logs']).lower()
+            else:
+                os.environ.pop('RASPA_ENABLE_JOB_LOGS', None)
+
+            print("✅ 已从配置文件加载计算参数")
+
+        # 导入task_runner模块
+        from task_runner import main as task_runner_main
+        task_runner_main()
+    except ImportError:
+        print("错误: 找不到task_runner模块")
+        sys.exit(1)
+    except Exception as e:
+        print(f"运行高通量计算模式时出错: {str(e)}")
+        sys.exit(1)
+
+def run_warning_processor():
+    """运行警告处理模式（处理计算中的警告任务）"""
+    print("\n=== 警告处理模式 ===")
+    print("该功能将分析CSV文件中的警告信息，并创建独立的警告任务")
+    
+    try:
+        # 导入新的警告处理模块
+        from warning_processor import main as warning_main
+        warning_main()
+    except ImportError as e:
+        print(f"错误: 无法导入警告处理模块: {e}")
+        print("请确保warning_processor.py文件在scripts/python目录中")
+        sys.exit(1)
+    except Exception as e:
+        print(f"警告处理过程中出错: {e}")
+        sys.exit(1)
+
+def run_data_extractor():
+    """运行数据提取模式（从计算结果中提取数据）"""
+    print("\n=== 数据提取模式 ===")
+    print("该功能将从计算结果中提取关键数据并生成Excel表格")
+
+    try:
+        # 导入数据提取模块
+        from data_extractor import main as extract_main
+        extract_main()
+    except ImportError as e:
+        print(f"错误: 无法导入数据提取模块: {e}")
+        print("请确保data_extractor.py文件在scripts/python目录中")
+        print("并且已安装所需的依赖库: pip install pandas tqdm")
+        sys.exit(1)
+    except Exception as e:
+        print(f"数据提取过程中出错: {e}")
+        sys.exit(1)
+
+def run_isotherm_plotter():
+    """运行等温线绘制模式（批量绘制MOF等温吸附曲线）"""
+    print("\n=== 等温线绘制模式 ===")
+    print("该功能将从RASPA计算结果中批量绘制所有MOF的等温吸附曲线")
+    print()
+
+    try:
+        # 检查matplotlib依赖
+        try:
+            import matplotlib
+        except ImportError:
+            print("❌ 缺少必需的依赖库: matplotlib")
+            print("请运行以下命令安装:")
+            print("  pip install matplotlib")
+            sys.exit(1)
+
+        # 1. 检测参数筛选输出目录
+        work_dir = os.getcwd()
+        print(f"📁 当前工作目录: {work_dir}")
+
+        # 获取配置中的输出目录名
+        param_screening_config = config.get('parameter_screening', {}) if config else {}
+        default_output_dir = param_screening_config.get('output_directory', '等温线')
+
+        # 检测可能的输出目录
+        possible_dirs = []
+        for d in [default_output_dir, '等温线', 'output', 'calc_output', 'isotherms']:
+            full_path = os.path.join(work_dir, d)
+            if os.path.isdir(full_path):
+                # 检查是否包含mc*目录
+                mc_count = len([x for x in os.listdir(full_path) if x.startswith('mc') and os.path.isdir(os.path.join(full_path, x))])
+                if mc_count > 0:
+                    possible_dirs.append((d, mc_count, full_path))
+
+        if possible_dirs:
+            print(f"\n✓ 检测到 {len(possible_dirs)} 个包含计算结果的目录:")
+            for i, (dirname, mc_count, _) in enumerate(possible_dirs, 1):
+                print(f"  {i}. {dirname}/ ({mc_count} 个mc任务目录)")
+            print(f"  {len(possible_dirs) + 1}. 手动输入目录路径")
+        else:
+            print("\n⚠️  未检测到标准的计算结果目录")
+            possible_dirs = []
+
+        # 2. 获取用户选择的目录
+        if possible_dirs:
+            try:
+                choice = input(f"\n请选择要绘制的目录 (1-{len(possible_dirs) + 1}) [默认: 1]: ").strip()
+                if not choice:
+                    choice = '1'
+
+                choice_idx = int(choice) - 1
+                if 0 <= choice_idx < len(possible_dirs):
+                    base_dir = possible_dirs[choice_idx][2]
+                elif choice_idx == len(possible_dirs):
+                    base_dir = input("请输入目录路径: ").strip()
+                    if not os.path.isdir(base_dir):
+                        print(f"❌ 目录不存在: {base_dir}")
+                        sys.exit(1)
+                else:
+                    print("❌ 无效的选择")
+                    sys.exit(1)
+            except ValueError:
+                print("❌ 无效的输入")
+                sys.exit(1)
+        else:
+            base_dir = input("请输入包含计算结果的目录路径: ").strip()
+            if not os.path.isdir(base_dir):
+                print(f"❌ 目录不存在: {base_dir}")
+                sys.exit(1)
+
+        # 3. 获取绘图参数（使用配置文件默认值）
+        calc_config = config.get('calculation', {}) if config else {}
+
+        print(f"\n📊 绘图参数配置:")
+        print(f"   吸附类型: absolute (绝对吸附)")
+        print(f"   单位: mol/kg")
+        print(f"   压力单位: Pa")
+        print(f"   x轴: 线性刻度")
+
+        use_default = input("\n是否使用默认参数? (y/n) [默认: y]: ").strip().lower()
+
+        if use_default in ['', 'y', 'yes']:
+            ads_type = 'absolute'
+            unit = 'mol/kg'
+            pressure_unit = 'Pa'
+            logx = False
+        else:
+            ads_type = input("吸附类型 (absolute/excess) [默认: absolute]: ").strip() or 'absolute'
+            unit = input("单位 (mol/kg, cm^3/g, mg/g, cm^3/cm^3) [默认: mol/kg]: ").strip() or 'mol/kg'
+            pressure_unit = input("压力单位 (Pa/bar) [默认: Pa]: ").strip() or 'Pa'
+            logx_input = input("使用对数x轴? (y/n) [默认: n]: ").strip().lower()
+            logx = logx_input in ['y', 'yes']
+
+        # 4. 输出目录
+        outdir = input(f"\n输出目录名 [默认: isotherms]: ").strip() or 'isotherms'
+
+        # 5. 调用等温线绘制工具
+        print(f"\n🚀 开始绘制等温线...")
+        print(f"   扫描目录: {base_dir}")
+        print(f"   输出目录: {outdir}")
+
+        from isotherm_plotter import main as plotter_main
+
+        # 构造参数列表
+        args = [
+            '--base-dir', base_dir,
+            '--type', ads_type,
+            '--unit', unit,
+            '--pressure-unit', pressure_unit,
+            '--outdir', outdir,
+        ]
+
+        if logx:
+            args.append('--logx')
+        else:
+            args.append('--linearx')
+
+        # 运行绘图工具
+        plotter_main(args)
+
+    except ImportError as e:
+        print(f"❌ 无法导入等温线绘制模块: {e}")
+        print("请确保 isotherm_plotter.py 文件在 scripts/python 目录中")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n⚠️  用户取消操作")
+        sys.exit(130)
+    except Exception as e:
+        print(f"❌ 等温线绘制过程中出错: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

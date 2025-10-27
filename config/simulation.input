@@ -1,0 +1,25 @@
+SimulationType                        MonteCarlo
+NumberOfCycles                        2000
+NumberOfInitializationCycles    2000
+PrintEvery                            500
+RestartFile                           no
+
+UseChargesFromCIFFile      yes
+Forcefield                            forcefiled-cif
+CutOff                                 12.5
+
+RemoveAtomNumberCodeFromLabel yes
+
+Framework                         0
+FrameworkName                MOF5_pacman
+UnitCells                             1 1 1
+ExternalTemperature          353
+ExternalPressure 		  101300.0
+
+Component 0 MoleculeName   I2
+            MoleculeDefinition       TraPPE
+            TranslationProbability    0.5
+            RotationProbability        0.5
+            ReinsertionProbability    0.5
+            SwapProbability             1.0
+            CreateNumberOfMolecules  0
