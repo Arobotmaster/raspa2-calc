@@ -290,6 +290,13 @@ fi
 echo "$NEW_LIMIT" > "$LIMIT_FILE"
 echo "已设置 .raspa_worker_limit = $NEW_LIMIT ($TARGET_DIR)"
 
+# PBS: 直接委托给 raspa-scale-pbs，复用同一套“立即扩缩容 + 去重 + 最短优先”逻辑
+if command -v qsub >/dev/null 2>&1 && command -v qstat >/dev/null 2>&1; then
+  if [ -x "$ROOT_DIR/.raspa_tools/bin/raspa-scale-pbs" ]; then
+    exec "$ROOT_DIR/.raspa_tools/bin/raspa-scale-pbs" "$NEW_LIMIT" "$SUBDIR"
+  fi
+fi
+
 # 依据集群类型执行自动扩缩容
 if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1; then
   # =========================

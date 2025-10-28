@@ -196,6 +196,7 @@ EXECUTABLES=(
     "bin/raspa-status"
     "bin/recheck-failed"
     "bin/raspa-diagnose"
+    "bin/raspa-scale-pbs"
     "bin/raspa-plot-isotherm"
 
     "job_templates/pbs.sh"

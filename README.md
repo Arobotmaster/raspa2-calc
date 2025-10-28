@@ -159,6 +159,27 @@ raspa-calc
 
 说明：`raspa-scale` 写入 `<子目录>/.raspa_worker_limit` 控制“工人”在任务边界自觉退出/继续；对于逐个 `sbatch` 的 loop 模式，还会“有意义补交”（不超过“可跑任务总数与集群空闲的建议上限”）。作业数组限流可按需手动 `scontrol update ... ArrayTaskThrottle=<N>`。
 
+#### PBS 并发控制（立即生效）
+
+- 即时扩/缩容命令：
+  - 扩容/缩容：` .raspa_tools/bin/raspa-scale-pbs <并发上限> [子目录] `
+  - 示例：
+    - 立刻扩到 20：`.raspa_tools/bin/raspa-scale-pbs 20 test`
+    - 立刻缩到 8：`.raspa_tools/bin/raspa-scale-pbs 8 test`
+- 行为与安全性：
+  - 写入 `<子目录>/.raspa_worker_limit`，保证 worker 在任务边界平滑退出/继续。
+  - 立刻补交缺口编号（只补 1..N 中缺失的编号，避免重复）。
+  - 立刻回收超额作业：按“最短 walltime 优先”裁剪；若同一编号存在多个作业，仅保留 walltime 最大者，其余回收（duplicate）。
+  - 安全过滤：仅回收日志路径属于当前子目录 `<子目录>/1log/` 的数字命名作业，避免误删他处作业。
+  - 输出可见：打印每条 `qdel <jobid> (name=<编号>)` 和 `提交 worker 编号: <编号>`。
+- 诊断与兜底：
+  - 若 PBS 队列清理为异步，作业会先进入 E 状态，队列中短时仍可见；这是正常现象。
+  - 若日志路径不匹配导致无法安全回收，脚本会给出一键兜底命令，手动回收：
+    - `qstat -u "$USER" | awk 'NR>2 {print $1,$2}' | awk '$2~/^[0-9]+$/ && $2>目标 {print $1}' | xargs -r qdel`
+  - 活跃估计优先基于 PBS 队列过滤结果；当队列信息异常时，回退使用目录中的 `__running` 计数。
+
+提示：PBS 的 `qdel` 通常为异步清理，相比 `scancel` 更慢；本工具已按“最短 walltime 优先 + 去重”尽量减少损失并尽快回到目标并发。
+
 #### 作业日志配置
 
 - `logging.output_dir`：作业数组/逐个提交产生的 `.out/.err` 输出目录（相对输出目录，默认 `1log`）
