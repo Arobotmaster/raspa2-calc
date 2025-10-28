@@ -207,9 +207,9 @@ fi
 echo "$(ts) - INFO - === 步骤3：设置计算参数 ==="
 echo "$(ts) - INFO - 当前节点CPU核心数: $(node_cpu_count)"
 if [ "$CL_METHOD" != "none" ]; then
-  echo "$(ts) - INFO - SLURM集群总 CPU核心数: ${CL_TOTAL}"
-  echo "$(ts) - INFO - SLURM集群已分配 CPU核心数: ${CL_ALLOC}"
-  echo "$(ts) - INFO - SLURM集群当前可用 CPU核心数: ${CL_IDLE}"
+  echo "$(ts) - INFO - 集群总 CPU核心数: ${CL_TOTAL}"
+  echo "$(ts) - INFO - 集群已分配 CPU核心数: ${CL_ALLOC}"
+  echo "$(ts) - INFO - 集群当前可用 CPU核心数: ${CL_IDLE}"
   if [ "$CL_METHOD" = "sinfo_per_node" ] && [ ${#CL_NODE_LINES[@]} -gt 0 ]; then
     echo "$(ts) - INFO - 节点资源详情（线程总数/负载/建议可用线程）："
     for line in "${CL_NODE_LINES[@]}"; do
@@ -217,7 +217,7 @@ if [ "$CL_METHOD" != "none" ]; then
     done
   fi
 else
-  echo "$(ts) - INFO - 未检测到SLURM集群环境，使用当前节点信息"
+  echo "$(ts) - INFO - 未检测到可用集群统计，使用当前节点信息"
 fi
 
 echo "$(ts) - INFO - 可用任务数: ${USEFUL_TASKS} (运行中=${RUNNING_COUNT}, 待处理=${PENDING_COUNT})"

@@ -33,5 +33,10 @@ if [ ! -f "simulation.input" ]; then
 fi
 
 echo "找到simulation.input文件，开始执行RASPA模拟..."
-# 执行runjobs.sh脚本，允许指定job_templates/runjobs.sh的完整路径
-sh job_templates/runjobs.sh $1 $2 
+
+# 解析并传递工人编号与总并发数（与SLURM保持一致的接口）
+WORKER_ID=${RASPA_WORKER_ID:-1}
+TOTAL_CPUS=${RASPA_TOTAL_CPUS:-1}
+
+# 优先使用 bash 执行，确保环境变量与管道行为一致
+bash job_templates/runjobs.sh "$WORKER_ID" "$TOTAL_CPUS"
