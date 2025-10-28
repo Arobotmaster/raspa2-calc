@@ -1,19 +1,19 @@
 #!/bin/bash
-#SBATCH --job-name=1
+#SBATCH --job-name=10
 #SBATCH --nodes=1
-export RASPA_TOTAL_CPUS="1"
+export RASPA_TOTAL_CPUS="10"
 export RASPA_WORK_DIR="/home/zjp/raspa2-calc/work"
-export RASPA_OUTPUT_DIR="1-1965071_ASR_pacman-heat"
-export RASPA_SUBDIR="1-1965071_ASR_pacman-heat"
-export RASPA_WORKER_ID="1"
+export RASPA_OUTPUT_DIR="1-test"
+export RASPA_SUBDIR="1-test"
+export RASPA_WORKER_ID="10"
 ## 单作业=1个进程（RASPA为单线程），每进程仅用1个CPU
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 ## 偏好使用超线程（若节点支持会利用，否则自动退化）
 #SBATCH --hint=multithread
 ## 输出与时限
-#SBATCH --output=/home/zjp/raspa2-calc/work/1-1965071_ASR_pacman-heat/1log/1.out
-#SBATCH --error=/home/zjp/raspa2-calc/work/1-1965071_ASR_pacman-heat/1log/1.err
+#SBATCH --output=/home/zjp/raspa2-calc/work/1-test/1log/10.out
+#SBATCH --error=/home/zjp/raspa2-calc/work/1-test/1log/10.err
 #SBATCH --nodelist=worker-node-02
 #SBATCH --time=99999:00:00       ##设置作业的最大运行时间
 

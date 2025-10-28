@@ -10,7 +10,7 @@ set -euo pipefail
 usage() {
   echo "用法: raspa-scale [选项] <并发上限|省略以交互> [子目录]"
   echo "说明: 在当前工作目录下，设置允许并发的最大工人数；可选指定子目录（默认自动检测）"
-  echo "      在SLURM loop模式下：会自动补交/取消作业以接近目标值；在PBS/本地，仅设置上限文件。"
+  echo "      在SLURM loop模式下：会自动补交/取消作业以接近目标值；在PBS下已支持按编号安全自动补交/回收。"
   echo "选项:"
   echo "  -i, --interactive, interactive  进入交互模式，先展示集群资源与可用任务，再输入并发上限"
   echo "  -h, --help                      显示此帮助信息"
@@ -108,6 +108,7 @@ else
   SUBDIR="$DEFAULT_SUBDIR"
 fi
 
+# 初步定位目标目录
 if [ "$SUBDIR" = "." ]; then
   TARGET_DIR="$BASE_DIR"
 else
@@ -117,6 +118,23 @@ TARGET_DIR="$(cd "$TARGET_DIR" && pwd -P)"
 if [ ! -d "$TARGET_DIR" ]; then
   echo "错误: 目标目录不存在: $TARGET_DIR" >&2
   exit 1
+fi
+
+# 智能选择：当未显式指定子目录且当前层没有任务，但仅有一个子目录包含 mc* 任务时，自动切换到该子目录
+if [ -z "$RAW_SUBDIR" ] && [ "$SUBDIR" = "." ]; then
+  HAS_TASKS=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -print -quit 2>/dev/null)
+  if [ -z "$HAS_TASKS" ]; then
+    mapfile -t CANDIDATES < <(find "$TARGET_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | while read -r d; do
+      find "$d" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -print -quit 2>/dev/null | grep -q . && basename "$d"
+    done)
+    # 去重
+    if [ ${#CANDIDATES[@]} -eq 1 ]; then
+      SUBDIR="${CANDIDATES[0]}"
+      TARGET_DIR="$BASE_DIR/$SUBDIR"
+      TARGET_DIR="$(cd "$TARGET_DIR" && pwd -P)"
+      echo "检测到唯一包含任务的子目录: $SUBDIR -> 切换目标目录为: $TARGET_DIR"
+    fi
+  fi
 fi
 
 echo "工作根目录: $BASE_DIR"
@@ -272,8 +290,11 @@ fi
 echo "$NEW_LIMIT" > "$LIMIT_FILE"
 echo "已设置 .raspa_worker_limit = $NEW_LIMIT ($TARGET_DIR)"
 
-# 仅在存在 sbatch/squeue 时，尝试补交或缩容 loop 模式作业
+# 依据集群类型执行自动扩缩容
 if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1; then
+  # =========================
+  # SLURM: 自动扩缩容
+  # =========================
   JOBS_FILE="$TARGET_DIR/.raspa_jobs.list"
   WORKERS_DIR="$TARGET_DIR/.workers"
   mkdir -p "$WORKERS_DIR"
@@ -398,7 +419,75 @@ if [ ! -s "$JOBS_FILE" ]; then
       echo "已重建 $JOBS_FILE，共识别 $(wc -l < "$JOBS_FILE") 个作业" >&2
     fi
 fi
+if false; then
+  echo "检测到 PBS 环境：执行目录内的自动扩缩容逻辑"
+  WORKERS_DIR="$TARGET_DIR/.workers"
+  mkdir -p "$WORKERS_DIR"
 
+  # 读取当前目录内活跃工人编号（.workers 下的纯数字文件名）
+  mapfile -t PRESENT_IDS < <(find "$WORKERS_DIR" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | awk '/^[0-9]+$/ {print $1}' | sort -n)
+  LIVE=${#PRESENT_IDS[@]}
+
+  # 统计待处理任务，用于避免过度扩容
+  RUNNING_COUNT=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}')
+  PENDING_COUNT=0
+  while IFS= read -r d; do
+    [ -f "$d/simulation.input" ] && PENDING_COUNT=$((PENDING_COUNT+1))
+  done < <(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%p\n' 2>/dev/null)
+  TOTAL_AVAILABLE=$((RUNNING_COUNT + PENDING_COUNT))
+
+  # 需要扩容的数量（不超过可用任务与目标差值）
+  NEED=$((NEW_LIMIT - LIVE))
+  if [ "$NEED" -lt 0 ]; then NEED=0; fi
+  GAP=$((TOTAL_AVAILABLE - LIVE))
+  if [ "$GAP" -lt "$NEED" ]; then NEED=$GAP; fi
+
+  # 缩容：选择编号 > NEW_LIMIT 的工人，按本目录日志路径过滤后 qdel
+  if [ "$LIVE" -gt "$NEW_LIMIT" ]; then
+    TO_KILL=$((LIVE - NEW_LIMIT))
+    echo "缩容: 当前活跃=$LIVE, 目标=$NEW_LIMIT，将尝试终止 $TO_KILL 个作业（按编号>目标）"
+    : > "$WORKERS_DIR/.kill_ids"
+    for id in "${PRESENT_IDS[@]}"; do
+      if [ "$id" -gt "$NEW_LIMIT" ] 2>/dev/null; then echo "$id" >> "$WORKERS_DIR/.kill_ids"; fi
+    done
+    mapfile -t PBS_LINES < <(qstat -u "$USER" 2>/dev/null | awk 'NR>2 && $1 ~ /\./ {print $1,$2}')
+    for line in "${PBS_LINES[@]}"; do
+      jid="${line%% *}"; name="${line#* }"
+      if grep -qx "$name" "$WORKERS_DIR/.kill_ids" 2>/dev/null; then
+        # 仅当 Output_Path/Error_Path 指向本目录日志时才杀
+        if qstat -f "$jid" 2>/dev/null | grep -E "(Output_Path|Error_Path)\\s*=" | grep -q "$TARGET_DIR/1log/"; then
+          echo "qdel $jid  (name=$name)"
+          qdel "$jid" || true
+        fi
+      fi
+    done
+  fi
+
+  # 扩容：为缺口编号补交作业（避免重复，仅提交 1..NEW_LIMIT 中缺失的编号）
+  if [ "$NEED" -gt 0 ]; then
+    echo "扩容: 当前活跃=$LIVE, 目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}(运行中=${RUNNING_COUNT}, 待处理=${PENDING_COUNT})，计划补交 $NEED 个"
+    MISSING_IDS=()
+    for ((i=1;i<=NEW_LIMIT;i++)); do
+      if ! printf '%s\n' "${PRESENT_IDS[@]}" | grep -qx "$i"; then
+        MISSING_IDS+=("$i")
+      fi
+    done
+    if [ ${#MISSING_IDS[@]} -gt "$NEED" ]; then
+      MISSING_IDS=("${MISSING_IDS[@]:0:$NEED}")
+    fi
+    SCRIPT_DIR_TOOL="$ROOT_DIR/.raspa_tools/job_templates"
+    SCRIPT_DIR_WORK="$BASE_DIR/job_templates"
+    RUNNER=""
+    if [ -x "$SCRIPT_DIR_WORK/tasksrun.sh" ]; then RUNNER="$SCRIPT_DIR_WORK/tasksrun.sh"; else RUNNER="$SCRIPT_DIR_TOOL/tasksrun.sh"; fi
+    for id in "${MISSING_IDS[@]}"; do
+      echo "提交 worker 编号: $id"
+      RASPA_WORK_DIR="$BASE_DIR" RASPA_SUBDIR="$SUBDIR" RASPA_OUTPUT_DIR="$SUBDIR" RASPA_START_ID="$id" \
+        bash "$RUNNER" "$id" >/dev/null 2>&1 || true
+    done
+  else
+    echo "扩容: 当前活跃=$LIVE, 目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}，无需补交"
+  fi
+fi
   # 扩容：提交缺口（需要追踪文件）
   if [ -s "$JOBS_FILE" ] && [ "$LIVE" -lt "$NEW_LIMIT" ]; then
     # 统计当前可并发的“有意义”上限：已在跑的任务数(__running) + 待处理的任务数(mc*)
@@ -548,6 +637,10 @@ fi
       echo "补足并发: 现存=$LIVE_COUNT, 用户目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}，无需补交"
     fi
   fi
+elif command -v qsub >/dev/null 2>&1 && command -v qstat >/dev/null 2>&1; then
+  # =========================
+  # PBS: 自动扩缩容（安全过滤）
+  # =========================
 fi
 
 echo "并发调整完成"

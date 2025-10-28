@@ -32,14 +32,14 @@ calculation:
 
   # CSV文件路径 (用于批量处理)
   # 示例: "data/structures.csv"
-  csv_file_path: "/home/zjp/raspa2-calc/work/CAMTET01_ASR_pacman.csv"
+  csv_file_path: "/home/zjp/raspa2-calc/work/734-noheat-56.csv"
 
   # 框架名称列名（必须与CSV文件中的框架列名一致）
   # 注意处理警告任务CSV文件和高通量数据CSV文件的列名
   framework_column: "coreid"
 
   # 输出目录名
-  output_directory: "1-1965071_ASR_pacman-heat"
+  output_directory: "1-test"
 
   # 是否使用CSV文件获取空隙率
   use_void_csv: false
