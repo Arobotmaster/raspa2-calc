@@ -1,6 +1,8 @@
 # RASPA 高通量计算工具 v2.4.0
 
-<img src="figure/RASPA高性能分子模拟计算平台信息图.png" alt="RASPA高性能分子模拟计算平台信息图" width="50%">
+<div align="center">
+  <img src="figure/RASPA高性能分子模拟计算平台信息图.png" alt="RASPA高性能分子模拟计算平台信息图" width="50%">
+</div>
 
 **高性能 RASPA 分子模拟计算平台** - 支持 RASPA2/RASPA3 双版本、参数筛选、高通量计算、数据处理、警告恢复、等温线绘制
 
@@ -359,7 +361,7 @@ A: 在 `raspa3_json_dir` 目录下放置所有需要的 JSON 文件：
 - `simulation.json` (模板)
 - 分子定义文件 (`CO2.json`, `CH4.json` 等)
 
-程序会自动复制这些文件到每个任务目录。
+程序会自动复制 these 文件到每个任务目录。
 
 ### Q: 支持哪些作业调度系统？
 
