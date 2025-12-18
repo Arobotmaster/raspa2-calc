@@ -1,6 +1,6 @@
 # RASPA 高通量计算工具 v2.4.0
 
-![RASPA高性能分子模拟计算平台信息图](figure/RASPA高性能分子模拟计算平台信息图.png)
+<img src="figure/RASPA高性能分子模拟计算平台信息图.png" alt="RASPA高性能分子模拟计算平台信息图" width="50%">
 
 **高性能 RASPA 分子模拟计算平台** - 支持 RASPA2/RASPA3 双版本、参数筛选、高通量计算、数据处理、警告恢复、等温线绘制
 
