@@ -1,25 +1,36 @@
-# RASPA2多节点集群部署指南
+# RASPA 多节点集群部署指南 (支持 RASPA2/RASPA3)
 
 ## 目录
 - [1. 部署概述](#1-部署概述)
 - [2. 环境准备](#2-环境准备)
 - [3. NFS共享存储配置](#3-nfs共享存储配置)
-- [4. 作业脚本优化](#4-作业脚本优化)
-- [5. 环境变量配置](#5-环境变量配置)
-- [6. 部署验证](#6-部署验证)
-- [7. 使用指南](#7-使用指南)
-- [8. 故障排除](#8-故障排除)
+- [4. RASPA 版本配置](#4-raspa-版本配置)
+- [5. 作业脚本优化](#5-作业脚本优化)
+- [6. 环境变量配置](#6-环境变量配置)
+- [7. 部署验证](#7-部署验证)
+- [8. 使用指南](#8-使用指南)
+- [9. 故障排除](#9-故障排除)
 
 ---
 
 ## 1. 部署概述
 
 ### 1.1 项目背景
-本部署指南用于配置RASPA2高通量计算工具在SLURM集群上的多节点任务调度能力。通过配置NFS共享存储和优化作业脚本，实现960个CPU核心的充分利用。
+本部署指南用于配置 RASPA 高通量计算工具在 SLURM/PBS 集群上的多节点任务调度能力。支持 RASPA2 和 RASPA3 双版本，通过配置 NFS 共享存储和优化作业脚本，实现大规模 CPU 核心的充分利用。
 
-### 1.2 集群环境
+### 1.2 版本支持
+
+| 特性 | RASPA2 | RASPA3 |
+|------|--------|--------|
+| 输入文件 | `simulation.input` (文本) | `simulation.json` (JSON) |
+| 额外文件 | 无 | `force_field.json`, 分子定义 `.json` |
+| 执行命令 | `$RASPA_DIR/bin/simulate` | `raspa3` (conda 环境) |
+| 输出目录 | `Output/System_0/*.data` | `output/*.txt` |
+| 吸附量格式 | `Average loading absolute [mol/kg framework]` | `Abs. loading average [mol/kg-framework]` |
+
+### 1.3 集群环境示例
 - **操作系统**: Linux 8.10
-- **调度器**: SLURM
+- **调度器**: SLURM / PBS
 - **节点配置**:
   - master-node: 控制节点
   - worker-node-01: 计算节点 (192核)
@@ -28,8 +39,8 @@
   - worker-node-04: 计算节点 (384核)
 - **总CPU核心数**: 960核
 
-### 1.3 部署目标
-- ✅ 解决硬编码节点限制问题
+### 1.4 部署目标
+- ✅ 支持 RASPA2/RASPA3 双版本切换
 - ✅ 配置跨节点共享存储
 - ✅ 实现多节点任务调度
 - ✅ 充分利用集群计算资源
@@ -53,14 +64,26 @@ ping worker-node-03
 ```
 
 ### 2.2 依赖软件安装
-在所有节点上安装必要软件：
+
+#### 所有节点
 ```bash
-# 安装NFS工具（跳过有问题的软件源）
+# 安装NFS工具
 sudo yum install -y nfs-utils --disablerepo=epel,docker-ce-stable
 
 # 启动相关服务
 sudo systemctl enable rpcbind nfs-client.target
 sudo systemctl start rpcbind
+```
+
+#### RASPA3 专用 (所有计算节点)
+```bash
+# 创建 RASPA3 conda 环境
+conda create -n raspa3 python=3.10
+conda activate raspa3
+
+# 安装 RASPA3 (根据官方文档)
+pip install raspa3
+# 或从源码编译安装
 ```
 
 ---
@@ -132,66 +155,141 @@ sudo umount /home/zjp/raspa2-calc
 sudo mount -a
 ```
 
-### 3.3 数据迁移
-```bash
-# 在worker-node-03上将项目文件复制到共享目录
-cp -r /home/zjp/raspa2-calc/* /shared/raspa2-calc/
+---
 
-# 重新挂载确保数据同步
-sudo umount /home/zjp/raspa2-calc
-sudo mount /home/zjp/raspa2-calc
+## 4. RASPA 版本配置
+
+### 4.1 配置文件设置
+
+编辑 `.raspa_tools/config.yaml`：
+
+```yaml
+environment:
+  # 工作目录
+  work_dir: "/home/zjp/raspa2-calc/work"
+
+  # ============ RASPA 版本选择 ============
+  # 选择使用的 RASPA 版本: "raspa2" 或 "raspa3"
+  raspa_version: "raspa3"
+
+  # ============ RASPA2 专用配置 ============
+  raspa_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0"
+  raspa2_cif_dir: "/path/to/raspa2/structures/cif"
+  raspa2_template_path: ""
+
+  # ============ RASPA3 专用配置 ============
+  # RASPA3 conda 环境名称 (所有节点必须一致)
+  raspa3_conda_env: "raspa3"
+
+  # RASPA3 JSON 文件目录 (包含 force_field.json 和分子定义文件)
+  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/CO2"
+
+  # RASPA3 CIF 文件基础路径
+  raspa3_cif_base_path: "/path/to/cif/files"
+
+  # RASPA3 simulation.json 模板路径
+  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/CO2/simulation.json"
+```
+
+### 4.2 RASPA3 JSON 文件目录结构
+
+```
+raspa3_json_dir/
+├── force_field.json    # 力场定义 (必须)
+├── simulation.json     # 模拟配置模板
+├── CO2.json            # CO2 分子定义
+├── CH4.json            # CH4 分子定义
+├── N2.json             # N2 分子定义
+├── o-xylene.json       # 邻二甲苯分子定义
+├── m-xylene.json       # 间二甲苯分子定义
+├── p-xylene.json       # 对二甲苯分子定义
+└── ...                 # 其他分子定义
+```
+
+### 4.3 RASPA3 Conda 环境配置
+
+确保所有计算节点的 conda 环境名称一致：
+
+```bash
+# 检查所有节点的 raspa3 环境
+for node in worker-node-01 worker-node-02 worker-node-03 worker-node-04; do
+    echo "=== $node ==="
+    ssh $node "conda activate raspa3 && which raspa3"
+done
+```
+
+### 4.4 版本自动检测
+
+程序会自动检测 RASPA 版本：
+- 检测到 `simulation.json` → RASPA3
+- 检测到 `simulation.input` → RASPA2
+
+也可以在运行时手动选择版本覆盖配置。
+
+---
+
+## 5. 作业脚本优化
+
+### 5.1 RASPA3 作业脚本
+
+RASPA3 使用 conda 环境执行，作业脚本会自动：
+
+1. 激活 raspa3 conda 环境
+2. 检测 `simulation.json` 而非 `simulation.input`
+3. 执行命令改为 `raspa3`
+
+### 5.2 SLURM 作业模板示例
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=raspa3_htc
+#SBATCH --output=1log/raspa_%A_%a.out
+#SBATCH --error=1log/raspa_%A_%a.err
+#SBATCH --array=1-100%50
+
+# 激活 RASPA3 conda 环境
+source ~/anaconda3/etc/profile.d/conda.sh
+conda activate raspa3
+
+# 执行任务
+cd $WORK_DIR
+./runjobs.sh $SLURM_ARRAY_TASK_ID $SLURM_ARRAY_TASK_COUNT
+```
+
+### 5.3 PBS 作业模板示例
+
+```bash
+#!/bin/bash
+#PBS -N raspa3_htc
+#PBS -o 1log/raspa_$PBS_JOBID.out
+#PBS -e 1log/raspa_$PBS_JOBID.err
+
+# 激活 RASPA3 conda 环境
+source ~/anaconda3/etc/profile.d/conda.sh
+conda activate raspa3
+
+# 执行任务
+cd $PBS_O_WORKDIR
+./runjobs.sh $CPU $TOTAL_CPUS
 ```
 
 ---
 
-## 4. 作业脚本优化
+## 6. 环境变量配置
 
-### 4.1 问题分析
-原始作业脚本存在硬编码节点限制：
-```bash
-#SBATCH --nodelist=worker-node-03  # 硬编码限制
-```
+### 6.1 统一环境变量
 
-这导致所有任务只能在worker-node-03上运行，其他节点资源浪费。
-
-### 4.2 优化措施
-
-#### 4.2.1 移除硬编码节点限制
-修改以下文件：
-- `/home/zjp/raspa2-calc/job_templates/job_sub.sh`
-- `/home/zjp/raspa2-calc/job_templates/job_sub144.sh`
-- `/home/zjp/raspa2-calc/job_templates/sbatch.sh`
-
-```bash
-# 将硬编码行注释掉
-# #SBATCH --nodelist=worker-node-03  # 注释掉节点限制，允许调度器自动分配
-```
-
-#### 4.2.2 创建优化提交脚本
-创建了 `optimized_submit.sh` 脚本，具备以下功能：
-- 自动检测集群可用资源
-- 智能分配作业数量
-- 支持动态节点选择
-- 提供详细的作业统计信息
-
-### 4.3 模板文件更新
-确保 `.raspa_tools/job_templates/` 目录下的模板文件也同步更新：
-```bash
-# 运行安装脚本更新模板
-cd /home/zjp/raspa2-calc
-./install.sh
-```
-
----
-
-## 5. 环境变量配置
-
-### 5.1 统一环境变量
 在所有节点的 `~/.bashrc` 文件中添加：
+
 ```bash
-# RASPA2环境变量
-export RASPA_DIR="/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0"
+# RASPA 通用环境变量
 export RASPA_WORK_DIR="/home/zjp/raspa2-calc"
+
+# RASPA2 专用环境变量
+export RASPA_DIR="/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0"
+
+# RASPA3 conda 环境初始化
+source ~/anaconda3/etc/profile.d/conda.sh
 
 # 防止数学库线程冲突
 export OPENBLAS_NUM_THREADS=1
@@ -199,7 +297,7 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 ```
 
-### 5.2 重新加载环境
+### 6.2 重新加载环境
 ```bash
 # 在所有节点执行
 source ~/.bashrc
@@ -207,144 +305,174 @@ source ~/.bashrc
 # 验证环境变量
 echo $RASPA_WORK_DIR
 echo $RASPA_DIR
-```
 
-### 5.3 配置文件更新
-更新 `config.yaml` 中的工作目录配置：
-```yaml
-environment:
-  work_dir: "/home/zjp/raspa2-calc"  # 指向NFS挂载目录
+# 验证 RASPA3 环境
+conda activate raspa3
+which raspa3
 ```
 
 ---
 
-## 6. 部署验证
+## 7. 部署验证
 
-### 6.1 集群状态检查
+### 7.1 集群状态检查
 ```bash
 # 检查所有节点状态
 sinfo -N
 
 # 期望输出：所有节点状态为idle
-NODELIST        NODES PARTITION STATE 
-master-node         1   normal* idle  
-worker-node-01      1   normal* idle  
-worker-node-02      1   normal* idle  
-worker-node-03      1   normal* idle  
+NODELIST        NODES PARTITION STATE
+master-node         1   normal* idle
+worker-node-01      1   normal* idle
+worker-node-02      1   normal* idle
+worker-node-03      1   normal* idle
 ```
 
-### 6.2 NFS挂载验证
+### 7.2 NFS挂载验证
 ```bash
 # 在任意节点检查挂载状态
 mount | grep raspa
-
-# 期望输出：
-10.10.14.12:/shared/raspa2-calc on /home/zjp/raspa2-calc type nfs4 (rw,relatime,...)
 
 # 验证文件访问
 ls -la /home/zjp/raspa2-calc
 ```
 
-### 6.3 功能测试
-```bash
-# 使用集群检查脚本
-cd /home/zjp/raspa2-calc
-./job_templates/cluster_check.sh
+### 7.3 RASPA 版本验证
 
-# 提交测试作业
-./job_templates/optimized_submit.sh 4
+```bash
+# 验证 RASPA2
+$RASPA_DIR/bin/simulate --help
+
+# 验证 RASPA3
+conda activate raspa3
+raspa3 --help
 ```
 
-### 6.4 任务调度验证
-```bash
-# 查看作业分布
-squeue -u $USER
+### 7.4 版本检测验证
 
-# 验证作业在不同节点上运行
-squeue -u $USER -o "%.10i %.9P %.20j %.8u %.8T %.10M %.6D %R"
+```bash
+cd /home/zjp/raspa2-calc/work
+python3 -c "
+import sys
+sys.path.insert(0, '/home/zjp/raspa2-calc/.raspa_tools/scripts/python')
+from data_extractor import detect_raspa_version
+
+# 测试 RASPA3 目录
+print('RASPA3 目录检测:', detect_raspa_version('/home/zjp/raspa2-calc/work/10'))
+"
 ```
 
 ---
 
-## 7. 使用指南
+## 8. 使用指南
 
-### 7.1 基本使用流程
+### 8.1 基本使用流程
 
-#### 7.1.1 进入工作目录
+#### 8.1.1 进入工作目录
 ```bash
 # 必须在NFS挂载目录下工作
 cd /home/zjp/raspa2-calc
 ```
 
-#### 7.1.2 准备输入文件
-确保以下文件在共享目录中：
-- CIF结构文件
-- simulation.input模板
-- 配置文件 (config.yaml)
+#### 8.1.2 准备输入文件
 
-#### 7.1.3 提交任务
+**RASPA2 模式**：
+- CIF 结构文件
+- simulation.input 模板
+- config.yaml 配置
+
+**RASPA3 模式**：
+- CIF 结构文件
+- simulation.json 模板
+- force_field.json 力场文件
+- 分子定义 JSON 文件 (CO2.json 等)
+- config.yaml 配置
+
+#### 8.1.3 提交任务
 ```bash
-# 方法1：使用优化脚本
-./job_templates/optimized_submit.sh 192
+# 使用 raspa-calc 命令
+raspa-calc
 
-# 方法2：使用raspa-calc命令
-raspa-calc <参数>
-
-# 方法3：手动提交
-sbatch job_templates/sbatch.sh
+# 程序会自动：
+# 1. 检测或让用户选择 RASPA 版本
+# 2. 根据版本选择对应的处理流程
+# 3. 生成相应的输入文件
+# 4. 提交作业到调度系统
 ```
 
-### 7.2 监控和管理
+### 8.2 数据提取
 
-#### 7.2.1 查看任务状态
+数据提取器支持自动版本检测：
+
 ```bash
-# 查看作业队列
-squeue -u $USER
+# 运行数据提取
+raspa-calc
+# 选择模式 3: 数据提取
 
-# 查看集群资源
-sinfo -N
-
-# 实时监控
-watch squeue -u $USER
+# 程序会自动检测：
+# - simulation.json → 使用 RASPA3 提取器
+# - simulation.input → 使用 RASPA2 提取器
 ```
 
-#### 7.2.2 任务管理
-```bash
-# 取消所有作业
-scancel -u $USER
+### 8.3 RASPA3 输出格式
 
-# 取消特定作业
-scancel <job_id>
+RASPA3 输出文件位于 `output/*.txt`，吸附量格式：
 
-# 查看作业详情
-scontrol show job <job_id>
 ```
-
-### 7.3 性能优化建议
-
-#### 7.3.1 合理设置并行度
-```bash
-# 根据任务数量调整并行作业数
-# 任务数 < 960: 使用任务数作为并行度
-# 任务数 >= 960: 使用最大CPU数960
-```
-
-#### 7.3.2 监控资源使用
-```bash
-# 查看节点负载
-sinfo -Nel
-
-# 查看CPU使用率
-top -u zjp
+Loadings
+===============================================================================
+Component 0 (CO2)
+    Abs. loading average   1.234567e+00 +/-  1.234567e-02 [molecules/cell]
+    Abs. loading average   5.678901e-01 +/-  5.678901e-03 [mol/kg-framework]
+    Abs. loading average   2.500000e+01 +/-  2.500000e-01 [mg/g-framework]
+    Excess loading average   5.000000e-01 +/-  5.000000e-03 [mol/kg-framework]
 ```
 
 ---
 
-## 8. 故障排除
+## 9. 故障排除
 
-### 8.1 常见问题
+### 9.1 RASPA3 常见问题
 
-#### 8.1.1 NFS挂载问题
+#### 9.1.1 Conda 环境未激活
+**问题**: `raspa3: command not found`
+**解决方案**:
+```bash
+# 确保 conda 初始化
+source ~/anaconda3/etc/profile.d/conda.sh
+conda activate raspa3
+
+# 验证
+which raspa3
+```
+
+#### 9.1.2 JSON 文件缺失
+**问题**: RASPA3 报错找不到力场或分子定义文件
+**解决方案**:
+```bash
+# 检查 JSON 文件目录
+ls -la /home/zjp/raspa2-calc/.raspa_tools/raspa3json/
+
+# 确保包含：
+# - force_field.json
+# - simulation.json
+# - 所有需要的分子定义文件 (CO2.json, CH4.json 等)
+```
+
+#### 9.1.3 数据提取为空
+**问题**: RASPA3 数据提取结果为空
+**解决方案**:
+```bash
+# 检查输出文件是否存在
+ls output/*.txt
+
+# 检查输出文件内容是否包含 Loadings 部分
+grep -A 20 "^Loadings" output/*.txt
+```
+
+### 9.2 NFS 相关问题
+
+#### 9.2.1 NFS挂载问题
 **问题**: NFS挂载失败
 **解决方案**:
 ```bash
@@ -360,128 +488,49 @@ sudo umount /home/zjp/raspa2-calc
 sudo mount -a
 ```
 
-#### 8.1.2 任务调度问题
-**问题**: 任务仍然挂起在特定节点
-**解决方案**:
+### 9.3 日志和调试
+
 ```bash
-# 检查节点状态
-scontrol show node worker-node-03
+# 查看作业日志
+tail -f 1log/raspa_*.out
+tail -f 1log/raspa_*.err
 
-# 恢复排空节点
-sudo scontrol update NodeName=worker-node-03 State=RESUME
-
-# 检查作业脚本是否还有硬编码限制
-grep -r "nodelist" job_templates/
-```
-
-#### 8.1.3 环境变量问题
-**问题**: 环境变量未生效
-**解决方案**:
-```bash
-# 检查环境变量
-echo $RASPA_WORK_DIR
-echo $RASPA_DIR
-
-# 重新加载配置
-source ~/.bashrc
-
-# 在作业脚本中显式设置
-export RASPA_WORK_DIR="/home/zjp/raspa2-calc"
-```
-
-### 8.2 日志和调试
-
-#### 8.2.1 查看作业日志
-```bash
-# 查看作业输出
-tail -f raspa_*.out
-tail -f raspa_*.err
-
-# 查看SLURM日志
-sudo journalctl -u slurmd -f
-```
-
-#### 8.2.2 调试模式
-```bash
-# 使用调试模式提交作业
-sbatch --test-only job_templates/sbatch.sh
-
-# 检查作业脚本语法
-bash -n job_templates/sbatch.sh
-```
-
-### 8.3 性能问题
-
-#### 8.3.1 NFS性能优化
-```bash
-# 调整NFS挂载参数
-mount -t nfs4 -o rsize=1048576,wsize=1048576,hard,intr,timeo=600 \
-  10.10.14.12:/shared/raspa2-calc /home/zjp/raspa2-calc
-```
-
-#### 8.3.2 作业调度优化
-```bash
-# 分批提交避免调度器过载
-for i in {1..10}; do
-    sbatch job_templates/sbatch.sh
-    sleep 1
-done
+# 查看 RASPA3 特定日志
+ls output/*.txt
+cat output/*.txt | head -100
 ```
 
 ---
 
-## 9. 部署检查清单
+## 10. 部署检查清单
 
-### 9.1 部署前检查
+### 10.1 通用检查
 - [ ] 所有节点网络连通正常
-- [ ] SLURM服务运行正常
+- [ ] SLURM/PBS 服务运行正常
+- [ ] NFS 共享存储配置正确
 - [ ] 用户权限配置正确
-- [ ] 必要软件包已安装
 
-### 9.2 NFS配置检查
-- [ ] NFS服务器正常启动
-- [ ] 导出配置正确
-- [ ] 所有客户端挂载成功
-- [ ] 文件权限设置正确
-- [ ] 自动挂载配置生效
+### 10.2 RASPA2 检查
+- [ ] RASPA_DIR 环境变量设置正确
+- [ ] simulate 可执行文件存在
+- [ ] simulation.input 模板可用
 
-### 9.3 作业脚本检查
-- [ ] 硬编码节点限制已移除
-- [ ] 模板文件已更新
-- [ ] 环境变量配置正确
-- [ ] 脚本权限设置正确
+### 10.3 RASPA3 检查
+- [ ] raspa3 conda 环境在所有节点存在
+- [ ] raspa3 命令可执行
+- [ ] force_field.json 文件存在
+- [ ] 分子定义 JSON 文件完整
+- [ ] simulation.json 模板配置正确
+- [ ] raspa3_cif_base_path 路径正确
 
-### 9.4 功能验证检查
-- [ ] 集群状态正常
-- [ ] 测试作业提交成功
-- [ ] 作业能分布到不同节点
-- [ ] 输出文件正确生成
+### 10.4 数据提取检查
+- [ ] data_extractor.py 版本检测正常
+- [ ] RASPA3 输出格式解析正确
+- [ ] CSV/Excel 导出功能正常
 
 ---
 
-## 10. 总结
-
-### 10.1 关键成功因素
-1. **NFS共享存储**: 确保所有节点访问相同数据
-2. **移除硬编码限制**: 允许调度器自由分配节点
-3. **统一环境配置**: 保证所有节点环境一致
-4. **正确的工作目录**: 必须在NFS挂载目录下提交任务
-
-### 10.2 最佳实践
-1. 定期监控集群状态和资源使用
-2. 合理设置并行作业数量
-3. 及时清理完成的作业文件
-4. 保持NFS服务的高可用性
-
-### 10.3 预期效果
-- CPU利用率从单节点192核提升到集群960核
-- 作业调度灵活性大幅提升
-- 高通量计算效率显著提高
-- 系统资源充分利用
-
----
-
-**文档版本**: v1.0  
-**更新日期**: 2025-09-06  
-**维护人员**: zjp  
-**状态**: 部署成功验证
+**文档版本**: v2.4.0
+**更新日期**: 2025-12-18
+**维护人员**: zjp
+**状态**: 支持 RASPA2/RASPA3 双版本

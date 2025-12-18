@@ -1,119 +1,184 @@
-# RASPA2 计算工具配置文件
-# 版本: 2.2.1 (精确算法版)
+# RASPA 计算工具配置文件
+# 版本: 2.4.0 (支持 RASPA2/RASPA3 双版本)
 
-# 环境配置
+# ============================================================
+#                    环境配置
+# ============================================================
 environment:
   # 工作目录（所有计算任务、输入文件、输出文件都在此目录下执行和存储）
   work_dir: "/home/zjp/raspa2-calc/work"
 
-  # RASPA安装目录（系统需要从这里找到bin/simulate可执行文件来运行分子模拟）
-  # 验证当前设置是否正确 （ls /home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/bin/simulate）
+  # ============ RASPA 版本选择 ============
+  # 选择使用的 RASPA 版本: "raspa2" 或 "raspa3"
+  # 此设置决定使用哪套配置（下方 RASPA2 或 RASPA3 配置块）
+  raspa_version: "raspa3"
+
+  # ============================================================
+  #                    RASPA2 专用配置
+  # ============================================================
+  # 仅当 raspa_version: "raspa2" 时使用以下配置
+
+  # RASPA2 安装目录（需要找到 bin/simulate 可执行文件）
   raspa_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0"
 
-  # CIF文件目录（存放晶体结构文件(.cif)的目录）
-  cif_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif"
+  # RASPA2 CIF 文件目录
+  raspa2_cif_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif"
 
-# 计算参数
+  # RASPA2 simulation.input 模板路径（可选，留空使用默认模板）
+  raspa2_template_path: ""
+
+  # ============================================================
+  #                    RASPA3 专用配置
+  # ============================================================
+  # 仅当 raspa_version: "raspa3" 时使用以下配置
+
+  # RASPA3 conda 环境名称
+  raspa3_conda_env: "raspa3"
+
+  # RASPA3 JSON 文件目录
+  # 包含: force_field.json 和分子定义文件 (如 CO2.json, CH4.json 等)
+  # 高通量计算时会自动复制到每个任务目录
+  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene"
+
+  # RASPA3 CIF 文件基础路径
+  # 框架名会追加到此路径，例如: {raspa3_cif_base_path}/{框架名}.cif
+  raspa3_cif_base_path: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif"
+
+  # RASPA3 simulation.json 模板路径
+  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene/simulation.json"
+
+  # ============================================================
+  #              兼容性配置 (供旧版脚本使用)
+  # ============================================================
+  # 注意: 以下配置已废弃，请使用上方版本专用配置
+  # cif_dir 会根据 raspa_version 自动选择 raspa2_cif_dir 或 raspa3_cif_base_path
+  cif_dir: ""
+
+# ============================================================
+#                    计算参数 (通用)
+# ============================================================
 calculation:
-  # 默认截断半径
+  # 默认截断半径 (Å)
   cutoff_radius: 12.8
 
   # 默认分子 (支持多种气体分子，用空格分隔)
-  # 示例: "12c" 或 "12c CH4 CO2 N2"
-  default_molecules: "NO2"
+  # RASPA2 示例: "CO2" 或 "CO2 CH4 N2"
+  # RASPA3 示例: "p-xylene" 或 "CO2"
+  default_molecules: "o-xylene m-xylene"
 
-  # CPU核心数/结构数量不再从配置读取，提交时由用户交互式设置
+  # CSV 文件路径 (用于批量处理，指定框架列表)
+  csv_file_path: "/home/zjp/raspa2-calc/work/10.csv"
 
-  # 是否使用自定义simulation.input模板
-  use_custom_template: true
-
-  # 自定义模板路径
-  template_path: "/home/zjp/raspa2-calc/work/simulation.input"
-
-  # CSV文件路径 (用于批量处理)
-  # 示例: "data/structures.csv"
-  csv_file_path: "/home/zjp/raspa2-calc/work/734-noheat-56.csv"
-
-  # 框架名称列名（必须与CSV文件中的框架列名一致）
-  # 注意处理警告任务CSV文件和高通量数据CSV文件的列名
+  # 框架名称列名（必须与 CSV 文件中的列名完全一致）
   framework_column: "coreid"
 
   # 输出目录名
-  output_directory: "1-test"
+  output_directory: "10"
 
-  # 是否使用CSV文件获取空隙率
+  # CPU 核心数和结构数量在运行时交互式设置，不从配置读取
+
+  # ============ RASPA2 专用计算参数 ============
+  # 是否使用自定义 simulation.input 模板 (仅 RASPA2)
+  use_custom_template: true
+
+  # 自定义 simulation.input 模板路径 (仅 RASPA2)
+  template_path: "/home/zjp/raspa2-calc/work/simulation.input"
+
+  # ============ 空隙率配置 (通用) ============
+  # 是否从 CSV 文件读取空隙率
   use_void_csv: false
 
-  # 空隙率CSV文件路径
-  void_csv_file: "/home/zjp/raspa2-calc/work/missing_coreids_201.csv"
+  # 空隙率 CSV 文件路径
+  void_csv_file: ""
 
   # 空隙率列名
-  void_column: "孔隙率"
+  void_column: ""
 
-# 参数筛选配置（用于参数筛选模式）
+# ============================================================
+#              参数筛选配置（模式1：小批量运算）
+# ============================================================
+# 支持 RASPA2 和 RASPA3 双版本
+# - RASPA2: 修改 simulation.input 文本文件
+# - RASPA3: 修改 simulation.json JSON 文件
 parameter_screening:
   # 输出目录名
-  output_directory: "等温线文章1-1965071_ASR_pacman"
+  output_directory: "102"
 
-  # 是否自动计算UnitCells和空隙率
+  # 是否自动计算 UnitCells
   auto_unit_cells: true
-  # auto_void_fraction: true
 
-  # 参数筛选配置 - 可以配置simulation.input中的任意参数
+  # 参数筛选配置 - 可配置的参数
   # 格式: 参数名: [值1, 值2, 值3, ...]
   # 程序会自动生成所有参数组合并提交作业
+  #
+  # ============ RASPA2 参数名 ============
+  # CutOffVDW, CutOffChargeCharge, NumberOfCycles, NumberOfInitializationCycles,
+  # NumberOfEquilibrationCycles, ExternalTemperature, ExternalPressure,
+  # ForceField, ChargeMethod, MoleculeName, etc.
+  #
+  # ============ RASPA3 参数名 ============
+  # CutOff (或 CutOffVDW), ExternalTemperature, ExternalPressure,
+  # NumberOfCycles, NumberOfInitializationCycles, NumberOfEquilibrationCycles,
+  # ChargeMethod, etc.
+  #
+  # 注意: 大部分参数名在两个版本间兼容，程序会自动映射
   parameters:
-    # IMPORTANT: 如果启用auto_unit_cells，必须包含CutOffVDW参数（即使只有一个值）
-    # 因为UnitCells计算需要知道截断半径
+    # 重要: 如果启用 auto_unit_cells，必须包含截断半径参数
+    # RASPA2 用 CutOffVDW, RASPA3 用 CutOff (两者都支持)
     CutOffVDW: [12.8]
 
-    # 示例: 数值型参数
-    ExternalPressure: [1000, 6666, 13333, 20000, 26666, 33333, 40000, 46666, 53333, 60000, 66666, 73333, 80000, 86666, 93333, 100000]
+    # 压力点 (Pa)
+    ExternalPressure: [100, 1000]
 
-    # 示例: 字符型参数
-    # ForceField: [huan5, UFF, Dreiding]
+    # 温度点 (K) - 可选
+    # ExternalTemperature: [298.0, 373.0]
+
+    # 模拟循环次数 - 可选
+    # NumberOfCycles: [10000, 50000]
+
+    # 其他可选参数示例:
+    # ForceField: [UFF, Dreiding]
     # ChargeMethod: [Ewald, None]
+    # MoleculeName: [CO2, CH4, N2]  # 仅 RASPA2
 
-    # 示例: 组件相关参数
-    # MoleculeName: [CO2, CH4, N2]
-    # TranslationProbability: [0.3, 0.5, 0.7]
+# ============================================================
+#                    日志配置
+# ============================================================
+logging:
+  # 日志级别: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
 
-  # 注意:
-  # 1. 只需配置要测试的参数,其他参数保持模板默认值
-  # 2. 参数名必须与simulation.input中完全一致(区分大小写)
-  # 3. 程序会生成所有组合: 如果有3个参数各2个值,会生成2×2×2=8个任务
+  # 日志文件名
+  file: "raspa_calc.log"
 
-# 性能优化
+  # 作业日志输出目录（相对于输出目录）
+  output_dir: "1log"
+
+  # 是否生成作业 .out/.err 日志
+  enable_job_logs: true
+
+# ============================================================
+#                    性能配置
+# ============================================================
 performance:
   # 启用缓存
   enable_cache: true
 
-  # 缓存过期时间(秒)
+  # 缓存过期时间 (秒)
   cache_timeout: 3600
 
-  # 启用进度条
+  # 显示进度条
   show_progress: true
 
-# 日志配置
-logging:
-  # 日志级别
-  level: "INFO"
-
-  # 日志文件
-  file: "raspa_calc.log"
-  # 作业日志输出目录（相对输出目录，默认 1log）
-  output_dir: "1log"
-
-  # 是否生成作业 .out/.err 日志（false/0/no 则写入 /dev/null）
-  enable_job_logs: true
-
-# 高级选项
+# ============================================================
+#                    高级选项
+# ============================================================
 advanced:
-  # 自定义模板目录
+  # 模板目录
   template_dir: ".raspa_tools/job_templates"
 
-  # 超时设置(秒)
+  # 作业超时时间 (秒)
   job_timeout: 3600
 
-  # 重试次数
+  # 失败重试次数
   retry_count: 3

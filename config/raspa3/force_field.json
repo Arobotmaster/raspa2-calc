@@ -1,0 +1,21 @@
+{
+  "GeneralMixingRule": "Lorentz-Berthelot",
+  "ShiftPotential": true,
+  "TailCorrections": true,
+  "CutOff": 12.8,
+
+  "AtomTypes": [
+    {"Name": "Si", "Element": "Si", "Epsilon": 22.0, "Sigma": 2.3, "AtomicMass": 28.0855, "Charge": 0.0},
+    {"Name": "O", "Element": "O", "Epsilon": 53.0, "Sigma": 3.3, "AtomicMass": 15.9994, "Charge": 0.0},
+    {"Name": "O_zeo", "Element": "O", "Epsilon": 53.0, "Sigma": 3.3, "AtomicMass": 15.9994, "Charge": -1.025},
+    {"Name": "Si_zeo", "Element": "Si", "Epsilon": 22.0, "Sigma": 2.3, "AtomicMass": 28.0855, "Charge": 2.05},
+
+    {"Name": "CH4", "Element": "C", "Epsilon": 158.5, "Sigma": 3.72, "AtomicMass": 16.04246, "Charge": 0.0},
+
+    {"Name": "C_co2", "Element": "C", "Epsilon": 27.0, "Sigma": 2.8, "AtomicMass": 12.0, "Charge": 0.6512},
+    {"Name": "O_co2", "Element": "O", "Epsilon": 79.0, "Sigma": 3.05, "AtomicMass": 15.9994, "Charge": -0.3256},
+
+    {"Name": "N_n2", "Element": "N", "Epsilon": 36.0, "Sigma": 3.31, "AtomicMass": 14.0067, "Charge": -0.482},
+    {"Name": "N_com", "Element": "N", "Epsilon": 0.0, "Sigma": 0.0, "AtomicMass": 0.0, "Charge": 0.964}
+  ]
+}

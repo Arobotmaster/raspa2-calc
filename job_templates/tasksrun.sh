@@ -246,11 +246,26 @@ if [ "$JOB_SYSTEM" = "SLURM" ] && [ "$SUBMIT_MODE" = "array" ]; then
     rm -f "$ARRAY_SCRIPT"
     cp -rf "$JOB_TEMPLATE" "$ARRAY_SCRIPT"
     chmod 755 "$ARRAY_SCRIPT"
+    # 确保 job array 模式下也使用正确的 runjobs 脚本
+    mkdir -p "$WORK_DIR/job_templates"
+    RASPA_VERSION_LOWER="$(echo "${RASPA_VERSION:-raspa2}" | tr '[:upper:]' '[:lower:]')"
+    if [ "$RASPA_VERSION_LOWER" = "raspa3" ]; then
+        if [ -f "$SCRIPT_DIR/runjobs_raspa3.sh" ]; then
+            cp -f "$SCRIPT_DIR/runjobs_raspa3.sh" "$WORK_DIR/job_templates/runjobs.sh"
+            echo "使用 RASPA3 执行脚本 (job array 模式)"
+        else
+            cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_DIR/job_templates/runjobs.sh"
+        fi
+    else
+        cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_DIR/job_templates/runjobs.sh"
+    fi
+    chmod 755 "$WORK_DIR/job_templates/runjobs.sh"
     insert_exports_after_sbatch "$ARRAY_SCRIPT" \
         "export RASPA_TOTAL_CPUS=\"${CPU_CORES}\"" \
         "export RASPA_WORK_DIR=\"${topdir}\"" \
         "export RASPA_OUTPUT_DIR=\"${SUBDIR}\"" \
-        "export RASPA_SUBDIR=\"${SUBDIR}\""
+        "export RASPA_SUBDIR=\"${SUBDIR}\"" \
+        "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
     if [ "$LOG_ENABLE" = true ]; then
         sed -i -e "s|^#SBATCH --output=.*|#SBATCH --output=$LOG_DIR/%A_%a.out|" \
                -e "s|^#SBATCH --error=.*|#SBATCH --error=$LOG_DIR/%A_%a.err|" "$ARRAY_SCRIPT"
@@ -276,7 +291,20 @@ COUNTER=$START_ID
 echo "开始逐个提交作业...（兼容模式）"
 # 确保工作目录下拥有最新的 runjobs.sh（job_sub 会从 $RASPA_WORK_DIR/job_templates 读取）
 mkdir -p "$WORK_DIR/job_templates"
-cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_DIR/job_templates/runjobs.sh"
+# 根据 RASPA 版本选择正确的 runjobs 脚本
+RASPA_VERSION_LOWER="$(echo "${RASPA_VERSION:-raspa2}" | tr '[:upper:]' '[:lower:]')"
+if [ "$RASPA_VERSION_LOWER" = "raspa3" ]; then
+    if [ -f "$SCRIPT_DIR/runjobs_raspa3.sh" ]; then
+        cp -f "$SCRIPT_DIR/runjobs_raspa3.sh" "$WORK_DIR/job_templates/runjobs.sh"
+        echo "使用 RASPA3 执行脚本"
+    else
+        echo "警告：找不到 runjobs_raspa3.sh，回退到 runjobs.sh"
+        cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_DIR/job_templates/runjobs.sh"
+    fi
+else
+    cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_DIR/job_templates/runjobs.sh"
+    echo "使用 RASPA2 执行脚本"
+fi
 chmod 755 "$WORK_DIR/job_templates/runjobs.sh"
 while [ $COUNTER -le $CPU_CORES ]
 do
@@ -289,7 +317,8 @@ do
         "export RASPA_WORK_DIR=\"${topdir}\"" \
         "export RASPA_OUTPUT_DIR=\"${SUBDIR}\"" \
         "export RASPA_SUBDIR=\"${SUBDIR}\"" \
-        "export RASPA_WORKER_ID=\"${NAMENEW}\""
+        "export RASPA_WORKER_ID=\"${NAMENEW}\"" \
+        "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
     sed -i -e "s|cd \$RASPA_WORK_DIR|cd $WORK_DIR|g" "$SCRIPT_DIR/job_submit_ht.sh"
     if [ "$JOB_SYSTEM" = "SLURM" ]; then
         sed -i -e "s|^#SBATCH --job-name=.*|#SBATCH --job-name=${NAMENEW}|" "$SCRIPT_DIR/job_submit_ht.sh"

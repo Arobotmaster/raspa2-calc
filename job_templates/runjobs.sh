@@ -97,11 +97,12 @@ claim_from_retry() {
 
   mv "$Q_RETRY" "$tmp" 2>/dev/null || return 1
   local claimed=""
+  local -a pending_ids=()
   while IFS= read -r id; do
     [ -z "$id" ] && continue
     local workdir="${topdir}/${subdir}/mc${id}"
+    # 已完成的任务不再写回重试队列
     if [ -d "${workdir}__done" ] || [ -d "${workdir}__failed" ] || [ -d "${workdir}__running" ]; then
-      echo "$id" >> "$Q_RETRY"
       continue
     fi
     if [ -d "$workdir" ]; then
@@ -112,6 +113,10 @@ claim_from_retry() {
             rm -f "$lock_file"
             echo "${workdir}__running"
             claimed="yes"
+            # 将剩余未处理的 pending_ids 写回
+            for pid in "${pending_ids[@]}"; do
+              echo "$pid" >> "$Q_RETRY"
+            done
             break
           else
             rm -f "$lock_file"
@@ -120,10 +125,21 @@ claim_from_retry() {
           rm -f "$lock_file"
         fi
       fi
+      # 无法锁定时加入待重试列表（去重）
+      local dup=0
+      for pid in "${pending_ids[@]}"; do
+        [ "$pid" = "$id" ] && { dup=1; break; }
+      done
+      [ "$dup" -eq 0 ] && pending_ids+=("$id")
     fi
-    echo "$id" >> "$Q_RETRY"
   done < "$tmp"
   rm -f "$tmp"
+  # 如果没有成功认领，将待重试列表写回
+  if [ -z "$claimed" ]; then
+    for pid in "${pending_ids[@]}"; do
+      echo "$pid" >> "$Q_RETRY"
+    done
+  fi
   [ -n "$claimed" ] && return 0 || return 1
 }
 

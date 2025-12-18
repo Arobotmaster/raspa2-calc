@@ -1,0 +1,26 @@
+{
+  "MoleculeDefinitions": {
+    "ExampleDefinitions": {
+      "N2": {
+        "Atoms": [
+          {"Name": "N_n2", "Type": "N_n2", "Position": [-0.549, 0.0, 0.0], "Charge": -0.482},
+          {"Name": "N_com", "Type": "N_com", "Position": [0.0, 0.0, 0.0], "Charge": 0.964},
+          {"Name": "N_n2", "Type": "N_n2", "Position": [0.549, 0.0, 0.0], "Charge": -0.482}
+        ],
+        "Bonds": [
+          {"Atoms": [0, 1], "Type": "rigid", "Length": 0.549},
+          {"Atoms": [1, 2], "Type": "rigid", "Length": 0.549}
+        ],
+        "Rigid": true,
+        "Critical": {
+          "Temperature": 126.2,
+          "Pressure": 3390000.0
+        },
+        "Intra": {
+          "VDW": {"Excluded": 2},
+          "Charge": {"Excluded": 2}
+        }
+      }
+    }
+  }
+}

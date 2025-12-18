@@ -266,6 +266,351 @@ def count_components_in_template(template_path):
         logger.error(f"读取模板文件失败: {e}")
         return 0
 
+# ============================================================
+#                    RASPA3 参数筛选支持
+# ============================================================
+
+def copy_raspa3_json_files(json_dir, output_dir, component_names=None):
+    """复制 RASPA3 所需的 JSON 文件到任务目录
+
+    Args:
+        json_dir: RASPA3 JSON 文件目录（包含 force_field.json 和分子定义文件）
+        output_dir: 任务输出目录
+        component_names: 组件名称列表，用于确定需要复制哪些分子文件
+
+    Returns:
+        bool: 成功返回 True
+    """
+    try:
+        # 复制 force_field.json
+        ff_src = os.path.join(json_dir, "force_field.json")
+        if os.path.exists(ff_src):
+            shutil.copy(ff_src, output_dir)
+            logger.debug(f"复制 force_field.json 到 {output_dir}")
+        else:
+            logger.warning(f"force_field.json 不存在: {ff_src}")
+
+        # 复制分子定义文件
+        if component_names:
+            for name in component_names:
+                mol_src = os.path.join(json_dir, f"{name}.json")
+                if os.path.exists(mol_src):
+                    shutil.copy(mol_src, output_dir)
+                    logger.debug(f"复制 {name}.json 到 {output_dir}")
+        else:
+            # 如果未指定组件，复制所有 .json 文件（除了 simulation.json）
+            for f in os.listdir(json_dir):
+                if f.endswith('.json') and f != 'simulation.json':
+                    shutil.copy(os.path.join(json_dir, f), output_dir)
+
+        return True
+    except Exception as e:
+        logger.error(f"复制 RASPA3 JSON 文件失败: {e}")
+        return False
+
+
+def create_simulation_json(template_path, params, cif_path, output_path, config=None, void_fraction_csv=None):
+    """根据模板和参数创建 RASPA3 simulation.json 文件
+
+    Args:
+        template_path: JSON 模板文件路径
+        params: 参数字典,包含要替换的参数
+        cif_path: CIF 文件路径
+        output_path: 输出文件路径
+        config: 配置对象
+        void_fraction_csv: 空隙率数据字典
+
+    RASPA3 参数映射:
+        - CutOff / CutOffVDW -> Systems[0].CutOff
+        - ExternalTemperature -> Systems[0].ExternalTemperature
+        - ExternalPressure -> Systems[0].ExternalPressure
+        - NumberOfCycles -> NumberOfCycles (顶层)
+        - NumberOfInitializationCycles -> NumberOfInitializationCycles (顶层)
+        - NumberOfEquilibrationCycles -> NumberOfEquilibrationCycles (顶层)
+        - framework -> Systems[0].Name (CIF 路径)
+    """
+    try:
+        # 读取模板文件
+        with open(template_path, 'r', encoding='utf-8') as f:
+            sim_config = json.load(f)
+
+        # 获取框架名称和 CIF 路径
+        framework_name = params.get('framework', '')
+
+        # 设置 CIF 文件路径
+        if cif_path and os.path.exists(cif_path):
+            # 使用绝对路径或相对路径
+            if config:
+                cif_base = config.get('environment', {}).get('raspa3_cif_base_path', '')
+                if cif_base and cif_path.startswith(cif_base):
+                    # 可以使用相对路径或绝对路径
+                    sim_config['Systems'][0]['Name'] = cif_path
+                else:
+                    sim_config['Systems'][0]['Name'] = cif_path
+            else:
+                sim_config['Systems'][0]['Name'] = cif_path
+            logger.info(f"设置 CIF 路径: {cif_path}")
+
+        # 计算 UnitCells（如果启用）
+        auto_unit_cells = config.get('parameter_screening', {}).get('auto_unit_cells', True) if config else True
+        cutoff_value = float(params.get('CutOff') or params.get('CutOffVDW') or params.get('cutoff', 12.0))
+
+        if auto_unit_cells and cif_path and os.path.exists(cif_path):
+            try:
+                success, unit_cells_tuple, void_fraction = process_structure_file(
+                    cif_path, cutoff_value
+                )
+                if success and unit_cells_tuple:
+                    sim_config['Systems'][0]['NumberOfUnitCells'] = list(unit_cells_tuple)
+                    logger.info(f"计算 NumberOfUnitCells: {unit_cells_tuple}")
+
+                    # 设置空隙率
+                    if void_fraction is not None:
+                        sim_config['Systems'][0]['HeliumVoidFraction'] = void_fraction
+                        logger.info(f"设置 HeliumVoidFraction: {void_fraction}")
+            except Exception as e:
+                logger.warning(f"计算 UnitCells 失败: {e}")
+
+        # 从 CSV 获取空隙率（如果配置了）
+        if void_fraction_csv and framework_name:
+            vf = void_fraction_csv.get(framework_name)
+            if vf is not None:
+                sim_config['Systems'][0]['HeliumVoidFraction'] = vf
+                logger.info(f"从 CSV 设置 HeliumVoidFraction: {vf}")
+
+        # 替换顶层参数
+        top_level_params = ['NumberOfCycles', 'NumberOfInitializationCycles',
+                          'NumberOfEquilibrationCycles', 'PrintEvery', 'SimulationType']
+        for param in top_level_params:
+            if param in params:
+                sim_config[param] = params[param]
+                logger.debug(f"设置顶层参数 {param}: {params[param]}")
+
+        # 替换 Systems[0] 参数
+        system_params_map = {
+            'CutOff': 'CutOff',
+            'CutOffVDW': 'CutOff',  # 兼容 RASPA2 参数名
+            'cutoff': 'CutOff',
+            'ExternalTemperature': 'ExternalTemperature',
+            'temperature': 'ExternalTemperature',
+            'ExternalPressure': 'ExternalPressure',
+            'pressure': 'ExternalPressure',
+            'ChargeMethod': 'ChargeMethod',
+            'HeliumVoidFraction': 'HeliumVoidFraction',
+        }
+
+        for param_key, json_key in system_params_map.items():
+            if param_key in params:
+                sim_config['Systems'][0][json_key] = params[param_key]
+                logger.debug(f"设置 Systems[0].{json_key}: {params[param_key]}")
+
+        # 写入输出文件
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(sim_config, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"成功创建 RASPA3 配置文件: {output_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"创建 simulation.json 文件失败: {e}")
+        logger.debug(traceback.format_exc())
+        return False
+
+
+def create_job_script_raspa3(param_dir, job_name, scheduler_type="slurm", conda_env="raspa3"):
+    """创建 RASPA3 作业提交脚本
+
+    Args:
+        param_dir: 参数目录
+        job_name: 作业名称
+        scheduler_type: 调度系统类型 ('slurm', 'pbs', 或 'local')
+        conda_env: RASPA3 conda 环境名称
+
+    Returns:
+        str: 脚本文件路径
+    """
+    script_path = os.path.join(param_dir, "job.sh")
+
+    # conda 初始化脚本
+    conda_init = '''
+# 初始化 conda
+if [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/anaconda3/etc/profile.d/conda.sh"
+elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+fi
+'''
+
+    if scheduler_type == "slurm":
+        script_content = f'''#!/bin/bash
+#SBATCH --job-name={job_name}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --hint=multithread
+#SBATCH --output=%x.%j.out
+#SBATCH --error=%x.%j.err
+
+# 设置资源限制
+ulimit -u 20480
+ulimit -s 16384
+
+# 设置环境变量
+export OPENBLAS_NUM_THREADS=1
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+{conda_init}
+# 激活 RASPA3 环境
+conda activate {conda_env}
+
+# 设置工作目录
+cd {param_dir}
+
+echo $SLURM_JOB_ID > jobid
+
+# 运行 RASPA3
+raspa3
+'''
+    elif scheduler_type == "pbs":
+        script_content = f'''#!/bin/bash
+#PBS -N {job_name}
+#PBS -l nodes=1:ppn=1
+#PBS -o pbs.out
+#PBS -e pbs.err
+#PBS -j oe
+
+# 设置资源限制
+ulimit -u 20480
+ulimit -s 16384
+
+# 设置环境变量
+export OPENBLAS_NUM_THREADS=1
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+{conda_init}
+# 激活 RASPA3 环境
+conda activate {conda_env}
+
+# 切换到作业目录
+cd $PBS_O_WORKDIR
+
+echo $PBS_JOBID > jobid
+
+# 运行 RASPA3
+raspa3
+'''
+    else:
+        script_content = f'''#!/bin/bash
+
+# 设置环境变量
+export OPENBLAS_NUM_THREADS=1
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+{conda_init}
+# 激活 RASPA3 环境
+conda activate {conda_env}
+
+# 切换到作业目录
+cd {param_dir}
+
+echo $$ > jobid
+
+# 运行 RASPA3
+raspa3
+'''
+
+    with open(script_path, 'w') as f:
+        f.write(script_content)
+
+    os.chmod(script_path, 0o755)
+    logger.info(f"创建 RASPA3 作业脚本: {script_path}")
+
+    return script_path
+
+
+def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, template_path,
+                                          output_dir, job_system, config=None,
+                                          void_fraction_csv=None, json_dir=None):
+    """处理 RASPA3 所有参数组合并创建作业
+
+    Args:
+        framework: 框架名称
+        cif_path: CIF 文件路径
+        param_ranges: 参数范围字典
+        template_path: JSON 模板文件路径
+        output_dir: 输出目录
+        job_system: 作业系统类型
+        config: 配置对象
+        void_fraction_csv: 空隙率数据字典
+        json_dir: RASPA3 JSON 文件目录
+    """
+    # 生成所有参数组合
+    combinations = generate_parameter_combinations(param_ranges)
+    logger.info(f"框架 {framework}: 生成了 {len(combinations)} 种参数组合")
+
+    # 创建输出主目录
+    output_base_dir = os.path.join(os.getcwd(), output_dir)
+    os.makedirs(output_base_dir, exist_ok=True)
+
+    # 创建框架目录
+    framework_dir = os.path.join(output_base_dir, framework)
+    os.makedirs(framework_dir, exist_ok=True)
+
+    # 获取 conda 环境名称
+    conda_env = "raspa3"
+    if config:
+        conda_env = config.get('environment', {}).get('raspa3_conda_env', 'raspa3')
+
+    # 获取组件名称（用于复制分子文件）
+    component_names = None
+    try:
+        with open(template_path, 'r', encoding='utf-8') as f:
+            template_data = json.load(f)
+            components = template_data.get('Components', [])
+            component_names = list(set(c.get('Name', '') for c in components if c.get('Name')))
+    except Exception:
+        pass
+
+    # 处理每个参数组合
+    jobs = []
+    for combo in combinations:
+        # 生成参数组合目录名
+        param_dir_name = generate_directory_name(combo)
+        param_dir = os.path.join(framework_dir, param_dir_name)
+        os.makedirs(param_dir, exist_ok=True)
+
+        # 复制 RASPA3 JSON 文件
+        if json_dir:
+            copy_raspa3_json_files(json_dir, param_dir, component_names)
+
+        # 准备参数字典
+        sim_params = combo.copy()
+        sim_params['framework'] = framework
+
+        # 创建 simulation.json 文件
+        sim_json_path = os.path.join(param_dir, "simulation.json")
+
+        if create_simulation_json(template_path, sim_params, cif_path, sim_json_path, config, void_fraction_csv):
+            # 创建作业脚本
+            job_name = f"{framework}_{param_dir_name}"[:63]  # SLURM 作业名限制
+            job_script_path = create_job_script_raspa3(param_dir, job_name, job_system, conda_env)
+
+            # 提交作业
+            job_id = submit_job(job_script_path, job_system)
+            if job_id:
+                jobs.append({
+                    'param_dir': param_dir,
+                    'job_id': job_id,
+                    'params': combo
+                })
+                print(f"  ✓ 作业已提交: {job_name} (ID: {job_id})")
+
+    return jobs
+
+# ============================================================
+#                    RASPA2 参数筛选 (原有功能)
+# ============================================================
+
 def create_simulation_input(template_path, params, cif_path, output_path, config=None, void_fraction_csv=None):
     """根据模板和参数创建simulation.input文件 - 支持通用参数替换
 
@@ -909,27 +1254,68 @@ def main():
                 return 1
 
         # 从配置文件获取参数
-        csv_file = args.csv_file or config.get('calculation', {}).get('csv_file_path')
-        framework_col = config.get('calculation', {}).get('framework_column', 'refcode')
-        cif_dir = args.cif_dir or config.get('environment', {}).get('cif_dir')
-        template_path = args.template or config.get('calculation', {}).get('template_path')
+        env_config = config.get('environment', {})
+        calc_config = config.get('calculation', {})
+
+        # 检测 RASPA 版本
+        raspa_version = env_config.get('raspa_version', 'raspa2').lower()
+        print(f"🔧 RASPA 版本: {raspa_version.upper()}")
+
+        # RASPA3 JSON 目录（用于复制 force_field.json 和分子文件）
+        json_dir = None
+        if raspa_version == 'raspa3':
+            json_dir = env_config.get('raspa3_json_dir', '')
+            if json_dir:
+                print(f"📁 RASPA3 JSON 目录: {json_dir}")
+
+        csv_file = args.csv_file or calc_config.get('csv_file_path')
+        framework_col = calc_config.get('framework_column', 'refcode')
+
+        # 根据 RASPA 版本选择 CIF 目录
+        if args.cif_dir:
+            cif_dir = args.cif_dir
+        elif raspa_version == 'raspa3':
+            cif_dir = env_config.get('raspa3_cif_base_path', '')
+        else:
+            cif_dir = env_config.get('raspa2_cif_dir', '') or env_config.get('cif_dir', '')
+
+        # 根据 RASPA 版本选择模板文件
+        if args.template:
+            template_path = args.template
+        elif raspa_version == 'raspa3':
+            template_path = env_config.get('raspa3_template_path', '')
+        else:
+            template_path = calc_config.get('template_path', '') or env_config.get('raspa2_template_path', '')
 
         # 参数筛选配置
         screening_config = config.get('parameter_screening', {})
         output_dir = screening_config.get('output_directory', 'param_screening_output')
         param_ranges = screening_config.get('parameters', {})
 
-        # 验证必需参数
+        # 验证必需参数（使用 print 确保错误可见）
         if not csv_file:
-            logger.error("缺少CSV文件路径,请在config.yaml中配置calculation.csv_file_path或使用--csv-file参数")
+            print("❌ 错误: 缺少CSV文件路径")
+            print("   请在config.yaml中配置 calculation.csv_file_path 或使用 --csv-file 参数")
             return 1
 
         if not cif_dir:
-            logger.error("缺少CIF目录,请在config.yaml中配置environment.cif_dir或使用--cif-dir参数")
+            print("❌ 错误: 缺少CIF目录")
+            if raspa_version == 'raspa3':
+                print("   请在config.yaml中配置 environment.raspa3_cif_base_path")
+            else:
+                print("   请在config.yaml中配置 environment.raspa2_cif_dir")
             return 1
 
-        if not template_path or not os.path.exists(template_path):
-            logger.error(f"模板文件不存在: {template_path}")
+        if not template_path:
+            print("❌ 错误: 缺少模板文件路径")
+            if raspa_version == 'raspa3':
+                print("   请在config.yaml中配置 environment.raspa3_template_path")
+            else:
+                print("   请在config.yaml中配置 calculation.template_path")
+            return 1
+
+        if not os.path.exists(template_path):
+            print(f"❌ 错误: 模板文件不存在: {template_path}")
             return 1
 
         if not param_ranges:
@@ -1009,7 +1395,7 @@ def main():
                 return default_yes
             return ans in ('y', 'yes')
 
-        # 预览：展示首个框架 + 首个参数组合的 simulation.input 内容片段
+        # 预览：展示首个框架 + 首个参数组合的配置文件内容片段
         try:
             import tempfile
             preview_fw = framework_names[0]
@@ -1017,20 +1403,33 @@ def main():
             preview_combo = next(iter(generate_parameter_combinations(param_ranges))) if param_ranges else {}
             sim_params = preview_combo.copy(); sim_params['framework'] = preview_fw
             with tempfile.TemporaryDirectory() as td:
-                preview_path = os.path.join(td, 'simulation.input')
-                if preview_cif and create_simulation_input(template_path, sim_params, preview_cif, preview_path, config, None):
-                    print("\n=== 示例 simulation.input 预览（首个框架 + 首个参数组合）===\n")
-                    try:
-                        with open(preview_path, 'r', encoding='utf-8') as pf:
-                            content = pf.read()
-                        # 打印前若干行，避免刷屏
-                        lines = content.splitlines()
-                        head = lines[:80]
-                        print("\n".join(head))
-                        if len(lines) > len(head):
-                            print("\n... (已截断预览，仅展示前80行) ...\n")
-                    except Exception:
-                        pass
+                if raspa_version == 'raspa3':
+                    # RASPA3: 预览 simulation.json
+                    preview_path = os.path.join(td, 'simulation.json')
+                    if preview_cif and create_simulation_json(template_path, sim_params, preview_cif, preview_path, config, None):
+                        print("\n=== 示例 simulation.json 预览（首个框架 + 首个参数组合）===\n")
+                        try:
+                            with open(preview_path, 'r', encoding='utf-8') as pf:
+                                content = pf.read()
+                            print(content)
+                        except Exception:
+                            pass
+                else:
+                    # RASPA2: 预览 simulation.input
+                    preview_path = os.path.join(td, 'simulation.input')
+                    if preview_cif and create_simulation_input(template_path, sim_params, preview_cif, preview_path, config, None):
+                        print("\n=== 示例 simulation.input 预览（首个框架 + 首个参数组合）===\n")
+                        try:
+                            with open(preview_path, 'r', encoding='utf-8') as pf:
+                                content = pf.read()
+                            # 打印前若干行，避免刷屏
+                            lines = content.splitlines()
+                            head = lines[:80]
+                            print("\n".join(head))
+                            if len(lines) > len(head):
+                                print("\n... (已截断预览，仅展示前80行) ...\n")
+                        except Exception:
+                            pass
         except Exception:
             # 预览失败不影响流程
             pass
@@ -1064,18 +1463,32 @@ def main():
 
             logger.info(f"  ✓ CIF文件: {cif_path}")
 
-            # 处理参数组合并提交作业
-            # 处理参数组合并提交/或仅生成
-            jobs = process_parameter_combinations(
-                framework=framework,
-                cif_path=cif_path,
-                param_ranges=param_ranges,
-                template_path=template_path,
-                output_dir=output_dir,
-                job_system=job_system,
-                config=config,
-                void_fraction_csv=void_fraction_csv
-            )
+            # 根据 RASPA 版本选择处理函数
+            if raspa_version == 'raspa3':
+                # RASPA3: 使用 JSON 格式
+                jobs = process_parameter_combinations_raspa3(
+                    framework=framework,
+                    cif_path=cif_path,
+                    param_ranges=param_ranges,
+                    template_path=template_path,
+                    output_dir=output_dir,
+                    job_system=job_system,
+                    config=config,
+                    void_fraction_csv=void_fraction_csv,
+                    json_dir=json_dir
+                )
+            else:
+                # RASPA2: 使用文本格式
+                jobs = process_parameter_combinations(
+                    framework=framework,
+                    cif_path=cif_path,
+                    param_ranges=param_ranges,
+                    template_path=template_path,
+                    output_dir=output_dir,
+                    job_system=job_system,
+                    config=config,
+                    void_fraction_csv=void_fraction_csv
+                )
             all_jobs.extend(jobs)
 
             # 将作业信息写入文件

@@ -1,13 +1,33 @@
 import os
 import math
+import json
 import pandas as pd
 import logging
 import sys
 import traceback
 import subprocess
 import multiprocessing
+import shutil
+import copy
 from collections import OrderedDict
 from calculate_params import process_structure_file
+
+
+# ============ RASPA 版本检测 ============
+
+def get_raspa_version_from_env():
+    """从环境变量获取 RASPA 版本"""
+    return os.environ.get('RASPA_VERSION', 'raspa2').lower()
+
+
+def load_raspa3_config():
+    """加载 RASPA3 专用配置"""
+    return {
+        'conda_env': os.environ.get('RASPA3_CONDA_ENV', 'raspa3'),
+        'json_dir': os.environ.get('RASPA3_JSON_DIR', ''),
+        'cif_base_path': os.environ.get('RASPA3_CIF_BASE_PATH', ''),
+        'template_path': os.environ.get('RASPA3_TEMPLATE_PATH', ''),
+    }
 
 # 配置日志系统
 def setup_logging(log_file="raspa_calculation.log"):
@@ -647,10 +667,14 @@ def get_computation_setup(total_tasks, cif_dir=None):
 def update_all_files(topdir, total_tasks, subdir, cpu_cores):
     """更新所有配置文件"""
     try:
+        # 获取 RASPA 版本
+        raspa_version = get_raspa_version_from_env()
+
         # 获取安装目录
         tool_dir = os.path.join(os.environ.get('HOME', ''), 'raspa2-calc/.raspa_tools')
         logger.info(f"工具目录: {tool_dir}")
         logger.info(f"工作目录: {topdir}")
+        logger.info(f"RASPA 版本: {raspa_version.upper()}")
 
         # 注：作业日志的目录与开关通过环境变量传递（由 raspa_calc.py 读取 config 并设置），
         # 此处不直接读取配置对象，避免在本模块中依赖全局 config。
@@ -658,19 +682,32 @@ def update_all_files(topdir, total_tasks, subdir, cpu_cores):
         job_templates_dir = os.path.join(topdir, "job_templates")
         os.makedirs(job_templates_dir, exist_ok=True)
 
-        # 从安装目录复制所需文件到工作目录
-        template_files = ['runjobs.sh', 'job_submit_ht.sh', 'job_submit.sh', 'tasksrun.sh', 'pbs.sh', 'sbatch.sh', 'local.sh']
+        # 根据 RASPA 版本选择模板文件
+        template_files = ['job_submit_ht.sh', 'job_submit.sh', 'tasksrun.sh', 'pbs.sh', 'sbatch.sh', 'local.sh']
+
+        # 根据版本添加 runjobs 脚本
+        if raspa_version == 'raspa3':
+            template_files.append('runjobs_raspa3.sh')
+        else:
+            template_files.append('runjobs.sh')
+
         logger.info(f"准备复制 {len(template_files)} 个模板文件到 {job_templates_dir}")
         for file in template_files:
             src = os.path.join(tool_dir, 'job_templates', file)
             dst = os.path.join(job_templates_dir, file)
-            logger.info(f"复制 {file}: {src} -> {dst}")
+
+            # RASPA3 的 runjobs_raspa3.sh 复制为 runjobs.sh
+            if file == 'runjobs_raspa3.sh':
+                dst = os.path.join(job_templates_dir, 'runjobs.sh')
+                logger.info(f"复制 {file} -> runjobs.sh (RASPA3模式)")
+            else:
+                logger.info(f"复制 {file}: {src} -> {dst}")
+
             if os.path.exists(src):
-                import shutil
                 shutil.copy2(src, dst)
                 # 设置执行权限
                 os.chmod(dst, 0o755)
-                logger.info(f"已复制并设置权限: {file}")
+                logger.info(f"已复制并设置权限: {os.path.basename(dst)}")
             else:
                 logger.warning(f"Warning: Template file {file} not found in installation directory")
 
@@ -690,7 +727,6 @@ def update_all_files(topdir, total_tasks, subdir, cpu_cores):
         try:
             pointer_dir = os.path.join(topdir, subdir, ".raspa_queue")
             if os.path.isdir(pointer_dir):
-                import shutil
                 shutil.rmtree(pointer_dir)
                 logger.info("已重置 .raspa_queue 指针目录")
         except Exception as _e:
@@ -874,12 +910,164 @@ def process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_
         logger.debug(f"Error processing structure {framework_name}: {e}")
         return False
 
+
+def process_framework_raspa3(topdir, subdir, counter, framework_name, cutoff, void_csv_file=None,
+                              void_fraction_column=None, template_path=None, molecule_name="CO2",
+                              cif_base_path=None, json_dir=None, framework_column=None):
+    """处理单个框架结构 (RASPA3 版本)
+
+    Args:
+        topdir (str): 主目录路径
+        subdir (str): 子目录路径
+        counter (int): 结构计数器
+        framework_name (str): 框架名称
+        cutoff (float): 截断半径
+        void_csv_file (str, optional): 包含空隙率的CSV文件路径
+        void_fraction_column (str, optional): 空隙率列的列名
+        framework_column (str, optional): 框架名称列的列名
+        template_path (str, optional): 自定义 simulation.json 模板路径
+        molecule_name (str, optional): 分子名称 (支持多分子空格分隔)
+        cif_base_path (str, optional): CIF 文件基础路径
+        json_dir (str, optional): JSON 文件目录 (force_field.json, 分子定义文件)
+
+    Returns:
+        bool: 处理成功返回True，失败返回False
+    """
+    try:
+        # 查找 CIF 文件
+        cif_path = None
+        clean_name = framework_name
+        if clean_name.lower().endswith('.cif'):
+            clean_name = clean_name[:-4]
+
+        if cif_base_path:
+            # RASPA3 风格：使用 cif_base_path
+            candidates = [
+                os.path.join(cif_base_path, f"{clean_name}.cif"),
+                os.path.join(cif_base_path, f"{clean_name}"),
+                os.path.join(cif_base_path, f"{clean_name.upper()}.cif"),
+                os.path.join(cif_base_path, f"{clean_name.lower()}.cif"),
+            ]
+            for path in candidates:
+                if os.path.exists(path):
+                    cif_path = path
+                    break
+
+        if cif_path is None:
+            logger.error(f"找不到框架 {framework_name} 的 CIF 文件")
+            return False
+
+        # 使用 calculate_params.py 处理结构文件
+        success, unit_cells, void_fraction = process_structure_file(
+            cif_path,
+            cutoff,
+            csv_file=void_csv_file,
+            void_fraction_column=void_fraction_column,
+            framework_column=framework_column
+        )
+        if not success:
+            # 后备方案：简单计算
+            try:
+                cell_params = {}
+                with open(cif_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('_cell_length_a'):
+                            cell_params['a'] = float(line.split()[1].split('(')[0])
+                        elif line.startswith('_cell_length_b'):
+                            cell_params['b'] = float(line.split()[1].split('(')[0])
+                        elif line.startswith('_cell_length_c'):
+                            cell_params['c'] = float(line.split()[1].split('(')[0])
+
+                if 'a' in cell_params and 'b' in cell_params and 'c' in cell_params:
+                    unit_a = max(1, math.ceil(2 * cutoff / cell_params['a']))
+                    unit_b = max(1, math.ceil(2 * cutoff / cell_params['b']))
+                    unit_c = max(1, math.ceil(2 * cutoff / cell_params['c']))
+                    unit_cells = [unit_a, unit_b, unit_c]
+                    void_fraction = 0.5  # 默认空隙率
+                else:
+                    unit_cells = [1, 1, 1]
+                    void_fraction = 0.5
+            except Exception:
+                unit_cells = [1, 1, 1]
+                void_fraction = 0.5
+
+        # 创建目录结构
+        md_dir = os.path.join(topdir, subdir, f"mc{counter}")
+        os.makedirs(md_dir, exist_ok=True)
+
+        # 确定使用哪个 simulation.json 模板
+        if template_path and os.path.isfile(template_path):
+            sim_template_file = template_path
+        else:
+            tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
+            sim_template_file = os.path.join(tool_dir, "config", "raspa3", "simulation_template.json")
+            if not os.path.isfile(sim_template_file):
+                logger.error(f"找不到 RASPA3 模板文件: {sim_template_file}")
+                return False
+
+        # 加载模板
+        with open(sim_template_file, 'r', encoding='utf-8') as f:
+            sim_config = json.load(f)
+
+        # 深拷贝并更新配置
+        sim_config = copy.deepcopy(sim_config)
+
+        # 更新 Systems 配置
+        if "Systems" in sim_config and len(sim_config["Systems"]) > 0:
+            # 设置 CIF 文件绝对路径 (RASPA3 需要绝对路径)
+            sim_config["Systems"][0]["Name"] = cif_path
+            # 设置 NumberOfUnitCells
+            sim_config["Systems"][0]["NumberOfUnitCells"] = unit_cells
+            # 设置空隙率
+            sim_config["Systems"][0]["HeliumVoidFraction"] = void_fraction
+
+        # 更新 Components (分子名称)
+        molecule_list = molecule_name.split() if isinstance(molecule_name, str) else [molecule_name]
+        if "Components" in sim_config:
+            for i, component in enumerate(sim_config["Components"]):
+                if i < len(molecule_list):
+                    component["Name"] = molecule_list[i]
+                elif molecule_list:
+                    component["Name"] = molecule_list[0]
+
+        # 保存 simulation.json
+        sim_path = os.path.join(md_dir, "simulation.json")
+        with open(sim_path, 'w', encoding='utf-8') as f:
+            json.dump(sim_config, f, indent=2)
+
+        # 复制 JSON 文件到任务目录
+        if json_dir and os.path.isdir(json_dir):
+            # 复制力场文件
+            force_field_src = os.path.join(json_dir, "force_field.json")
+            if os.path.exists(force_field_src):
+                shutil.copy2(force_field_src, os.path.join(md_dir, "force_field.json"))
+
+            # 复制分子定义文件
+            for mol_name in molecule_list:
+                mol_src = os.path.join(json_dir, f"{mol_name}.json")
+                if os.path.exists(mol_src):
+                    shutil.copy2(mol_src, os.path.join(md_dir, f"{mol_name}.json"))
+
+        return True
+
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        logger.debug(f"RASPA3 处理框架 {framework_name} 时出错: {e}")
+        return False
+
+
 def main():
     try:
-        logger.info("=== RASPA高通量计算设置 ===")
+        # 检测 RASPA 版本
+        raspa_version = get_raspa_version_from_env()
+        raspa3_config = load_raspa3_config() if raspa_version == 'raspa3' else {}
+
+        logger.info(f"=== RASPA高通量计算设置 ({raspa_version.upper()}) ===")
 
         # 步骤1：检查命令行参数和初始化
-        print("\n步骤1：初始化设置")
+        print(f"\n步骤1：初始化设置 (RASPA版本: {raspa_version.upper()})")
 
         # 尝试从环境变量或命令行参数获取信息
         framework_column = 'refcode'  # 默认值
@@ -961,16 +1149,30 @@ def main():
 
             logger.info(f"找到 {total_tasks} 个有效框架结构")
 
-            # 获取CIF文件目录（从环境变量或配置文件）
-            cif_dir = os.environ.get('RASPA_CIF_DIR')
-            if not cif_dir:
-                current_dir = os.getcwd()
-                default_cif_dir = os.path.join(current_dir, "data", "cif")
-                cif_dir = input(f"\n请输入CIF文件目录 (默认为'{default_cif_dir}'): ").strip()
+            # 获取CIF文件目录（根据RASPA版本使用不同的配置）
+            if raspa_version == 'raspa3':
+                # RASPA3: 使用 cif_base_path
+                cif_dir = raspa3_config.get('cif_base_path', '')
                 if not cif_dir:
-                    cif_dir = default_cif_dir
+                    cif_dir = os.environ.get('RASPA_CIF_DIR', '')
+                if not cif_dir:
+                    default_cif_dir = "/home/zjp/anaconda3/envs/raspa3/share/raspa3/framework"
+                    cif_dir = input(f"\n请输入CIF文件基础路径 (默认为'{default_cif_dir}'): ").strip()
+                    if not cif_dir:
+                        cif_dir = default_cif_dir
+                else:
+                    logger.info(f"使用配置文件中的CIF基础路径 (RASPA3): {cif_dir}")
             else:
-                logger.info(f"使用配置文件中的CIF目录: {cif_dir}")
+                # RASPA2: 使用传统 cif_dir
+                cif_dir = os.environ.get('RASPA_CIF_DIR')
+                if not cif_dir:
+                    current_dir = os.getcwd()
+                    default_cif_dir = os.path.join(current_dir, "data", "cif")
+                    cif_dir = input(f"\n请输入CIF文件目录 (默认为'{default_cif_dir}'): ").strip()
+                    if not cif_dir:
+                        cif_dir = default_cif_dir
+                else:
+                    logger.info(f"使用配置文件中的CIF目录: {cif_dir}")
 
             if not os.path.exists(cif_dir):
                 logger.warning(f"CIF目录不存在: {cif_dir}")
@@ -1065,13 +1267,16 @@ def main():
             logger.info(f"- 空隙率CSV文件: {void_csv_file}")
             logger.info(f"- 空隙率列名: {void_fraction_column}")
         
-        # 显示完整的simulation.input示例
-        print("\n=== 生成的simulation.input示例 ===\n")
-        
+        # 显示完整的模拟输入文件示例 (根据RASPA版本显示不同格式)
+        if raspa_version == 'raspa3':
+            print("\n=== 生成的 simulation.json 示例 (RASPA3) ===\n")
+        else:
+            print("\n=== 生成的 simulation.input 示例 (RASPA2) ===\n")
+
         # 使用第一个框架作为示例
         if framework_names:
             first_framework = framework_names[0]
-            
+
             # 获取第一个框架的参数
             try:
                 structure_file = check_structure_files(first_framework, cif_dir)
@@ -1083,62 +1288,110 @@ def main():
                         void_fraction_column=void_fraction_column,
                         framework_column=framework_column
                     )
-                    
+
                     if success:
-                        # 显示模板内容
-                        template_file = template_path if template_path and os.path.isfile(template_path) else None
-                        if not template_file:
-                            tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
-                            template_file = os.path.join(tool_dir, "config", "simulation.input")
-                        
-                        if os.path.exists(template_file):
-                            with open(template_file, 'r') as f:
-                                template_content = f.read()
-                            
-                            # 执行替换逻辑
-                            lines = template_content.split('\n')
-                            molecule_list = molecule_name.split() if isinstance(molecule_name, str) else [molecule_name]
-                            
-                            # 替换参数
-                            for i, line in enumerate(lines):
-                                if line.startswith("FrameworkName"):
-                                    lines[i] = f"FrameworkName {first_framework}"
-                                elif line.startswith("UnitCells"):
-                                    lines[i] = f"UnitCells {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}"
-                                elif line.startswith("HeliumVoidFraction"):
-                                    lines[i] = f"HeliumVoidFraction {void_fraction}"
-                                elif line.startswith("Component ") and "MoleculeName" in line:
-                                    # 提取Component编号
-                                    parts = line.split()
-                                    if len(parts) >= 3 and parts[0] == "Component" and parts[2] == "MoleculeName":
-                                        try:
-                                            component_idx = int(parts[1])
-                                            if component_idx < len(molecule_list):
-                                                molecule = molecule_list[component_idx]
-                                                prefix = line[:line.find("MoleculeName") + len("MoleculeName")]
-                                                lines[i] = f"{prefix}   {molecule}"
-                                            else:
-                                                molecule = molecule_list[0]
-                                                prefix = line[:line.find("MoleculeName") + len("MoleculeName")]
-                                                lines[i] = f"{prefix}   {molecule}"
-                                        except (ValueError, IndexError):
-                                            pass
-                            
-                            # 显示替换后的内容
-                            print('\n'.join(lines[:50]))  # 只显示前50行避免输出过长
-                            if len(lines) > 50:
-                                print(f"... (共{len(lines)}行，仅显示前50行)")
-                            
-                        print("\n" + "="*50)
-                        print(f"📦 此示例使用框架: {first_framework}")
-                        print(f"📦 UnitCells: {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}")
-                        print(f"📦 空隙率: {void_fraction}")
-                        if len(molecule_list) > 1:
-                            print(f"📦 多组分分子: {', '.join(molecule_list)}")
+                        molecule_list = molecule_name.split() if isinstance(molecule_name, str) else [molecule_name]
+
+                        if raspa_version == 'raspa3':
+                            # RASPA3: 显示 simulation.json 预览
+                            template_file = template_path if template_path and os.path.isfile(template_path) else None
+                            if not template_file:
+                                tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
+                                template_file = os.path.join(tool_dir, "config", "raspa3", "simulation_template.json")
+
+                            if os.path.exists(template_file):
+                                with open(template_file, 'r') as f:
+                                    sim_config = json.load(f)
+
+                                # 深拷贝并更新配置
+                                sim_config = copy.deepcopy(sim_config)
+
+                                # 更新 Systems 配置
+                                if "Systems" in sim_config and len(sim_config["Systems"]) > 0:
+                                    sim_config["Systems"][0]["Name"] = structure_file
+                                    sim_config["Systems"][0]["NumberOfUnitCells"] = list(unit_cells)
+                                    sim_config["Systems"][0]["HeliumVoidFraction"] = void_fraction
+
+                                # 更新 Components (分子名称)
+                                if "Components" in sim_config:
+                                    for i, component in enumerate(sim_config["Components"]):
+                                        if i < len(molecule_list):
+                                            component["Name"] = molecule_list[i]
+                                        elif molecule_list:
+                                            component["Name"] = molecule_list[0]
+
+                                # 显示 JSON 内容
+                                print(json.dumps(sim_config, indent=2))
+
+                            print("\n" + "="*50)
+                            print(f"📦 此示例使用框架: {first_framework}")
+                            print(f"📦 CIF 文件路径: {structure_file}")
+                            print(f"📦 NumberOfUnitCells: {list(unit_cells)}")
+                            print(f"📦 空隙率: {void_fraction}")
+                            if len(molecule_list) > 1:
+                                print(f"📦 多组分分子: {', '.join(molecule_list)}")
+                            else:
+                                print(f"📦 分子名称: {molecule_list[0]}")
+
+                            # 显示 JSON 目录信息
+                            json_dir = raspa3_config.get('json_dir', '')
+                            if json_dir:
+                                print(f"📦 JSON 文件目录: {json_dir}")
+                            print("="*50)
                         else:
-                            print(f"📦 分子名称: {molecule_list[0]}")
-                        print("="*50)
-                        
+                            # RASPA2: 显示 simulation.input 预览
+                            template_file = template_path if template_path and os.path.isfile(template_path) else None
+                            if not template_file:
+                                tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
+                                template_file = os.path.join(tool_dir, "config", "simulation.input")
+
+                            if os.path.exists(template_file):
+                                with open(template_file, 'r') as f:
+                                    template_content = f.read()
+
+                                # 执行替换逻辑
+                                lines = template_content.split('\n')
+
+                                # 替换参数
+                                for i, line in enumerate(lines):
+                                    if line.startswith("FrameworkName"):
+                                        lines[i] = f"FrameworkName {first_framework}"
+                                    elif line.startswith("UnitCells"):
+                                        lines[i] = f"UnitCells {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}"
+                                    elif line.startswith("HeliumVoidFraction"):
+                                        lines[i] = f"HeliumVoidFraction {void_fraction}"
+                                    elif line.startswith("Component ") and "MoleculeName" in line:
+                                        # 提取Component编号
+                                        parts = line.split()
+                                        if len(parts) >= 3 and parts[0] == "Component" and parts[2] == "MoleculeName":
+                                            try:
+                                                component_idx = int(parts[1])
+                                                if component_idx < len(molecule_list):
+                                                    molecule = molecule_list[component_idx]
+                                                    prefix = line[:line.find("MoleculeName") + len("MoleculeName")]
+                                                    lines[i] = f"{prefix}   {molecule}"
+                                                else:
+                                                    molecule = molecule_list[0]
+                                                    prefix = line[:line.find("MoleculeName") + len("MoleculeName")]
+                                                    lines[i] = f"{prefix}   {molecule}"
+                                            except (ValueError, IndexError):
+                                                pass
+
+                                # 显示替换后的内容
+                                print('\n'.join(lines[:50]))  # 只显示前50行避免输出过长
+                                if len(lines) > 50:
+                                    print(f"... (共{len(lines)}行，仅显示前50行)")
+
+                            print("\n" + "="*50)
+                            print(f"📦 此示例使用框架: {first_framework}")
+                            print(f"📦 UnitCells: {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}")
+                            print(f"📦 空隙率: {void_fraction}")
+                            if len(molecule_list) > 1:
+                                print(f"📦 多组分分子: {', '.join(molecule_list)}")
+                            else:
+                                print(f"📦 分子名称: {molecule_list[0]}")
+                            print("="*50)
+
             except Exception as e:
                 logger.warning(f"无法生成示例: {e}")
 
@@ -1147,13 +1400,35 @@ def main():
             sys.exit(0)
 
         # 步骤4：处理结构文件
-        print("\n步骤4：处理结构文件")
+        print(f"\n步骤4：处理结构文件 ({raspa_version.upper()})")
         successful_structures = 0
         from tqdm import tqdm
 
+        # 获取 RASPA3 专用配置
+        json_dir = raspa3_config.get('json_dir', '') if raspa_version == 'raspa3' else None
+
         with tqdm(total=len(framework_names), desc="处理进度", unit="结构") as pbar:
             for counter, framework_name in enumerate(framework_names, 1):
-                if process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_file, void_fraction_column, template_path, molecule_name, cif_dir, framework_column):
+                if raspa_version == 'raspa3':
+                    # 使用 RASPA3 处理函数
+                    success = process_framework_raspa3(
+                        topdir, subdir, counter, framework_name, cutoff,
+                        void_csv_file=void_csv_file,
+                        void_fraction_column=void_fraction_column,
+                        template_path=template_path,
+                        molecule_name=molecule_name,
+                        cif_base_path=cif_dir,
+                        json_dir=json_dir,
+                        framework_column=framework_column
+                    )
+                else:
+                    # 使用 RASPA2 处理函数
+                    success = process_framework(
+                        topdir, subdir, counter, framework_name, cutoff,
+                        void_csv_file, void_fraction_column, template_path,
+                        molecule_name, cif_dir, framework_column
+                    )
+                if success:
                     successful_structures += 1
                 pbar.update(1)
 

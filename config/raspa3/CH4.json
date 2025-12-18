@@ -1,0 +1,20 @@
+{
+  "MoleculeDefinitions": {
+    "ExampleDefinitions": {
+      "CH4": {
+        "Atoms": [
+          {"Name": "CH4", "Type": "CH4", "Position": [0.0, 0.0, 0.0], "Charge": 0.0}
+        ],
+        "Rigid": true,
+        "Critical": {
+          "Temperature": 190.564,
+          "Pressure": 4599000.0
+        },
+        "Intra": {
+          "VDW": {"Excluded": 1},
+          "Charge": {"Excluded": 1}
+        }
+      }
+    }
+  }
+}

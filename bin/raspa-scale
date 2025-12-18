@@ -140,6 +140,24 @@ fi
 echo "工作根目录: $BASE_DIR"
 echo "目标子目录: $SUBDIR"
 
+# 自动检测 RASPA 版本（若环境变量未设置）
+if [ -z "${RASPA_VERSION:-}" ]; then
+  # 检测第一个存在的任务目录
+  SAMPLE_DIR=$(find "$TARGET_DIR" -maxdepth 1 -type d \( -name 'mc[0-9]*' -o -name 'mc[0-9]*__running' \) 2>/dev/null | head -1)
+  if [ -n "$SAMPLE_DIR" ]; then
+    if [ -f "$SAMPLE_DIR/simulation.json" ]; then
+      RASPA_VERSION="raspa3"
+      echo "检测到 RASPA3 任务 (simulation.json)"
+    elif [ -f "$SAMPLE_DIR/simulation.input" ]; then
+      RASPA_VERSION="raspa2"
+      echo "检测到 RASPA2 任务 (simulation.input)"
+    fi
+  fi
+  # 默认 RASPA2
+  [ -z "$RASPA_VERSION" ] && RASPA_VERSION="raspa2"
+fi
+export RASPA_VERSION
+
 LIMIT_FILE="$TARGET_DIR/.raspa_worker_limit"
 
 # 在设置并发前输出资源与可用任务概览；若交互或未提供数值，则提示输入
@@ -149,7 +167,10 @@ node_cpu_count() { command -v nproc >/dev/null 2>&1 && nproc || getconf _NPROCES
 RUNNING_COUNT=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}')
 PENDING_COUNT=0
 while IFS= read -r d; do
-  [ -f "$d/simulation.input" ] && PENDING_COUNT=$((PENDING_COUNT+1))
+  # 支持 RASPA2 (simulation.input) 和 RASPA3 (simulation.json)
+  if [ -f "$d/simulation.input" ] || [ -f "$d/simulation.json" ]; then
+    PENDING_COUNT=$((PENDING_COUNT+1))
+  fi
 done < <(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%p\n' 2>/dev/null)
 USEFUL_TASKS=$((RUNNING_COUNT + PENDING_COUNT))
 
@@ -320,6 +341,27 @@ if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1; then
     mkdir -p "$LOG_DIR"
     local SCRIPT_DIR="$ROOT_DIR/.raspa_tools/job_templates"
     local JOB_TEMPLATE="$SCRIPT_DIR/job_submit.sh"
+
+    # 确保使用正确的 runjobs 脚本 (RASPA2 或 RASPA3)
+    local WORK_JOB_TEMPLATES
+    if [ "$SUBDIR" = "." ]; then
+      WORK_JOB_TEMPLATES="$TARGET_DIR/job_templates"
+    else
+      WORK_JOB_TEMPLATES="$(dirname "$TARGET_DIR")/job_templates"
+    fi
+    mkdir -p "$WORK_JOB_TEMPLATES"
+    local RASPA_VERSION_LOWER
+    RASPA_VERSION_LOWER="$(echo "${RASPA_VERSION:-raspa2}" | tr '[:upper:]' '[:lower:]')"
+    if [ "$RASPA_VERSION_LOWER" = "raspa3" ]; then
+      if [ -f "$SCRIPT_DIR/runjobs_raspa3.sh" ]; then
+        cp -f "$SCRIPT_DIR/runjobs_raspa3.sh" "$WORK_JOB_TEMPLATES/runjobs.sh"
+      else
+        cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_JOB_TEMPLATES/runjobs.sh"
+      fi
+    else
+      cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_JOB_TEMPLATES/runjobs.sh"
+    fi
+    chmod 755 "$WORK_JOB_TEMPLATES/runjobs.sh"
     local TMP_SCRIPT
     TMP_SCRIPT=$(mktemp "$TARGET_DIR/.job_submit_ht.XXXXXX.sh")
     local now
@@ -370,7 +412,8 @@ if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1; then
         "export RASPA_WORK_DIR=\"${job_base_dir}\"" \
         "export RASPA_OUTPUT_DIR=\"${SUBDIR}\"" \
         "export RASPA_SUBDIR=\"${SUBDIR}\"" \
-        "export RASPA_WORKER_ID=\"${name}\""
+        "export RASPA_WORKER_ID=\"${name}\"" \
+        "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
       # 提交（强制日志到 1log）
       out="$LOG_DIR/${name}.out"; err="$LOG_DIR/${name}.err"
       submit_result=$(sbatch -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1)
@@ -439,7 +482,8 @@ if false; then
   RUNNING_COUNT=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}')
   PENDING_COUNT=0
   while IFS= read -r d; do
-    [ -f "$d/simulation.input" ] && PENDING_COUNT=$((PENDING_COUNT+1))
+    # 支持 RASPA2 和 RASPA3
+    { [ -f "$d/simulation.input" ] || [ -f "$d/simulation.json" ]; } && PENDING_COUNT=$((PENDING_COUNT+1))
   done < <(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%p\n' 2>/dev/null)
   TOTAL_AVAILABLE=$((RUNNING_COUNT + PENDING_COUNT))
 
@@ -499,10 +543,11 @@ fi
   if [ -s "$JOBS_FILE" ] && [ "$LIVE" -lt "$NEW_LIMIT" ]; then
     # 统计当前可并发的“有意义”上限：已在跑的任务数(__running) + 待处理的任务数(mc*)
     RUNNING_COUNT=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}')
-    # 仅统计存在 simulation.input 的待处理目录
+    # 仅统计存在 simulation.input 或 simulation.json 的待处理目录
     PENDING_COUNT=0
     while IFS= read -r d; do
-      [ -f "$d/simulation.input" ] && PENDING_COUNT=$((PENDING_COUNT+1))
+      # 支持 RASPA2 和 RASPA3
+    { [ -f "$d/simulation.input" ] || [ -f "$d/simulation.json" ]; } && PENDING_COUNT=$((PENDING_COUNT+1))
     done < <(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%p\n' 2>/dev/null)
 
     # “有意义”的目标并发 = min(用户目标, RUNNING + PENDING)
@@ -613,7 +658,8 @@ fi
   RUNNING_COUNT=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}')
   PENDING_COUNT=0
   while IFS= read -r d; do
-    [ -f "$d/simulation.input" ] && PENDING_COUNT=$((PENDING_COUNT+1))
+    # 支持 RASPA2 和 RASPA3
+    { [ -f "$d/simulation.input" ] || [ -f "$d/simulation.json" ]; } && PENDING_COUNT=$((PENDING_COUNT+1))
   done < <(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%p\n' 2>/dev/null)
   USEFUL_TARGET=$NEW_LIMIT
   TOTAL_AVAILABLE=$((RUNNING_COUNT + PENDING_COUNT))
@@ -648,6 +694,8 @@ elif command -v qsub >/dev/null 2>&1 && command -v qstat >/dev/null 2>&1; then
   # =========================
   # PBS: 自动扩缩容（安全过滤）
   # =========================
+  echo "检测到PBS调度器，当前版本暂未实现自动扩缩容逻辑，仅更新并发上限文件。"
+  : # 占位，避免空then块导致语法错误
 fi
 
 echo "并发调整完成"

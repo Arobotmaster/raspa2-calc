@@ -1,0 +1,30 @@
+{
+  "SimulationType": "MonteCarlo",
+  "NumberOfCycles": 10000,
+  "NumberOfInitializationCycles": 2000,
+  "PrintEvery": 1000,
+
+  "Systems": [
+    {
+      "Type": "Framework",
+      "Name": "FRAMEWORK_NAME_PLACEHOLDER",
+      "NumberOfUnitCells": [1, 1, 1],
+      "ExternalTemperature": 298.0,
+      "ExternalPressure": 101325.0,
+      "ChargeMethod": "Ewald",
+      "HeliumVoidFraction": 0.5
+    }
+  ],
+
+  "Components": [
+    {
+      "Name": "CO2",
+      "FugacityCoefficient": 1.0,
+      "TranslationProbability": 0.5,
+      "RotationProbability": 0.5,
+      "ReinsertionProbability": 0.5,
+      "SwapProbability": 1.0,
+      "CreateNumberOfMolecules": 0
+    }
+  ]
+}

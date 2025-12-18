@@ -5,8 +5,8 @@ import subprocess
 import importlib
 
 # 版本信息
-__version__ = "2.3.0"
-__version_name__ = "集群优化版"
+__version__ = "2.4.0"
+__version_name__ = "RASPA2/RASPA3 双版本支持"
 
 # 全局配置
 config = None
@@ -43,6 +43,14 @@ def load_config():
         config = {}
         print(f"⚠️  配置文件加载失败: {e}，使用默认设置")
 
+def get_raspa_version():
+    """获取配置的 RASPA 版本"""
+    if config:
+        version = config.get('environment', {}).get('raspa_version', 'raspa2')
+        return version.lower() if version else 'raspa2'
+    return 'raspa2'
+
+
 def check_environment():
     """检测当前环境是否满足运行要求"""
     print("🔍 环境检测中...")
@@ -50,6 +58,10 @@ def check_environment():
 
     all_passed = True
     issues = []
+
+    # 0. 显示 RASPA 版本配置
+    raspa_version = get_raspa_version()
+    print(f"\n🔧 RASPA 版本: {raspa_version.upper()}")
 
     # 1. 检查Python依赖
     print("\n📦 检查Python依赖包:")
@@ -90,9 +102,14 @@ def check_environment():
             issues.append(f"无法检查系统工具: {tool}")
             all_passed = False
 
-    # 3. 检查环境变量
+    # 3. 检查环境变量 (根据 RASPA 版本检查不同的变量)
     print("\n🌍 检查环境变量:")
-    required_env_vars = ['RASPA_DIR', 'RASPA_WORK_DIR']
+
+    if raspa_version == 'raspa3':
+        # RASPA3 不需要 RASPA_DIR，使用 conda 环境
+        required_env_vars = ['RASPA_WORK_DIR']
+    else:
+        required_env_vars = ['RASPA_DIR', 'RASPA_WORK_DIR']
 
     for var in required_env_vars:
         # 优先使用配置文件中的设置
@@ -106,19 +123,81 @@ def check_environment():
             issues.append(f"缺少环境变量: {var}")
             all_passed = False
 
-    # 4. 检查RASPA可执行文件
+    # 4. 检查RASPA可执行文件 (根据版本检查不同的文件)
     print("\n⚙️  检查RASPA可执行文件:")
-    raspa_dir = os.environ.get('RASPA_DIR')
-    if raspa_dir:
-        simulate_path = os.path.join(raspa_dir, 'bin', 'simulate')
-        if os.path.exists(simulate_path) and os.access(simulate_path, os.X_OK):
-            print(f"  ✅ RASPA simulate 可执行文件: {simulate_path}")
+
+    if raspa_version == 'raspa3':
+        # RASPA3: 检查 conda 环境中的 raspa3 命令
+        raspa3_conda_env = config.get('environment', {}).get('raspa3_conda_env', 'raspa3')
+        print(f"  ℹ️  RASPA3 Conda 环境: {raspa3_conda_env}")
+
+        # 尝试检查 raspa3 命令是否可用
+        try:
+            # 检查 conda 环境目录
+            conda_base = os.path.expanduser("~/anaconda3")
+            if not os.path.exists(conda_base):
+                conda_base = os.path.expanduser("~/miniconda3")
+
+            raspa3_bin = os.path.join(conda_base, 'envs', raspa3_conda_env, 'bin', 'raspa3')
+            if os.path.exists(raspa3_bin) and os.access(raspa3_bin, os.X_OK):
+                print(f"  ✅ RASPA3 可执行文件: {raspa3_bin}")
+            else:
+                # 尝试用 which 命令查找
+                result = subprocess.run(
+                    f"source ~/anaconda3/etc/profile.d/conda.sh && conda activate {raspa3_conda_env} && which raspa3",
+                    shell=True, capture_output=True, text=True, executable='/bin/bash'
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    print(f"  ✅ RASPA3 可执行文件: {result.stdout.strip()}")
+                else:
+                    print(f"  ⚠️  RASPA3 可执行文件未找到 (请确保 {raspa3_conda_env} 环境已正确安装)")
+                    print(f"     提示: conda activate {raspa3_conda_env} && which raspa3")
+        except Exception as e:
+            print(f"  ⚠️  无法检查 RASPA3 可执行文件: {e}")
+
+        # 检查 RASPA3 配置路径
+        raspa3_json_dir = config.get('environment', {}).get('raspa3_json_dir', '')
+        raspa3_cif_base = config.get('environment', {}).get('raspa3_cif_base_path', '')
+        raspa3_template = config.get('environment', {}).get('raspa3_template_path', '')
+
+        print("\n📂 RASPA3 配置路径:")
+        if raspa3_json_dir:
+            if os.path.isdir(raspa3_json_dir):
+                print(f"  ✅ JSON 文件目录: {raspa3_json_dir}")
+            else:
+                print(f"  ⚠️  JSON 文件目录不存在: {raspa3_json_dir}")
         else:
-            print(f"  ❌ RASPA simulate 可执行文件不存在或不可执行: {simulate_path}")
-            issues.append("RASPA simulate 可执行文件不存在或不可执行")
-            all_passed = False
+            print(f"  ℹ️  JSON 文件目录未配置 (raspa3_json_dir)")
+
+        if raspa3_cif_base:
+            if os.path.isdir(raspa3_cif_base):
+                print(f"  ✅ CIF 基础路径: {raspa3_cif_base}")
+            else:
+                print(f"  ⚠️  CIF 基础路径不存在: {raspa3_cif_base}")
+        else:
+            print(f"  ⚠️  CIF 基础路径未配置 (raspa3_cif_base_path)")
+
+        if raspa3_template:
+            if os.path.isfile(raspa3_template):
+                print(f"  ✅ 模板文件: {raspa3_template}")
+            else:
+                print(f"  ⚠️  模板文件不存在: {raspa3_template}")
+        else:
+            print(f"  ℹ️  模板文件未配置 (raspa3_template_path)")
+
     else:
-        print("  ❌ 无法检查RASPA可执行文件 (RASPA_DIR未设置)")
+        # RASPA2: 检查 RASPA_DIR/bin/simulate
+        raspa_dir = os.environ.get('RASPA_DIR')
+        if raspa_dir:
+            simulate_path = os.path.join(raspa_dir, 'bin', 'simulate')
+            if os.path.exists(simulate_path) and os.access(simulate_path, os.X_OK):
+                print(f"  ✅ RASPA simulate 可执行文件: {simulate_path}")
+            else:
+                print(f"  ❌ RASPA simulate 可执行文件不存在或不可执行: {simulate_path}")
+                issues.append("RASPA simulate 可执行文件不存在或不可执行")
+                all_passed = False
+        else:
+            print("  ❌ 无法检查RASPA可执行文件 (RASPA_DIR未设置)")
 
     # 5. 检查工具目录
     print("\n📁 检查工具目录:")
@@ -144,7 +223,7 @@ def check_environment():
 
 def show_help():
     """显示帮助信息"""
-    print(f"RASPA2 高通量计算工具 v{__version__} ({__version_name__})")
+    print(f"RASPA 高通量计算工具 v{__version__} ({__version_name__})")
     print()
     print("用法: raspa-calc [选项]")
     print()
@@ -152,6 +231,11 @@ def show_help():
     print("  -h, --help          显示此帮助信息")
     print("  -v, --version       显示版本信息")
     print("  --no-check          跳过环境检测")
+    print()
+    print("支持的 RASPA 版本:")
+    print("  • RASPA2 - 传统版本 (simulation.input)")
+    print("  • RASPA3 - 新版本 (simulation.json)")
+    print("  在 config.yaml 中设置 raspa_version: 'raspa2' 或 'raspa3'")
     print()
     print("计算模式:")
     print("  1. 参数筛选模式（小批量运算）")
@@ -167,13 +251,18 @@ def show_help():
     print()
     print("  3. 数据提取模式（从计算结果中提取数据）")
     print("     - 从计算结果中提取关键数据")
+    print("     - 自动检测 RASPA2/RASPA3 输出格式")
     print("     - 生成Excel表格")
     print()
-    print("v2.3.0 新特性:")
+    print("v2.4.0 新特性:")
+    print("  ✅ RASPA3 支持 - 完整支持 RASPA3 版本")
+    print("  ✅ 版本自动检测 - 自动识别输出文件格式")
+    print("  ✅ 双版本配置 - 配置文件支持切换版本")
+    print()
+    print("v2.3.0 特性:")
     print("  ✅ 多节点集群支持 - NFS共享存储实现跨节点调度")
     print("  ✅ 任务提交延迟优化 - 避免调度器过载导致节点异常")
     print("  ✅ 配置参数化 - 框架列名等参数完全可配置")
-    print("  ✅ CSV空隙率读取 - 支持从CSV文件读取空隙率数据")
     print()
     print("示例:")
     print("  raspa-calc               # 交互式选择模式")
@@ -192,13 +281,14 @@ def show_help():
 
 def show_version():
     """显示版本信息"""
-    print(f"RASPA2 高通量计算工具 v{__version__} ({__version_name__})")
+    print(f"RASPA 高通量计算工具 v{__version__} ({__version_name__})")
     print()
     print("版本特性:")
+    print("  ✅ RASPA2/RASPA3 双版本支持 - 可在配置文件中切换版本")
+    print("  ✅ 版本自动检测 - 自动识别输出文件格式进行数据提取")
     print("  ✅ 多节点集群支持 - 支持SLURM集群跨节点调度(960+CPU核心)")
     print("  ✅ 任务提交优化 - 智能延迟避免调度器过载和Prolog error")
-    print("  ✅ 配置参数化 - 支持从配置文件读取所有参数，避免硬编码")
-    print("  ✅ CSV数据集成 - 支持从CSV文件读取空隙率等数据")
+    print("  ✅ 配置参数化 - 支持从配置文件读取所有参数")
     print("  ✅ 精确UnitCells算法 - 基于向量叉积的精确计算")
     print("  ✅ gemmi库集成 - 专业CIF文件处理和晶体学计算")
     print()
@@ -238,19 +328,23 @@ def main():
         sys.exit(1)
 
     # 显示版本信息
+    raspa_version = get_raspa_version()
     print(f"\n🚀 当前版本: {__version__} ({__version_name__})")
+    print(f"   • 当前 RASPA 版本: {raspa_version.upper()}")
+    print("   • 支持 RASPA2/RASPA3 双版本切换")
     print("   • 支持多节点集群(NFS共享存储实现跨节点调度)")
-    print("   • 任务提交延迟优化(避免调度器过载导致节点异常)")
     print("   • 配置参数化(支持从配置文件读取所有参数)")
     print("   • 集成gemmi库进行专业CIF处理")
 
     # 显示模式选择菜单
-    print("\n=== RASPA计算模式选择 ===")
+    print(f"\n=== RASPA计算模式选择 ({raspa_version.upper()}) ===")
     print("1. 参数筛选模式（小批量运算）")
     print("2. 高通量计算模式（大规模计算）")
     print("3. 数据提取模式（从计算结果中提取数据）")
     print("4. 警告处理模式（处理计算中的警告任务）")
     print("5. 等温线绘制模式（批量绘制MOF等温吸附曲线）")
+    print()
+    print(f"💡 切换 RASPA 版本: 修改 config.yaml 中的 raspa_version 配置项")
 
     # 获取用户选择
     try:
@@ -304,13 +398,20 @@ def run_task_runner():
         # 设置环境变量以传递配置参数
         if config:
             # 从配置文件读取参数并设置为环境变量
-            
-            # 设置CIF目录
             env_config = config.get('environment', {})
-            if 'cif_dir' in env_config:
-                os.environ['RASPA_CIF_DIR'] = env_config['cif_dir']
-                
             calc_config = config.get('calculation', {})
+
+            # 根据 RASPA 版本设置 CIF 目录
+            raspa_ver = env_config.get('raspa_version', 'raspa2').lower()
+            if raspa_ver == 'raspa3':
+                # RASPA3: 使用 raspa3_cif_base_path
+                cif_path = env_config.get('raspa3_cif_base_path', '')
+            else:
+                # RASPA2: 使用 raspa2_cif_dir，兼容旧的 cif_dir
+                cif_path = env_config.get('raspa2_cif_dir', '') or env_config.get('cif_dir', '')
+
+            if cif_path:
+                os.environ['RASPA_CIF_DIR'] = cif_path
 
             # 设置截断半径
             if 'cutoff_radius' in calc_config:
@@ -327,12 +428,23 @@ def run_task_runner():
             if 'output_directory' in calc_config:
                 os.environ['RASPA_OUTPUT_DIR'] = calc_config['output_directory']
 
-            # 设置模板相关参数
-            if 'use_custom_template' in calc_config:
-                os.environ['RASPA_USE_CUSTOM_TEMPLATE'] = str(calc_config['use_custom_template']).lower()
+            # 设置模板相关参数 (根据 RASPA 版本选择正确的模板)
+            raspa_version = env_config.get('raspa_version', 'raspa2').lower()
 
-            if 'template_path' in calc_config:
-                os.environ['RASPA_TEMPLATE_PATH'] = calc_config['template_path']
+            if raspa_version == 'raspa3':
+                # RASPA3: 使用 raspa3_template_path (simulation.json)
+                if 'raspa3_template_path' in env_config and env_config['raspa3_template_path']:
+                    os.environ['RASPA_TEMPLATE_PATH'] = env_config['raspa3_template_path']
+                    os.environ['RASPA_USE_CUSTOM_TEMPLATE'] = 'true'
+                else:
+                    # 使用默认 RASPA3 模板
+                    os.environ['RASPA_USE_CUSTOM_TEMPLATE'] = 'false'
+            else:
+                # RASPA2: 使用 template_path (simulation.input)
+                if 'use_custom_template' in calc_config:
+                    os.environ['RASPA_USE_CUSTOM_TEMPLATE'] = str(calc_config['use_custom_template']).lower()
+                if 'template_path' in calc_config:
+                    os.environ['RASPA_TEMPLATE_PATH'] = calc_config['template_path']
 
             # 设置空隙率相关参数
             if 'use_void_csv' in calc_config:
@@ -362,6 +474,29 @@ def run_task_runner():
                 os.environ['RASPA_ENABLE_JOB_LOGS'] = str(logging_config['enable_job_logs']).lower()
             else:
                 os.environ.pop('RASPA_ENABLE_JOB_LOGS', None)
+
+            # ============ RASPA3 专用环境变量 ============
+            # 设置 RASPA 版本 (raspa_version 已在上面定义)
+            os.environ['RASPA_VERSION'] = raspa_version
+
+            if raspa_version == 'raspa3':
+                # RASPA3 Conda 环境名
+                if 'raspa3_conda_env' in env_config:
+                    os.environ['RASPA3_CONDA_ENV'] = env_config['raspa3_conda_env']
+
+                # RASPA3 JSON 文件目录
+                if 'raspa3_json_dir' in env_config and env_config['raspa3_json_dir']:
+                    os.environ['RASPA3_JSON_DIR'] = env_config['raspa3_json_dir']
+
+                # RASPA3 CIF 基础路径
+                if 'raspa3_cif_base_path' in env_config and env_config['raspa3_cif_base_path']:
+                    os.environ['RASPA3_CIF_BASE_PATH'] = env_config['raspa3_cif_base_path']
+
+                # RASPA3 模板路径
+                if 'raspa3_template_path' in env_config and env_config['raspa3_template_path']:
+                    os.environ['RASPA3_TEMPLATE_PATH'] = env_config['raspa3_template_path']
+
+                print(f"✅ 已设置 RASPA3 环境变量 (Conda环境: {env_config.get('raspa3_conda_env', 'raspa3')})")
 
             print("✅ 已从配置文件加载计算参数")
 

@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+"""
+RASPA 数据提取工具 (支持 RASPA2/RASPA3 双版本)
+
+功能:
+- 自动检测 RASPA 版本 (simulation.input -> RASPA2, simulation.json -> RASPA3)
+- 支持高通量计算模式 (mc1, mc2, mc3...)
+- 提取吸附量、吸附热、亨利系数等数据
+- 输出为 Excel 或 CSV 格式
+
+用法:
+    python data_extractor.py
+"""
 
 import os
 import re
@@ -15,6 +27,69 @@ except ImportError:
     print("\n需要安装tqdm和pandas库才能运行数据提取功能")
     print("请运行: pip install tqdm pandas")
     sys.exit(1)
+
+
+# ============ RASPA 版本检测 ============
+
+def detect_raspa_version(base_path):
+    """
+    自动检测目录中使用的 RASPA 版本
+
+    检测逻辑:
+    - 如果发现 simulation.json -> RASPA3
+    - 如果发现 simulation.input -> RASPA2
+    - 优先检查第一个 mc 目录
+
+    Args:
+        base_path: 基础目录路径
+
+    Returns:
+        "raspa3" 或 "raspa2" 或 None (无法检测)
+    """
+    # 查找第一个 mc 目录
+    mc_dir = None
+    for root, dirs, files in os.walk(base_path):
+        for dir_name in dirs:
+            if re.match(r'mc\d+(__done|__failed|__running)?$', dir_name):
+                mc_dir = os.path.join(root, dir_name)
+                break
+        if mc_dir:
+            break
+
+    if mc_dir:
+        # 检查 mc 目录中的文件
+        if os.path.exists(os.path.join(mc_dir, 'simulation.json')):
+            return "raspa3"
+        elif os.path.exists(os.path.join(mc_dir, 'simulation.input')):
+            return "raspa2"
+
+    # 没有 mc 目录，检查整个目录
+    for root, dirs, files in os.walk(base_path):
+        if 'simulation.json' in files:
+            return "raspa3"
+        if 'simulation.input' in files:
+            return "raspa2"
+
+    return None
+
+
+def detect_raspa_version_from_config(cfg):
+    """
+    从配置文件读取 RASPA 版本设置
+
+    Args:
+        cfg: 配置字典
+
+    Returns:
+        "raspa3" 或 "raspa2" 或 None
+    """
+    try:
+        version = cfg.get('environment', {}).get('raspa_version', '').lower()
+        if version in ['raspa2', 'raspa3']:
+            return version
+    except Exception:
+        pass
+    return None
 
 class RASPA_Output_Data():
     '''
@@ -965,7 +1040,18 @@ def _best_item_for_framework(items):
     return sorted(items, key=score, reverse=True)[0]
 
 def _normalize_fw(s):
-    return (s or '').strip()
+    """Normalize framework names coming from CSV (may include NaN/float)."""
+    if s is None:
+        return ''
+    try:
+        # pandas/numpy NaN -> treat as empty so downstream logic keeps row order
+        if pd.isna(s):
+            return ''
+    except Exception:
+        pass
+    if not isinstance(s, str):
+        s = str(s)
+    return s.strip()
 
 def find_and_process_files_by_csv_template(base_path, selected_items, output_format='excel', temperature=None, selected_units=None, parse_warnings=True, config_path=None):
     """
@@ -1413,7 +1499,7 @@ def _default_base_path_from_config(cfg: dict):
     return os.getcwd()
 
 def main():
-    print("=== RASPA数据提取工具 ===")
+    print("=== RASPA数据提取工具 (支持 RASPA2/RASPA3) ===")
     print("该工具将从指定目录中提取所有output文件的数据")
 
     # 预加载配置以给出更合理的默认 base_path
@@ -1429,6 +1515,54 @@ def main():
         print(f"错误: 目录 '{base_path}' 不存在")
         return
 
+    # ============ RASPA 版本检测与选择 ============
+    print("\n检测 RASPA 版本...")
+
+    # 优先从配置读取，然后自动检测
+    config_version = detect_raspa_version_from_config(cfg)
+    detected_version = detect_raspa_version(base_path)
+
+    if config_version:
+        print(f"✓ 配置文件指定版本: {config_version.upper()}")
+    if detected_version:
+        print(f"✓ 自动检测版本: {detected_version.upper()}")
+
+    # 确定使用的版本
+    raspa_version = detected_version or config_version or "raspa2"
+
+    # 询问是否覆盖
+    print(f"\n当前将使用: {raspa_version.upper()}")
+    print("1. RASPA2 (simulation.input)")
+    print("2. RASPA3 (simulation.json)")
+    version_choice = input(f"请选择版本 (1/2, 默认使用检测结果): ").strip()
+
+    if version_choice == '1':
+        raspa_version = "raspa2"
+    elif version_choice == '2':
+        raspa_version = "raspa3"
+
+    print(f"✓ 使用 {raspa_version.upper()} 数据提取器")
+
+    # 如果是 RASPA3，调用专用提取器
+    if raspa_version == "raspa3":
+        print("\n切换到 RASPA3 数据提取器...")
+        try:
+            # 确保可以导入 RASPA3 模块
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            if script_dir not in sys.path:
+                sys.path.insert(0, script_dir)
+            from data_extractor_raspa3 import find_and_process_files_high_throughput as raspa3_process
+            from data_extractor_raspa3 import save_results_to_file as raspa3_save
+        except ImportError as e:
+            print(f"警告: 无法导入 RASPA3 提取器模块: {e}")
+            print("回退到 RASPA2 提取器...")
+            raspa_version = "raspa2"
+
+    # 如果成功导入 RASPA3 模块，使用 RASPA3 处理流程
+    if raspa_version == "raspa3":
+        # 继续使用当前工作目录和已输入的 base_path
+        pass  # 后续代码会处理
+
     # 检测计算模式
     print("\n检测计算模式...")
     mc_dirs = []
@@ -1440,7 +1574,7 @@ def main():
             break  # 只检查第一层目录
 
     is_high_throughput = len(mc_dirs) > 0
-    
+
     if is_high_throughput:
         print(f"✓ 检测到高通量计算模式（找到 {len(mc_dirs)} 个mc目录）")
         print("将按mc1, mc2, mc3...的顺序提取数据，包括没有输出文件的目录")
@@ -1583,11 +1717,17 @@ def main():
 
     # 开始提取数据
     print(f"\n开始从 {base_path} 提取数据...")
-    
+
     parallel = False
     workers = None
-    if is_high_throughput:
-        # 高通量模式：优先使用“按模板(配置CSV中framework_column)匹配”的提取，确保按框架名映射
+
+    # 根据 RASPA 版本选择处理函数
+    if raspa_version == "raspa3":
+        # RASPA3: 使用专用提取器
+        print("使用 RASPA3 数据提取器处理...")
+        results = raspa3_process(base_path, selected_items, selected_units)
+    elif is_high_throughput:
+        # RASPA2 高通量模式：优先使用"按模板(配置CSV中framework_column)匹配"的提取，确保按框架名映射
         results = find_and_process_files_by_csv_template(
             base_path,
             selected_items,
@@ -1601,8 +1741,12 @@ def main():
         results = find_and_process_files(base_path, selected_items, temperature, selected_units, parse_warnings=parse_warnings)
 
     if results:
-        save_results_to_file(results, selected_items, output_file, output_format)
-        
+        # 根据版本选择保存函数
+        if raspa_version == "raspa3":
+            raspa3_save(results, output_file, output_format)
+        else:
+            save_results_to_file(results, selected_items, output_file, output_format)
+
         # 如果是Excel格式，同时保存警告文件
         if output_format == 'excel':
             warnings_file = 'warnings_' + output_file
