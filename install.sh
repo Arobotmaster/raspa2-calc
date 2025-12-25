@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# RASPA2 高通量计算工具安装脚本
-# 版本: v2.3.0 (集群优化版本)
-# 新增: SLURM作业数组、共享任务队列、动态并发缩放、五大计算模式、多节点集群支持
+# RASPA 高通量计算工具安装脚本
+# 版本: v2.4.0 (RASPA3 支持版本)
+# 新增: RASPA2/RASPA3 双版本支持、自动版本检测、RASPA3 数据提取器
 
 echo "=================================================="
-echo "    RASPA2 高通量计算工具 v2.3 安装程序"
+echo "    RASPA 高通量计算工具 v2.4.0 安装程序"
 echo "=================================================="
 echo ""
 
@@ -18,6 +18,7 @@ check_dependencies() {
     echo "🔍 检查系统依赖..."
 
     local missing_deps=()
+    local warnings=()
 
     # 检查bash版本
     if ! bash --version >/dev/null 2>&1; then
@@ -45,7 +46,169 @@ check_dependencies() {
         exit 1
     fi
 
-    echo "✅ 系统依赖检查通过"
+    echo "✅ 系统工具检查通过"
+    echo ""
+
+    # ============ Python 环境检测 ============
+    echo "🐍 检查 Python 环境..."
+    
+    # 检查 Python3 是否存在
+    if command -v python3 >/dev/null 2>&1; then
+        PYTHON_CMD="python3"
+    elif command -v python >/dev/null 2>&1; then
+        # 检查 python 是否为 Python 3
+        if python --version 2>&1 | grep -q "Python 3"; then
+            PYTHON_CMD="python"
+        else
+            echo "❌ 未找到 Python 3，请安装 Python 3.8 或更高版本"
+            exit 1
+        fi
+    else
+        echo "❌ 未找到 Python，请安装 Python 3.8 或更高版本"
+        exit 1
+    fi
+
+    # 检查 Python 版本
+    PYTHON_VERSION=$($PYTHON_CMD -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    PYTHON_MAJOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.major)")
+    PYTHON_MINOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.minor)")
+
+    if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 8 ]); then
+        echo "❌ Python 版本过低: $PYTHON_VERSION (需要 3.8+)"
+        exit 1
+    fi
+
+    echo "✅ Python $PYTHON_VERSION"
+
+    # ============ Python 依赖包检测 ============
+    echo ""
+    echo "📦 检查 Python 依赖包..."
+    
+    local missing_packages=()
+    local optional_missing=()
+
+    # 必需包
+    for pkg in yaml numpy pandas gemmi; do
+        if $PYTHON_CMD -c "import $pkg" 2>/dev/null; then
+            echo "  ✅ $pkg"
+        else
+            if [ "$pkg" = "yaml" ]; then
+                # yaml 包实际名为 PyYAML
+                if $PYTHON_CMD -c "import yaml" 2>/dev/null; then
+                    echo "  ✅ PyYAML (yaml)"
+                else
+                    missing_packages+=("PyYAML")
+                    echo "  ❌ PyYAML (yaml) - 必需"
+                fi
+            else
+                missing_packages+=("$pkg")
+                echo "  ❌ $pkg - 必需"
+            fi
+        fi
+    done
+
+    # 可选包
+    for pkg in tqdm openpyxl matplotlib; do
+        if $PYTHON_CMD -c "import $pkg" 2>/dev/null; then
+            echo "  ✅ $pkg (可选)"
+        else
+            optional_missing+=("$pkg")
+            echo "  ⚠️  $pkg - 可选 (缺失)"
+        fi
+    done
+
+    if [ ${#missing_packages[@]} -ne 0 ]; then
+        echo ""
+        echo "❌ 缺少必需的 Python 包: ${missing_packages[*]}"
+        echo "   请运行: pip install ${missing_packages[*]}"
+        echo ""
+        read -p "是否继续安装? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "安装已取消"
+            exit 1
+        fi
+        warnings+=("缺少 Python 包: ${missing_packages[*]}")
+    fi
+
+    if [ ${#optional_missing[@]} -ne 0 ]; then
+        echo ""
+        echo "💡 可选包安装命令: pip install ${optional_missing[*]}"
+    fi
+
+    echo ""
+
+    # ============ RASPA 环境检测 ============
+    echo "⚗️  检查 RASPA 环境..."
+    
+    local raspa2_found=false
+    local raspa3_found=false
+
+    # 检查 RASPA2
+    if [ -n "${RASPA_DIR:-}" ]; then
+        if [ -x "$RASPA_DIR/bin/simulate" ]; then
+            echo "  ✅ RASPA2: $RASPA_DIR/bin/simulate"
+            raspa2_found=true
+        else
+            echo "  ⚠️  RASPA2: RASPA_DIR 已设置但 bin/simulate 不存在"
+        fi
+    else
+        # 尝试常见位置
+        for dir in "$HOME/anaconda3/pkgs/raspa2-"*/; do
+            if [ -x "${dir}bin/simulate" ] 2>/dev/null; then
+                echo "  ✅ RASPA2 (自动检测): ${dir}bin/simulate"
+                raspa2_found=true
+                break
+            fi
+        done
+        if [ "$raspa2_found" = false ]; then
+            echo "  ℹ️  RASPA2: 未检测到 (RASPA_DIR 未设置)"
+        fi
+    fi
+
+    # 检查 RASPA3
+    if command -v raspa3 >/dev/null 2>&1; then
+        RASPA3_PATH=$(which raspa3)
+        echo "  ✅ RASPA3: $RASPA3_PATH"
+        raspa3_found=true
+    else
+        # 尝试在 conda 环境中查找
+        for env_name in raspa3 RASPA3 raspa; do
+            CONDA_BASE="${CONDA_PREFIX:-$HOME/anaconda3}"
+            if [ -x "$CONDA_BASE/envs/$env_name/bin/raspa3" ]; then
+                echo "  ✅ RASPA3 (conda $env_name): $CONDA_BASE/envs/$env_name/bin/raspa3"
+                raspa3_found=true
+                break
+            fi
+        done
+        if [ "$raspa3_found" = false ]; then
+            echo "  ℹ️  RASPA3: 未检测到 (可通过 conda 安装)"
+        fi
+    fi
+
+    if [ "$raspa2_found" = false ] && [ "$raspa3_found" = false ]; then
+        echo ""
+        echo "⚠️  未检测到 RASPA2 或 RASPA3"
+        echo "   请确保至少安装一个 RASPA 版本:"
+        echo "   - RASPA2: 设置 export RASPA_DIR=/path/to/raspa2"
+        echo "   - RASPA3: conda install -c conda-forge raspa3"
+        echo ""
+        warnings+=("未检测到 RASPA 安装")
+    fi
+
+    echo ""
+
+    # ============ 总结 ============
+    if [ ${#warnings[@]} -ne 0 ]; then
+        echo "⚠️  检测到以下警告:"
+        for warn in "${warnings[@]}"; do
+            echo "   • $warn"
+        done
+        echo ""
+        echo "工具仍可安装，但部分功能可能无法使用"
+    fi
+
+    echo "✅ 环境预检测完成"
     echo ""
 }
 
@@ -84,7 +247,7 @@ validate_installation() {
 
 # 主函数
 main() {
-    echo "🚀 开始安装 RASPA2 高通量计算工具..."
+    echo "🚀 开始安装 RASPA 高通量计算工具 v2.4.0..."
     echo ""
 
     # 检查依赖
@@ -269,9 +432,12 @@ echo "=================================================="
 echo "              安装完成！"
 echo "=================================================="
 echo ""
-echo "🎉 RASPA2高通量计算工具 v2.3.0 完整安装成功！"
+echo "🎉 RASPA 高通量计算工具 v2.4.0 完整安装成功！"
 echo ""
-echo "📋 v2.3.0 核心特性："
+echo "📋 v2.4.0 核心特性："
+echo "   ✅ RASPA2/RASPA3 双版本支持 (自动检测版本，支持配置切换)"
+echo "   ✅ RASPA3 数据提取器 (科学计数法格式解析)"
+echo "   ✅ 自动版本检测 (simulation.json→RASPA3 / simulation.input→RASPA2)"
 echo "   ✅ SLURM作业数组 (sbatch --array 提交速度快50倍)"
 echo "   ✅ 共享任务队列 (原子竞争机制，减少90% NFS扫描)"
 echo "   ✅ 动态并发缩放 (raspa-scale N 实时调整)"
