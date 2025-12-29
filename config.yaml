@@ -38,14 +38,14 @@ environment:
   # RASPA3 JSON 文件目录
   # 包含: force_field.json 和分子定义文件 (如 CO2.json, CH4.json 等)
   # 高通量计算时会自动复制到每个任务目录
-  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene"
+  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/CO2"
 
   # RASPA3 CIF 文件基础路径
   # 框架名会追加到此路径，例如: {raspa3_cif_base_path}/{框架名}.cif
   raspa3_cif_base_path: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif"
 
   # RASPA3 simulation.json 模板路径
-  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene/simulation.json"
+  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/CO2/simulation.json"
 
   # ============================================================
   #              兼容性配置 (供旧版脚本使用)
@@ -64,7 +64,7 @@ calculation:
   # 默认分子 (支持多种气体分子，用空格分隔)
   # RASPA2 示例: "CO2" 或 "CO2 CH4 N2"
   # RASPA3 示例: "p-xylene" 或 "CO2"
-  default_molecules: "o-xylene m-xylene"
+  default_molecules: "CO2"
 
   # CSV 文件路径 (用于批量处理，指定框架列表)
   csv_file_path: "/home/zjp/raspa2-calc/work/10.csv"

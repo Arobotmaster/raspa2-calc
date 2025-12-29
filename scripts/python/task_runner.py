@@ -11,6 +11,7 @@ import shutil
 import copy
 from collections import OrderedDict
 from calculate_params import process_structure_file
+from force_field_utils import write_filtered_force_field
 
 
 # ============ RASPA 版本检测 ============
@@ -62,6 +63,67 @@ def setup_logging(log_file="raspa_calculation.log"):
 logger = setup_logging()
 CURRENT_SUBDIR = None
 CURRENT_TOPDIR = None
+
+
+def locate_cif_file(framework_name, cif_dir):
+    """Locate CIF file for a given framework name within a directory."""
+    clean_name = framework_name
+    if isinstance(clean_name, str) and clean_name.lower().endswith('.cif'):
+        clean_name = clean_name[:-4]
+
+    candidates = [
+        os.path.join(cif_dir, f"{clean_name}.cif"),
+        os.path.join(cif_dir, f"{clean_name}"),
+        os.path.join(cif_dir, f"{str(clean_name).upper()}.cif"),
+        os.path.join(cif_dir, f"{str(clean_name).lower()}.cif"),
+    ]
+
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def count_numbered_labels(cif_path):
+    """Count labels that contain numeric suffixes in a CIF file."""
+    try:
+        with open(cif_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+    except Exception as exc:
+        logger.warning(f"读取 CIF 失败，跳过标签检查: {cif_path} ({exc})")
+        return 0
+
+    count = 0
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith('loop_'):
+            headers = []
+            j = i + 1
+            while j < len(lines) and lines[j].strip().startswith('_'):
+                headers.append(lines[j].strip())
+                j += 1
+
+            if '_atom_site_label' in headers:
+                label_idx = headers.index('_atom_site_label')
+                k = j
+                while k < len(lines):
+                    row = lines[k].strip()
+                    if not row or row.startswith('_') or row.startswith('loop_') or row.startswith('data_'):
+                        break
+
+                    parts = row.split()
+                    if len(parts) > label_idx:
+                        label = parts[label_idx].strip().strip("'\"")
+                        if any(ch.isdigit() for ch in label):
+                            count += 1
+                    k += 1
+                i = k
+                continue
+        i += 1
+
+    return count
+
 
 def _get_slurm_summary():
     """备用：获取SLURM聚合CPU统计信息"""
@@ -1041,7 +1103,15 @@ def process_framework_raspa3(topdir, subdir, counter, framework_name, cutoff, vo
             # 复制力场文件
             force_field_src = os.path.join(json_dir, "force_field.json")
             if os.path.exists(force_field_src):
-                shutil.copy2(force_field_src, os.path.join(md_dir, "force_field.json"))
+                dest = os.path.join(md_dir, "force_field.json")
+                write_filtered_force_field(
+                    force_field_src,
+                    dest,
+                    cif_path=cif_path,
+                    json_dir=json_dir,
+                    component_names=molecule_list,
+                    log=logger,
+                )
 
             # 复制分子定义文件
             for mol_name in molecule_list:
@@ -1191,36 +1261,13 @@ def main():
             missing_cifs = []
             skipped_missing_cifs = 0
             found_cifs = []
+            framework_cif_paths = {}
 
             for framework in framework_names:
-                # 处理框架名称，确保它没有.cif后缀
-                clean_name = framework
-                if isinstance(clean_name, str) and clean_name.lower().endswith('.cif'):
-                    clean_name = clean_name[:-4]  # 移除.cif后缀
-
-                # 检查标准文件名
-                cif_file = os.path.join(cif_dir, f"{clean_name}.cif")
-
-                # 尝试各种可能的文件名
-                found = False
-                if os.path.exists(cif_file):
-                    found = True
-                else:
-                    # 尝试其他可能的文件名形式
-                    alternative_files = [
-                        os.path.join(cif_dir, f"{clean_name}"),  # 无后缀
-                        os.path.join(cif_dir, f"{str(clean_name).upper()}.cif"),  # 全大写
-                        os.path.join(cif_dir, f"{str(clean_name).lower()}.cif")   # 全小写
-                    ]
-
-                    for alt_file in alternative_files:
-                        if os.path.exists(alt_file):
-                            found = True
-                            cif_file = alt_file
-                            break
-
-                if found:
+                cif_file = locate_cif_file(framework, cif_dir)
+                if cif_file:
                     found_cifs.append(framework)
+                    framework_cif_paths[framework] = cif_file
                 else:
                     missing_cifs.append(framework)
 
@@ -1244,6 +1291,72 @@ def main():
                 sys.exit(1)
 
             logger.info(f"共找到 {len(found_cifs)} 个框架对应的CIF文件")
+
+            # 检查 CIF 标签是否包含编号
+            label_issues = []
+            total_label_issues = 0
+            for framework in framework_names:
+                cif_path = framework_cif_paths.get(framework)
+                if not cif_path:
+                    continue
+                issue_count = count_numbered_labels(cif_path)
+                if issue_count > 0:
+                    label_issues.append((framework, cif_path, issue_count))
+                    total_label_issues += issue_count
+
+            if label_issues:
+                preview_limit = 10
+                logger.warning(f"检测到 {len(label_issues)} 个 CIF 文件的 _atom_site_label 含编号，共 {total_label_issues} 条标签存在编号。")
+                for fw, path, cnt in label_issues[:preview_limit]:
+                    logger.warning(f"  - {fw}: {cnt} 个编号标签 ({path})")
+                if len(label_issues) > preview_limit:
+                    logger.warning(f"  ... 仅展示前 {preview_limit} 个框架，另有 {len(label_issues) - preview_limit} 个未列出")
+
+                user_choice = input("是否使用 clean_cif_labels.py 自动去除编号? (y/n): ").strip().lower()
+                if user_choice != 'y':
+                    logger.error("用户拒绝自动清理 CIF 标签，程序终止。请先处理标签后重新运行。")
+                    sys.exit(1)
+
+                script_path = os.path.join(os.path.dirname(__file__), "clean_cif_labels.py")
+                logger.info(f"运行标签清理脚本: {script_path} {cif_dir}")
+                result = subprocess.run([sys.executable, script_path, cif_dir])
+                if result.returncode != 0:
+                    logger.error("标签清理脚本执行失败，程序终止。")
+                    sys.exit(1)
+
+                cleaned_dir = os.path.join(cif_dir, "cleaned_cif")
+                if not os.path.exists(cleaned_dir):
+                    logger.error(f"未找到清理后的目录: {cleaned_dir}")
+                    sys.exit(1)
+
+                cif_dir = cleaned_dir
+                logger.info(f"已切换到清理后的 CIF 目录: {cif_dir}")
+
+                # 重新检查清理后的 CIF 文件是否存在
+                new_found = []
+                new_missing = []
+                new_framework_cif_paths = {}
+                for framework in framework_names:
+                    cif_file = locate_cif_file(framework, cif_dir)
+                    if cif_file:
+                        new_found.append(framework)
+                        new_framework_cif_paths[framework] = cif_file
+                    else:
+                        new_missing.append(framework)
+
+                if new_missing:
+                    logger.warning(f"清理后仍缺少以下框架的CIF文件，将跳过：{', '.join(map(str, new_missing[:10]))}"
+                                   + (f"，以及其他 {len(new_missing) - 10} 个" if len(new_missing) > 10 else ""))
+
+                framework_names = new_found
+                framework_cif_paths = new_framework_cif_paths
+                total_tasks = len(framework_names)
+
+                if total_tasks == 0:
+                    logger.error("清理后所有框架均缺少CIF文件，无法继续计算。")
+                    sys.exit(1)
+
+                logger.info(f"清理后保留 {total_tasks} 个框架用于计算")
 
         except Exception as e:
             logger.error(f"处理CSV文件时出错: {e}")

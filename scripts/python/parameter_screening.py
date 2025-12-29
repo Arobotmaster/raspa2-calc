@@ -16,6 +16,7 @@ import itertools
 import subprocess
 import re
 from pathlib import Path
+from force_field_utils import write_filtered_force_field
 
 # 导入calculate_params模块中的必要函数
 from calculate_params import process_structure_file, get_cif_cell_parameters
@@ -270,13 +271,14 @@ def count_components_in_template(template_path):
 #                    RASPA3 参数筛选支持
 # ============================================================
 
-def copy_raspa3_json_files(json_dir, output_dir, component_names=None):
-    """复制 RASPA3 所需的 JSON 文件到任务目录
+def copy_raspa3_json_files(json_dir, output_dir, component_names=None, cif_path=None):
+    """复制 RASPA3 所需的 JSON 文件到任务目录（自动筛选力场所需原子）
 
     Args:
         json_dir: RASPA3 JSON 文件目录（包含 force_field.json 和分子定义文件）
         output_dir: 任务输出目录
         component_names: 组件名称列表，用于确定需要复制哪些分子文件
+        cif_path: 框架 CIF 路径，用于筛选 force_field.json 中的原子
 
     Returns:
         bool: 成功返回 True
@@ -285,8 +287,16 @@ def copy_raspa3_json_files(json_dir, output_dir, component_names=None):
         # 复制 force_field.json
         ff_src = os.path.join(json_dir, "force_field.json")
         if os.path.exists(ff_src):
-            shutil.copy(ff_src, output_dir)
-            logger.debug(f"复制 force_field.json 到 {output_dir}")
+            dest = os.path.join(output_dir, "force_field.json")
+            write_filtered_force_field(
+                ff_src,
+                dest,
+                cif_path=cif_path,
+                json_dir=json_dir,
+                component_names=component_names,
+                log=logger,
+            )
+            logger.debug(f"复制 force_field.json 到 {dest}（已按 CIF/气体筛选）")
         else:
             logger.warning(f"force_field.json 不存在: {ff_src}")
 
@@ -579,9 +589,9 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
         param_dir = os.path.join(framework_dir, param_dir_name)
         os.makedirs(param_dir, exist_ok=True)
 
-        # 复制 RASPA3 JSON 文件
+        # 复制 RASPA3 JSON 文件（按框架/组分筛选力场）
         if json_dir:
-            copy_raspa3_json_files(json_dir, param_dir, component_names)
+            copy_raspa3_json_files(json_dir, param_dir, component_names, cif_path)
 
         # 准备参数字典
         sim_params = combo.copy()

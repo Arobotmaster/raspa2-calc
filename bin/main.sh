@@ -8,5 +8,5 @@ WORK_DIR="$PWD"
 # 设置工作目录环境变量
 export RASPA_WORK_DIR="$WORK_DIR"
 
-# 调用Python主程序，传递所有参数
-exec python "$TOOL_DIR/scripts/python/raspa_calc.py" "$@"
+# 调用Python主程序，支持配置文件功能
+exec python "$TOOL_DIR/scripts/python/raspa_calc.py"

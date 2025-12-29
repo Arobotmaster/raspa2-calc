@@ -39,7 +39,6 @@
     {"name": "Fr", "framework": true, "print_to_output": true, "element": "Fr", "print_as": "Fr", "mass": 223.0, "charge": 0.0},
     {"name": "Ga", "framework": true, "print_to_output": true, "element": "Ga", "print_as": "Ga", "mass": 69.723, "charge": 0.0},
     {"name": "Gd", "framework": true, "print_to_output": true, "element": "Gd", "print_as": "Gd", "mass": 157.25, "charge": 0.0},
-    {"name": "Gd", "framework": true, "print_to_output": true, "element": "Gd", "print_as": "Gd", "mass": 157.25, "charge": 0.0},
     {"name": "Ge", "framework": true, "print_to_output": true, "element": "Ge", "print_as": "Ge", "mass": 72.64, "charge": 0.0},
     {"name": "H", "framework": true, "print_to_output": true, "element": "H", "print_as": "H", "mass": 1.00794, "charge": 0.0},
     {"name": "He", "framework": true, "print_to_output": true, "element": "He", "print_as": "He", "mass": 4.0026, "charge": 0.0},
@@ -103,7 +102,9 @@
     {"name": "Y", "framework": true, "print_to_output": true, "element": "Y", "print_as": "Y", "mass": 88.90585, "charge": 0.0},
     {"name": "Yb", "framework": true, "print_to_output": true, "element": "Yb", "print_as": "Yb", "mass": 173.04, "charge": 0.0},
     {"name": "Zn", "framework": true, "print_to_output": true, "element": "Zn", "print_as": "Zn", "mass": 65.409, "charge": 0.0},
-    {"name": "Zr", "framework": true, "print_to_output": true, "element": "Zr", "print_as": "Zr", "mass": 91.224, "charge": 0.0}
+    {"name": "Zr", "framework": true, "print_to_output": true, "element": "Zr", "print_as": "Zr", "mass": 91.224, "charge": 0.0},
+    {"name": "C_co2", "framework": false, "print_to_output": true, "element": "C", "print_as": "C", "mass": 12.0, "charge": 0.6512},
+    {"name": "O_co2", "framework": false, "print_to_output": true, "element": "O", "print_as": "O", "mass": 15.9994, "charge": -0.3256}
   ],
   "SelfInteractions" :
   [
@@ -146,7 +147,6 @@
     {"name": "Ga", "type": "lennard-jones", "parameters": [201.28783, 3.91105], "source": "DREIDING"},
     {"name": "Gd", "type": "lennard-jones", "parameters": [4.52898, 3.00055], "source": "UFF"},
     {"name": "Ge", "type": "lennard-jones", "parameters": [201.28783, 3.80414], "source": "DREIDING"},
-    {"name": "Ge", "type": "lennard-jones", "parameters": [4.52898, 3.00055], "source": "UFF"},
     {"name": "H", "type": "lennard-jones", "parameters": [7.64894, 2.84642], "source": "DREIDING  S.L. Mayo et al., J. Phys. Chem. 1990, 94, 8897-8909."},
     {"name": "He", "type": "lennard-jones", "parameters": [10.9, 2.64], "source": "J.O. Hirschfelder et al., Molecular Theory of Gases and Liquids, Wiley,"},
     {"name": "Hf", "type": "lennard-jones", "parameters": [36.23181, 2.79831], "source": "UFF"},
@@ -209,7 +209,9 @@
     {"name": "Y", "type": "lennard-jones", "parameters": [36.23181, 2.98006], "source": "UFF"},
     {"name": "Yb", "type": "lennard-jones", "parameters": [114.73406, 2.98897], "source": "UFF"},
     {"name": "Zn", "type": "lennard-jones", "parameters": [62.39923, 2.46155], "source": "UFF"},
-    {"name": "Zr", "type": "lennard-jones", "parameters": [34.72215, 2.78317], "source": "UFF"}
+    {"name": "Zr", "type": "lennard-jones", "parameters": [34.72215, 2.78317], "source": "UFF"},
+    {"name": "O_co2", "type": "lennard-jones", "parameters": [85.671, 3.017], "source": "A. Garcia-Sanchez et al., J. Phys. Chem. C 2009, 113, 8814-8820"},
+    {"name": "C_co2", "type": "lennard-jones", "parameters": [29.933, 2.745], "source": "A. Garcia-Sanchez et al., J. Phys. Chem. C 2009, 113, 8814-8820"}
   ],
   "MixingRule" : "Lorentz-Berthelot",
   "TruncationMethod" : "shifted",

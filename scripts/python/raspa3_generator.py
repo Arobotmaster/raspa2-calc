@@ -31,6 +31,7 @@ from calculate_params import (
     calculate_UnitCells,
     get_cif_cell_parameters
 )
+from force_field_utils import write_filtered_force_field
 
 # 配置日志
 def setup_logging(log_file="raspa3_generator.log"):
@@ -157,13 +158,28 @@ def calculate_unit_cells_for_cif(cif_path, cutoff=12.0):
     return [1, 1, 1]  # 默认值
 
 
-def copy_json_files_to_task_dir(task_dir, json_dir, components):
+def copy_json_files_to_task_dir(task_dir, json_dir, components, cif_path=None):
     """复制 JSON 文件到任务目录"""
+    component_names = []
+    for component in components or []:
+        if isinstance(component, dict):
+            name = component.get("Name", "")
+            if name:
+                component_names.append(name)
+
     # 复制力场文件
     force_field_src = os.path.join(json_dir, "force_field.json")
     if os.path.exists(force_field_src):
-        shutil.copy2(force_field_src, os.path.join(task_dir, "force_field.json"))
-        logger.debug(f"复制力场文件到: {task_dir}")
+        dest = os.path.join(task_dir, "force_field.json")
+        write_filtered_force_field(
+            force_field_src,
+            dest,
+            cif_path=cif_path,
+            json_dir=json_dir,
+            component_names=component_names,
+            log=logger,
+        )
+        logger.debug(f"复制力场文件到: {dest}（已按 CIF/组分筛选）")
     else:
         logger.warning(f"力场文件不存在: {force_field_src}")
 
@@ -257,7 +273,7 @@ def generate_raspa3_tasks(
             # 复制 JSON 文件
             if json_dir and os.path.isdir(json_dir):
                 components = sim_config.get("Components", [])
-                copy_json_files_to_task_dir(task_dir, json_dir, components)
+                copy_json_files_to_task_dir(task_dir, json_dir, components, cif_path)
 
             success_count += 1
             logger.debug(f"成功生成任务: mc{idx} ({framework_name})")
