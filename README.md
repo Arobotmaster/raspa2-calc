@@ -112,7 +112,7 @@ which raspa3
 
 ```bash
 # 1. 克隆或进入项目目录
-cd raspa2-calc/.raspa_tools
+cd raspa2-calc
 
 # 2. 运行安装脚本
 chmod +x install.sh

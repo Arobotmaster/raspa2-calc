@@ -1595,7 +1595,6 @@ def main():
                 logger.warning("RASPA_CIF_DIR环境变量未设置")
 
             # 实时回显：正在提交第X个任务…
-            import subprocess, shlex
             env = os.environ.copy()
             print(f"将提交 {actual_cores} 个并行作业")
             # 直接调用 tasksrun.sh，它内部会循环提交 each job；我们解析其输出并实时提示
