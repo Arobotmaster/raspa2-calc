@@ -915,6 +915,11 @@ def process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_
         updated_lines = []
         # 处理多组分分子名称
         molecule_list = molecule_name.split() if isinstance(molecule_name, str) else [molecule_name]
+        # MSER 控制参数（仅 RASPA2）
+        mser_enable = os.environ.get('RASPA_MSER_ENABLE', 'false').lower() == 'true'
+        mser_add_cycles = int(os.environ.get('RASPA_MSER_ADD_CYCLES', '500')) if mser_enable else None
+        seen_number_cycles = seen_init_cycles = seen_equil_cycles = False
+        seen_continue = seen_restart = seen_print = False
         
         for line in lines:
             if line.startswith("FrameworkName"):
@@ -923,6 +928,21 @@ def process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_
                 updated_lines.append(f"UnitCells {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}\n")
             elif line.startswith("HeliumVoidFraction"):
                 updated_lines.append(f"HeliumVoidFraction {void_fraction}\n")
+            elif mser_enable and line.lower().startswith("numberofcycles"):
+                seen_number_cycles = True
+                updated_lines.append(f"NumberOfCycles {mser_add_cycles}\n")
+            elif mser_enable and line.lower().startswith("numberofinitializationcycles"):
+                seen_init_cycles = True
+                updated_lines.append("NumberOfInitializationCycles 0\n")
+            elif mser_enable and line.lower().startswith("numberofequilibrationcycles"):
+                seen_equil_cycles = True
+                updated_lines.append("NumberOfEquilibrationCycles 0\n")
+            elif mser_enable and line.lower().startswith("restartfile"):
+                seen_restart = True
+                updated_lines.append("RestartFile no\n")
+            elif mser_enable and line.lower().startswith("printevery"):
+                seen_print = True
+                updated_lines.append("PrintEvery 1\n")
             elif line.startswith("Component ") and "MoleculeName" in line:
                 # 提取Component编号
                 parts = line.split()
@@ -947,6 +967,19 @@ def process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_
                     updated_lines.append(line)
             else:
                 updated_lines.append(line)
+
+        # 如果模板缺少相关字段且启用 MSER，追加默认值
+        if mser_enable:
+            if not seen_number_cycles:
+                updated_lines.append(f"NumberOfCycles {mser_add_cycles}\n")
+            if not seen_init_cycles:
+                updated_lines.append("NumberOfInitializationCycles 0\n")
+            if not seen_equil_cycles:
+                updated_lines.append("NumberOfEquilibrationCycles 0\n")
+            if not seen_restart:
+                updated_lines.append("RestartFile no\n")
+            if not seen_print:
+                updated_lines.append("PrintEvery 1\n")
 
         with open(sim_input_path, "w") as f:
             f.writelines(updated_lines)

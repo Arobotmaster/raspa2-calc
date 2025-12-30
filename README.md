@@ -163,22 +163,39 @@ environment:
   raspa3_cif_base_path: "/path/to/cif"
   raspa3_template_path: "/path/to/simulation.json"
 
-# 计算参数
+# 配置片段（含 pyMSER）
+environment:
+  work_dir: "/path/to/work"
+  raspa_version: "raspa2"           # 或 raspa3
+  raspa_dir: "/path/to/raspa2"      # RASPA2 路径
+  raspa2_cif_dir: "/path/to/cif"
+  template_path: "/path/to/simulation.input"
+  raspa3_conda_env: "raspa3"
+  raspa3_json_dir: "/path/to/raspa3json"
+  raspa3_cif_base_path: "/path/to/cif/files"
+  raspa3_template_path: "/path/to/simulation.json"
+
 calculation:
   cutoff_radius: 12.8
   default_molecules: "CO2 CH4"
   csv_file_path: "data/structures.csv"
   framework_column: "refcode"
   output_directory: "calc_output"
+  # pyMSER 自动平衡（仅 RASPA2）
+  mser:
+    enable: true          # 开启后 pyMSER 自动续跑
+    target_cycles: 2000   # 期望平衡后样本数
+    add_cycles: 400       # 每次追加的循环数
+    max_iter: 20          # 最多追加次数
+    uncertainty: "uSD"    # SD/SE/uSD/uSE
+    conda_env: "pymser"   # 含 pymser 的 conda 环境
 
-# 日志配置
 logging:
   level: "INFO"
   file: "raspa_calc.log"
   output_dir: "1log"
   enable_job_logs: true
 
-# 性能配置
 performance:
   enable_cache: true
   show_progress: true

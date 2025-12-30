@@ -55,6 +55,34 @@ thiscore=$$
 LOGILFE=${topdir}/log__${subdir}_job_output
 SIMULATE_CMD="$RASPA_DIR/bin/simulate"
 [ -x "$SIMULATE_CMD" ] || SIMULATE_CMD="echo '模拟执行RASPA计算...'; sleep 2"
+MSER_SCRIPT="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}/scripts/python/auto_mser_raspa2.py"
+
+# 若未显式设置 MSER 环境变量，则从默认 config.yaml 读取
+if [ -z "$RASPA_MSER_ENABLE" ]; then
+  eval "$(
+    python - <<'PY'
+import os, sys, yaml
+cfg_path = os.path.expanduser('~/raspa2-calc/.raspa_tools/config.yaml')
+if not os.path.exists(cfg_path):
+    sys.exit(0)
+try:
+    cfg = yaml.safe_load(open(cfg_path, 'r', encoding='utf-8'))
+    mser = cfg.get('calculation', {}).get('mser', {})
+    if not mser:
+        sys.exit(0)
+    def emit(k, v):
+        print(f'export {k}=\"{v}\"')
+    emit('RASPA_MSER_ENABLE', str(mser.get('enable', False)).lower())
+    emit('RASPA_MSER_TARGET_CYCLES', mser.get('target_cycles', 1000))
+    emit('RASPA_MSER_ADD_CYCLES', mser.get('add_cycles', 500))
+    emit('RASPA_MSER_MAX_ITER', mser.get('max_iter', 20))
+    emit('RASPA_MSER_UNCERTAINTY', mser.get('uncertainty', 'uSD'))
+    emit('RASPA_MSER_CONDA_ENV', mser.get('conda_env', 'pymser'))
+except Exception:
+    sys.exit(0)
+PY
+  )"
+fi
 WORKERS_DIR="${topdir}/${subdir}/.workers"
 mkdir -p "$WORKERS_DIR"
 if [ -n "$RASPA_WORKER_ID" ]; then
@@ -331,6 +359,30 @@ while :; do
     mv "${task_running_dir}" "${topdir}/${subdir}/mc${mid}__failed"
     echo " ==> < 模拟失败 > in directory mc${mid} on core (${thiscore})." >> ${LOGILFE}
   else
+    if [ "${RASPA_MSER_ENABLE}" = "true" ] && [ -f "$MSER_SCRIPT" ]; then
+      echo " ==> 运行 pyMSER 自动平衡: mc${mid}"
+      # 优先使用 conda run，避免非交互激活失败
+      if command -v conda >/dev/null 2>&1; then
+        conda run -n "${RASPA_MSER_CONDA_ENV:-pymser}" python "$MSER_SCRIPT" \
+          --workdir "$(pwd)" \
+          --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \
+          --add-cycles "${RASPA_MSER_ADD_CYCLES:-500}" \
+          --max-iter "${RASPA_MSER_MAX_ITER:-20}" \
+          --uncertainty "${RASPA_MSER_UNCERTAINTY:-uSD}" \
+          --conda-env "${RASPA_MSER_CONDA_ENV:-pymser}"
+      else
+        python "$MSER_SCRIPT" \
+          --workdir "$(pwd)" \
+          --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \
+          --add-cycles "${RASPA_MSER_ADD_CYCLES:-500}" \
+          --max-iter "${RASPA_MSER_MAX_ITER:-20}" \
+          --uncertainty "${RASPA_MSER_UNCERTAINTY:-uSD}" \
+          --conda-env "${RASPA_MSER_CONDA_ENV:-pymser}"
+      fi
+      if [ $? -ne 0 ]; then
+        echo " ==> < pyMSER 平衡失败 > in directory mc${mid} on core (${thiscore}) (自动跳过，查看auto_mser.log)" >> ${LOGILFE}
+      fi
+    fi
     mv "${task_running_dir}" "${topdir}/${subdir}/mc${mid}__done"
     FRAMEWORK_NAME=$(grep "FrameworkName" simulation.input 2>/dev/null | awk '{print $2}')
     [ -z "$FRAMEWORK_NAME" ] && FRAMEWORK_NAME="mc${mid}"

@@ -428,6 +428,22 @@ def run_task_runner():
             if 'output_directory' in calc_config:
                 os.environ['RASPA_OUTPUT_DIR'] = calc_config['output_directory']
 
+            # 设置 pyMSER 自动平衡参数（仅 RASPA2）
+            mser_config = calc_config.get('mser', {})
+            if mser_config:
+                if 'enable' in mser_config:
+                    os.environ['RASPA_MSER_ENABLE'] = str(mser_config.get('enable', False)).lower()
+                if 'target_cycles' in mser_config:
+                    os.environ['RASPA_MSER_TARGET_CYCLES'] = str(mser_config.get('target_cycles', 1000))
+                if 'add_cycles' in mser_config:
+                    os.environ['RASPA_MSER_ADD_CYCLES'] = str(mser_config.get('add_cycles', 500))
+                if 'max_iter' in mser_config:
+                    os.environ['RASPA_MSER_MAX_ITER'] = str(mser_config.get('max_iter', 20))
+                if 'uncertainty' in mser_config:
+                    os.environ['RASPA_MSER_UNCERTAINTY'] = mser_config.get('uncertainty', 'uSD')
+                if 'conda_env' in mser_config:
+                    os.environ['RASPA_MSER_CONDA_ENV'] = mser_config.get('conda_env', 'pymser')
+
             # 设置模板相关参数 (根据 RASPA 版本选择正确的模板)
             raspa_version = env_config.get('raspa_version', 'raspa2').lower()
 
@@ -468,6 +484,9 @@ def run_task_runner():
                 os.environ['RASPA_ENABLE_JOB_LOGS'] = str(logging_config['enable_job_logs']).lower()
             else:
                 os.environ.pop('RASPA_ENABLE_JOB_LOGS', None)
+
+            # 工具目录（供 job 脚本引用）
+            os.environ['RASPA_TOOL_DIR'] = os.path.expanduser("~/raspa2-calc/.raspa_tools")
 
             # ============ RASPA3 专用环境变量 ============
             # 设置 RASPA 版本 (raspa_version 已在上面定义)
