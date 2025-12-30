@@ -618,37 +618,24 @@ def get_computation_setup(total_tasks, cif_dir=None):
     if len(molecule_list) > 1:
         logger.info(f"检测到多种气体分子: {', '.join(molecule_list)}")
 
-    # 询问是否使用自定义simulation.input模板
-    use_custom_template_env = os.environ.get('RASPA_USE_CUSTOM_TEMPLATE')
+    # 读取/输入 simulation.input 模板路径（留空使用默认模板）
     template_path_env = os.environ.get('RASPA_TEMPLATE_PATH')
-
-    if use_custom_template_env:
-        use_custom_template = use_custom_template_env.lower() == 'true'
-        logger.info(f"从配置文件读取模板设置: {'使用' if use_custom_template else '不使用'}自定义模板")
-    else:
-        use_custom_template = input("是否使用自定义simulation.input模板? (y/n): ").strip().lower() == 'y'
-
     template_path = None
-
-    if use_custom_template:
-        if template_path_env:
+    if template_path_env:
+        if os.path.exists(template_path_env):
             template_path = template_path_env
-            if os.path.exists(template_path):
-                logger.info(f"从配置文件读取模板路径: {template_path}")
-            else:
-                logger.warning(f"配置文件中的模板文件不存在: {template_path}")
-                template_path = None
+            logger.info(f"从配置文件读取模板路径: {template_path}")
         else:
-            while True:
-                template_path = input("请输入simulation.input模板文件路径: ").strip()
-                if not template_path:
-                    logger.warning("模板路径不能为空")
-                    continue
-                if not os.path.exists(template_path):
-                    logger.warning(f"模板文件不存在: {template_path}")
-                    continue
+            logger.warning(f"配置文件中的模板文件不存在: {template_path_env}")
+
+    if template_path is None and raspa_version == 'raspa2':
+        user_input = input("请输入simulation.input模板文件路径 (留空使用默认模板): ").strip()
+        if user_input:
+            if os.path.exists(user_input):
+                template_path = user_input
                 logger.info(f"将使用自定义模板: {template_path}")
-                break
+            else:
+                logger.warning(f"模板文件不存在，继续使用默认模板: {user_input}")
 
     # 询问是否使用CSV文件获取空隙率
     use_void_csv_env = os.environ.get('RASPA_USE_VOID_CSV')

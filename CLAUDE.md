@@ -83,7 +83,7 @@ python .raspa_tools/scripts/python/parameter_screening.py
 - `calculation.csv_file_path`: Input CSV with framework names
 - `calculation.framework_column`: Column name containing framework identifiers (e.g., "refcode", "coreid")
 - `calculation.default_molecules`: Gas molecules (space-separated, e.g., "CO2 CH4 N2")
-- `calculation.use_custom_template`: Whether to use custom simulation.input (RASPA2 only)
+- `calculation.template_path`: Optional path to a custom RASPA2 simulation.input (leave empty for the built-in default)
 - `calculation.template_path`: Path to custom simulation.input template (RASPA2)
 - `parameter_screening.parameters`: Parameter combinations to test (generates Cartesian product)
 - `parameter_screening.auto_unit_cells`: Auto-calculate unit cells from CIF using cutoff radius

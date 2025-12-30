@@ -407,8 +407,8 @@ def run_task_runner():
                 # RASPA3: 使用 raspa3_cif_base_path
                 cif_path = env_config.get('raspa3_cif_base_path', '')
             else:
-                # RASPA2: 使用 raspa2_cif_dir，兼容旧的 cif_dir
-                cif_path = env_config.get('raspa2_cif_dir', '') or env_config.get('cif_dir', '')
+                # RASPA2: 使用 raspa2_cif_dir
+                cif_path = env_config.get('raspa2_cif_dir', '')
 
             if cif_path:
                 os.environ['RASPA_CIF_DIR'] = cif_path
@@ -435,16 +435,10 @@ def run_task_runner():
                 # RASPA3: 使用 raspa3_template_path (simulation.json)
                 if 'raspa3_template_path' in env_config and env_config['raspa3_template_path']:
                     os.environ['RASPA_TEMPLATE_PATH'] = env_config['raspa3_template_path']
-                    os.environ['RASPA_USE_CUSTOM_TEMPLATE'] = 'true'
-                else:
-                    # 使用默认 RASPA3 模板
-                    os.environ['RASPA_USE_CUSTOM_TEMPLATE'] = 'false'
             else:
                 # RASPA2: 使用 template_path (simulation.input)
-                if 'use_custom_template' in calc_config:
-                    os.environ['RASPA_USE_CUSTOM_TEMPLATE'] = str(calc_config['use_custom_template']).lower()
-                if 'template_path' in calc_config:
-                    os.environ['RASPA_TEMPLATE_PATH'] = calc_config['template_path']
+                if 'template_path' in env_config and env_config['template_path']:
+                    os.environ['RASPA_TEMPLATE_PATH'] = env_config['template_path']
 
             # 设置空隙率相关参数
             if 'use_void_csv' in calc_config:

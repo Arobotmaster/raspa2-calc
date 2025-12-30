@@ -1287,7 +1287,7 @@ def main():
         elif raspa_version == 'raspa3':
             cif_dir = env_config.get('raspa3_cif_base_path', '')
         else:
-            cif_dir = env_config.get('raspa2_cif_dir', '') or env_config.get('cif_dir', '')
+            cif_dir = env_config.get('raspa2_cif_dir', '')
 
         # 根据 RASPA 版本选择模板文件
         if args.template:
@@ -1295,7 +1295,7 @@ def main():
         elif raspa_version == 'raspa3':
             template_path = env_config.get('raspa3_template_path', '')
         else:
-            template_path = calc_config.get('template_path', '') or env_config.get('raspa2_template_path', '')
+            template_path = env_config.get('template_path', '')
 
         # 参数筛选配置
         screening_config = config.get('parameter_screening', {})
@@ -1321,7 +1321,7 @@ def main():
             if raspa_version == 'raspa3':
                 print("   请在config.yaml中配置 environment.raspa3_template_path")
             else:
-                print("   请在config.yaml中配置 calculation.template_path")
+                print("   请在config.yaml中配置 environment.template_path")
             return 1
 
         if not os.path.exists(template_path):

@@ -24,8 +24,8 @@ environment:
   # RASPA2 CIF 文件目录
   raspa2_cif_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif"
 
-  # RASPA2 simulation.input 模板路径（可选，留空使用默认模板）
-  raspa2_template_path: ""
+  # RASPA2 simulation.input 模板路径（留空使用默认模板）
+  template_path: "/home/zjp/raspa2-calc/work/simulation.input"
 
   # ============================================================
   #                    RASPA3 专用配置
@@ -46,13 +46,6 @@ environment:
 
   # RASPA3 simulation.json 模板路径
   raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/CO2/simulation.json"
-
-  # ============================================================
-  #              兼容性配置 (供旧版脚本使用)
-  # ============================================================
-  # 注意: 以下配置已废弃，请使用上方版本专用配置
-  # cif_dir 会根据 raspa_version 自动选择 raspa2_cif_dir 或 raspa3_cif_base_path
-  cif_dir: ""
 
 # ============================================================
 #                    计算参数 (通用)
@@ -75,24 +68,16 @@ calculation:
   # 输出目录名
   output_directory: "10"
 
-  # CPU 核心数和结构数量在运行时交互式设置，不从配置读取
-
-  # ============ RASPA2 专用计算参数 ============
-  # 是否使用自定义 simulation.input 模板 (仅 RASPA2)
-  use_custom_template: true
-
-  # 自定义 simulation.input 模板路径 (仅 RASPA2)
-  template_path: "/home/zjp/raspa2-calc/work/simulation.input"
-
-  # ============ 空隙率配置 (通用) ============
-  # 是否从 CSV 文件读取空隙率
+  # 是否从 CSV 文件读取孔隙率
   use_void_csv: false
 
-  # 空隙率 CSV 文件路径
+  # 孔隙率 CSV 文件路径
   void_csv_file: ""
 
-  # 空隙率列名
+  # 孔隙率列名
   void_column: ""
+
+  # CPU 核心数和结构数量在运行时交互式设置，不从配置读取
 
 # ============================================================
 #              参数筛选配置（模式1：小批量运算）
@@ -145,40 +130,8 @@ parameter_screening:
 #                    日志配置
 # ============================================================
 logging:
-  # 日志级别: DEBUG, INFO, WARNING, ERROR
-  level: "INFO"
-
-  # 日志文件名
-  file: "raspa_calc.log"
-
   # 作业日志输出目录（相对于输出目录）
   output_dir: "1log"
 
   # 是否生成作业 .out/.err 日志
   enable_job_logs: true
-
-# ============================================================
-#                    性能配置
-# ============================================================
-performance:
-  # 启用缓存
-  enable_cache: true
-
-  # 缓存过期时间 (秒)
-  cache_timeout: 3600
-
-  # 显示进度条
-  show_progress: true
-
-# ============================================================
-#                    高级选项
-# ============================================================
-advanced:
-  # 模板目录
-  template_dir: ".raspa_tools/job_templates"
-
-  # 作业超时时间 (秒)
-  job_timeout: 3600
-
-  # 失败重试次数
-  retry_count: 3

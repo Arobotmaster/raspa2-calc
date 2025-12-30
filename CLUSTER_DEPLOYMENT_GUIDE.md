@@ -175,7 +175,7 @@ environment:
   # ============ RASPA2 专用配置 ============
   raspa_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0"
   raspa2_cif_dir: "/path/to/raspa2/structures/cif"
-  raspa2_template_path: ""
+  template_path: "/path/to/your/simulation.input"  # 留空使用默认模板
 
   # ============ RASPA3 专用配置 ============
   # RASPA3 conda 环境名称 (所有节点必须一致)
