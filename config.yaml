@@ -11,7 +11,7 @@ environment:
   # ============ RASPA 版本选择 ============
   # 选择使用的 RASPA 版本: "raspa2" 或 "raspa3"
   # 此设置决定使用哪套配置（下方 RASPA2 或 RASPA3 配置块）
-  raspa_version: "raspa2"
+  raspa_version: "raspa3"
 
   # ============================================================
   #                    RASPA2 专用配置
@@ -66,7 +66,7 @@ calculation:
   framework_column: "coreid"
 
   # 输出目录名
-  output_directory: "10pymser"
+  output_directory: "1pymser"
 
   # 是否从 CSV 文件读取孔隙率
   use_void_csv: false
@@ -77,14 +77,14 @@ calculation:
   # 孔隙率列名
   void_column: ""
 
-  # pyMSER 自动平衡（仅 RASPA2）
+  # pyMSER 自动平衡
   mser:
     enable: true
     target_cycles: 2000
     add_cycles: 400
     max_iter: 20
     uncertainty: "uSD"   # SD, SE, uSD, uSE
-    conda_env: "pymser"  # 包含 pymser+raspa2 的 conda 环境
+    conda_env: "pymser"  # 包含 pymser 的 conda 环境
 
   # CPU 核心数和结构数量在运行时交互式设置，不从配置读取
 

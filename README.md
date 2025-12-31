@@ -141,6 +141,11 @@ PyYAML>=6.0            # YAML配置
 pip install -r requirements.txt
 ```
 
+如需使用 pyMSER 自动平衡，可直接创建共享环境（含 pymser/raspa2/numpy/pandas 等）：
+```bash
+conda env create -f environment.yml  # 生成名为 pymser 的环境
+```
+
 ## 配置文件
 
 ### 完整配置示例
@@ -181,14 +186,14 @@ calculation:
   csv_file_path: "data/structures.csv"
   framework_column: "refcode"
   output_directory: "calc_output"
-  # pyMSER 自动平衡（仅 RASPA2）
+  # pyMSER 自动平衡（RASPA2/3 通用，多组分按 mol/kg 总和判定）
   mser:
     enable: true          # 开启后 pyMSER 自动续跑
     target_cycles: 2000   # 期望平衡后样本数
     add_cycles: 400       # 每次追加的循环数
     max_iter: 20          # 最多追加次数
     uncertainty: "uSD"    # SD/SE/uSD/uSE
-    conda_env: "pymser"   # 含 pymser 的 conda 环境
+    conda_env: "pymser"   # 含 pymser+raspa3 的 conda 环境，R2/R3 共享
 
 logging:
   level: "INFO"

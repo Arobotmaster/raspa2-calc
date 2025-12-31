@@ -1113,6 +1113,20 @@ def process_framework_raspa3(topdir, subdir, counter, framework_name, cutoff, vo
                 elif molecule_list:
                     component["Name"] = molecule_list[0]
 
+        # pyMSER: 生成阶段即按追加步数和最小输出频率配置
+        mser_enable = os.environ.get('RASPA_MSER_ENABLE', 'false').lower() == 'true'
+        if mser_enable:
+            try:
+                mser_add_cycles = int(os.environ.get('RASPA_MSER_ADD_CYCLES', '500'))
+            except ValueError:
+                mser_add_cycles = 500
+            sim_config["NumberOfCycles"] = mser_add_cycles
+            sim_config["NumberOfInitializationCycles"] = 0
+            sim_config["NumberOfEquilibrationCycles"] = 0
+            sim_config["PrintEvery"] = 1
+            sim_config["WriteBinaryRestartEvery"] = max(1, mser_add_cycles)
+            sim_config["RestartFromBinaryFile"] = False
+
         # 保存 simulation.json
         sim_path = os.path.join(md_dir, "simulation.json")
         with open(sim_path, 'w', encoding='utf-8') as f:
@@ -1452,6 +1466,19 @@ def main():
                                             component["Name"] = molecule_list[i]
                                         elif molecule_list:
                                             component["Name"] = molecule_list[0]
+
+                                mser_enable = os.environ.get('RASPA_MSER_ENABLE', 'false').lower() == 'true'
+                                if mser_enable:
+                                    try:
+                                        mser_add_cycles = int(os.environ.get('RASPA_MSER_ADD_CYCLES', '500'))
+                                    except ValueError:
+                                        mser_add_cycles = 500
+                                    sim_config["NumberOfCycles"] = mser_add_cycles
+                                    sim_config["NumberOfInitializationCycles"] = 0
+                                    sim_config["NumberOfEquilibrationCycles"] = 0
+                                    sim_config["PrintEvery"] = 1
+                                    sim_config["WriteBinaryRestartEvery"] = max(1, mser_add_cycles)
+                                    sim_config["RestartFromBinaryFile"] = False
 
                                 # 显示 JSON 内容
                                 print(json.dumps(sim_config, indent=2))

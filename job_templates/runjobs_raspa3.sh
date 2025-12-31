@@ -25,6 +25,35 @@ if ! command -v raspa3 &> /dev/null; then
     exit 1
 fi
 
+MSER_SCRIPT="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}/scripts/python/auto_mser_raspa3.py"
+
+# 若未显式设置 MSER 环境变量，则从默认 config.yaml 读取
+if [ -z "$RASPA_MSER_ENABLE" ]; then
+    eval "$(
+      python - <<'PY'
+import os, sys, yaml
+cfg_path = os.path.expanduser('~/raspa2-calc/.raspa_tools/config.yaml')
+if not os.path.exists(cfg_path):
+    sys.exit(0)
+try:
+    cfg = yaml.safe_load(open(cfg_path, 'r', encoding='utf-8'))
+    mser = cfg.get('calculation', {}).get('mser', {})
+    if not mser:
+        sys.exit(0)
+    def emit(k, v):
+        print(f'export {k}=\"{v}\"')
+    emit('RASPA_MSER_ENABLE', str(mser.get('enable', False)).lower())
+    emit('RASPA_MSER_TARGET_CYCLES', mser.get('target_cycles', 1000))
+    emit('RASPA_MSER_ADD_CYCLES', mser.get('add_cycles', 500))
+    emit('RASPA_MSER_MAX_ITER', mser.get('max_iter', 20))
+    emit('RASPA_MSER_UNCERTAINTY', mser.get('uncertainty', 'uSD'))
+    emit('RASPA_MSER_CONDA_ENV', mser.get('conda_env', 'pymser'))
+except Exception:
+    sys.exit(0)
+PY
+    )"
+fi
+
 # ============ 目录检测 ============
 detect_subdir() {
     if [ -n "$RASPA_SUBDIR" ] && [ -d "$CWD/$RASPA_SUBDIR" ]; then
@@ -364,12 +393,43 @@ while :; do
     OUTPUT_FILES_COUNT=$(find output -maxdepth 1 -type f \( -name "output_*.txt" -o -name "output_*.json" \) 2>/dev/null | wc -l)
 
     if [ -d "output" ] && [ "$OUTPUT_FILES_COUNT" -gt 0 ]; then
-        # 有输出文件，视为成功
-        mv "${task_running_dir}" "${topdir}/${subdir}/mc${mid}__done"
-        # 从 simulation.json 中提取框架名
-        FRAMEWORK_NAME=$(python3 -c "import json; print(json.load(open('simulation.json'))['Systems'][0]['Name'].split('/')[-1])" 2>/dev/null)
-        [ -z "$FRAMEWORK_NAME" ] && FRAMEWORK_NAME="mc${mid}"
-        echo " ==> < ${FRAMEWORK_NAME} > is just done on core (${thiscore})." >> ${LOGFILE}
+        # 有输出文件，视为成功；如启用 pyMSER 则先自动续跑判定平衡
+        mser_status=0
+        if [ "${RASPA_MSER_ENABLE}" = "true" ] && [ -f "$MSER_SCRIPT" ]; then
+            echo " ==> 运行 pyMSER 自动平衡: mc${mid}"
+            if command -v conda >/dev/null 2>&1; then
+                conda run -n "${RASPA_MSER_CONDA_ENV:-pymser}" python "$MSER_SCRIPT" \
+                  --workdir "$(pwd)" \
+                  --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \
+                  --add-cycles "${RASPA_MSER_ADD_CYCLES:-500}" \
+                  --max-iter "${RASPA_MSER_MAX_ITER:-20}" \
+                  --uncertainty "${RASPA_MSER_UNCERTAINTY:-uSD}" \
+                  --conda-env "${RASPA_MSER_CONDA_ENV:-pymser}" \
+                  --raspa3-conda-env "${RASPA3_CONDA_ENV:-raspa3}"
+            else
+                python "$MSER_SCRIPT" \
+                  --workdir "$(pwd)" \
+                  --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \
+                  --add-cycles "${RASPA_MSER_ADD_CYCLES:-500}" \
+                  --max-iter "${RASPA_MSER_MAX_ITER:-20}" \
+                  --uncertainty "${RASPA_MSER_UNCERTAINTY:-uSD}" \
+                  --conda-env "${RASPA_MSER_CONDA_ENV:-pymser}" \
+                  --raspa3-conda-env "${RASPA3_CONDA_ENV:-raspa3}"
+            fi
+            mser_status=$?
+            if [ $mser_status -ne 0 ]; then
+                echo " ==> < pyMSER 平衡失败 > in directory mc${mid} on core (${thiscore}) (标记失败，查看auto_mser.log)" >> ${LOGFILE}
+            fi
+        fi
+
+        if [ $mser_status -ne 0 ]; then
+            mv "${task_running_dir}" "${topdir}/${subdir}/mc${mid}__failed"
+        else
+            mv "${task_running_dir}" "${topdir}/${subdir}/mc${mid}__done"
+            FRAMEWORK_NAME=$(python3 -c "import json; print(json.load(open('simulation.json'))['Systems'][0]['Name'].split('/')[-1])" 2>/dev/null)
+            [ -z "$FRAMEWORK_NAME" ] && FRAMEWORK_NAME="mc${mid}"
+            echo " ==> < ${FRAMEWORK_NAME} > is just done on core (${thiscore})." >> ${LOGFILE}
+        fi
     else
         # 没有输出文件，视为失败
         mv "${task_running_dir}" "${topdir}/${subdir}/mc${mid}__failed"

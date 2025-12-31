@@ -3,18 +3,18 @@
 #SBATCH --nodes=1
 export RASPA_TOTAL_CPUS="2"
 export RASPA_WORK_DIR="/home/zjp/raspa2-calc/work"
-export RASPA_OUTPUT_DIR="10pymser"
-export RASPA_SUBDIR="10pymser"
+export RASPA_OUTPUT_DIR="1pymser"
+export RASPA_SUBDIR="1pymser"
 export RASPA_WORKER_ID="2"
-export RASPA_VERSION="raspa2"
+export RASPA_VERSION="raspa3"
 ## 单作业=1个进程（RASPA为单线程），每进程仅用1个CPU
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 ## 偏好使用超线程（若节点支持会利用，否则自动退化）
 #SBATCH --hint=multithread
 ## 输出与时限
-#SBATCH --output=/home/zjp/raspa2-calc/work/10pymser/1log/2.out
-#SBATCH --error=/home/zjp/raspa2-calc/work/10pymser/1log/2.err
+#SBATCH --output=/home/zjp/raspa2-calc/work/1pymser/1log/2.out
+#SBATCH --error=/home/zjp/raspa2-calc/work/1pymser/1log/2.err
 #SBATCH --nodelist=worker-node-02
 #SBATCH --time=99999:00:00       ##设置作业的最大运行时间
 
