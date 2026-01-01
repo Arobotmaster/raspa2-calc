@@ -890,12 +890,8 @@ def process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_
             sim_input_file = template_path
             logger.info(f"使用自定义模板: {template_path}")
         else:
-            # 使用默认模板
-            tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
-            sim_input_file = os.path.join(tool_dir, "config", "simulation.input")
-            if not os.path.isfile(sim_input_file):
-                logger.error(f"Error: Missing source file simulation.input in {os.path.join(tool_dir, 'config')}")
-                return False
+            logger.error("缺少 RASPA2 模板，请在 config.yaml 中设置 template_path 指向可用的 simulation.input")
+            return False
 
         # 复制simulation.input文件
         import subprocess
@@ -1083,9 +1079,9 @@ def process_framework_raspa3(topdir, subdir, counter, framework_name, cutoff, vo
             sim_template_file = template_path
         else:
             tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
-            sim_template_file = os.path.join(tool_dir, "config", "raspa3", "simulation_template.json")
+            sim_template_file = os.path.join(tool_dir, "raspa3json", "CO2", "simulation.json")
             if not os.path.isfile(sim_template_file):
-                logger.error(f"找不到 RASPA3 模板文件: {sim_template_file}")
+                logger.error("找不到 RASPA3 模板文件，请在 config.yaml 设置 raspa3_template_path 指向可用的 simulation.json")
                 return False
 
         # 加载模板
@@ -1444,7 +1440,7 @@ def main():
                             template_file = template_path if template_path and os.path.isfile(template_path) else None
                             if not template_file:
                                 tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
-                                template_file = os.path.join(tool_dir, "config", "raspa3", "simulation_template.json")
+                                template_file = os.path.join(tool_dir, "raspa3json", "CO2", "simulation.json")
 
                             if os.path.exists(template_file):
                                 with open(template_file, 'r') as f:
@@ -1501,10 +1497,6 @@ def main():
                         else:
                             # RASPA2: 显示 simulation.input 预览
                             template_file = template_path if template_path and os.path.isfile(template_path) else None
-                            if not template_file:
-                                tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
-                                template_file = os.path.join(tool_dir, "config", "simulation.input")
-
                             if os.path.exists(template_file):
                                 with open(template_file, 'r') as f:
                                     template_content = f.read()

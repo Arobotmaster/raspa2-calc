@@ -335,9 +335,6 @@ exec python "$TOOL_DIR/scripts/python/raspa_calc.py"
 EOF
 echo "✅ main.sh 已更新为配置文件版本"
 
-echo "正在复制 config/ 目录..."
-cp -r "$SCRIPT_DIR/config" "$TOOL_DIR/" 2>/dev/null && echo "✅ config/ 复制完成" || echo "⚠️  config/ 复制失败或不存在"
-
 echo "正在复制 job_templates/ 目录..."
 cp -r "$SCRIPT_DIR/job_templates" "$TOOL_DIR/" 2>/dev/null && echo "✅ job_templates/ 复制完成" || echo "⚠️  job_templates/ 复制失败或不存在"
 
@@ -348,6 +345,7 @@ echo "正在复制其他文件..."
 cp "$SCRIPT_DIR/README.md" "$TOOL_DIR/" 2>/dev/null && echo "✅ README.md 复制完成" || echo "⚠️  README.md 复制失败或不存在"
 cp "$SCRIPT_DIR/qdel.sh" "$TOOL_DIR/" 2>/dev/null && echo "✅ qdel.sh 复制完成" || echo "⚠️  qdel.sh 复制失败或不存在"
 cp "$SCRIPT_DIR/environment.yml" "$TOOL_DIR/" 2>/dev/null && echo "✅ environment.yml 复制完成（pymser 环境定义）" || echo "⚠️  environment.yml 复制失败或不存在"
+cp -r "$SCRIPT_DIR/docs" "$TOOL_DIR/" 2>/dev/null && echo "✅ docs/ 复制完成（说明文档）" || echo "⚠️  docs/ 复制失败或不存在"
 
 echo "正在复制配置文件..."
 cp "$SCRIPT_DIR/config.yaml" "$TOOL_DIR/" 2>/dev/null && echo "✅ config.yaml 复制完成" || echo "⚠️  config.yaml 复制失败或不存在"
