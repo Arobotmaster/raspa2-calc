@@ -94,18 +94,25 @@ raspa3_json_dir/
 
 ## 5分钟快速开始
 
-### 前置要求
+### 前置要求（三个 conda 环境）
 ```bash
-# 1. Python 3.8+ 和系统工具
+# 1) raspa2 环境（用于 RASPA2 模拟与基本命令）
+conda create --name raspa2
+conda activate raspa2
+conda install -c conda-forge raspa2
+
+# 2) raspa3 环境（用于 RASPA3 模拟）
+conda create --name raspa3
+conda activate raspa3
+conda install -c conda-forge raspa3
+which raspa3
+
+# 3) pymser 环境（用于 pyMSER 自动平衡）
+conda env create -f environment.yml  # 生成名为 pymser 的环境
+
+# 基础检查
 python3 --version
 which bash find grep sed
-
-# 2. RASPA2 安装路径 (如使用 RASPA2)
-export RASPA_DIR=/path/to/raspa2
-
-# 3. RASPA3 conda 环境 (如使用 RASPA3)
-conda activate raspa3
-which raspa3
 ```
 
 ### 安装步骤
@@ -144,6 +151,22 @@ pip install -r requirements.txt
 如需使用 pyMSER 自动平衡，可直接创建共享环境（含 pymser/raspa2/numpy/pandas 等）：
 ```bash
 conda env create -f environment.yml  # 生成名为 pymser 的环境
+```
+
+建议的 conda 环境准备：
+```bash
+# raspa2 模拟环境（用于 RASPA2）
+conda create --name raspa2
+conda activate raspa2
+conda install -c conda-forge raspa2
+
+# raspa3 模拟环境（用于 RASPA3）
+conda create --name raspa3
+conda activate raspa3
+conda install -c conda-forge raspa3
+
+# pymser 环境（用于 pyMSER 自动平衡）
+conda env create -f environment.yml
 ```
 
 ## 配置文件
@@ -209,7 +232,7 @@ performance:
 ### pyMSER 使用示例
 
 - RASPA2：在 `config.yaml` 里设 `environment.raspa_version: "raspa2"` 与 `calculation.mser.enable: true`，准备好 `RASPA_DIR` 指向 raspa2 安装；运行 `raspa-calc`，提交的任务会在模拟结束后自动用 `pymser` 环境做平衡判定、按 `add_cycles` 续跑直至达标或达到 `max_iter`。输出包含 `mser_timeseries.csv` 和 `stats_<T>_<P>.json`。
-- RASPA3：在 `config.yaml` 里设 `environment.raspa_version: "raspa3"`，并指定 `raspa3_conda_env`（运行 raspa3 的环境）以及 `calculation.mser.conda_env`（运行 pyMSER 的环境，默认 pymser）。运行 `raspa-calc` 后的 RASPA3 任务由 `runjobs_raspa3.sh` 调度：模拟阶段用 `raspa3_conda_env` 执行 `raspa3`，平衡判定与续跑用 `pymser` 环境解析输出并追加 `add_cycles`，多组分以 mol/kg 总和作为判据。
+- RASPA3：在 `config.yaml` 里设 `environment.raspa_version: "raspa3"`，并指定 `raspa3_conda_env`（运行 raspa3 的环境，如上创建的 raspa3）以及 `calculation.mser.conda_env`（运行 pyMSER 的环境，默认 pymser）。运行 `raspa-calc` 后的 RASPA3 任务由 `runjobs_raspa3.sh` 调度：模拟阶段用 `raspa3_conda_env` 执行 `raspa3`，平衡判定与续跑用 `pymser` 环境解析输出并追加 `add_cycles`，多组分以 mol/kg 总和作为判据。
 
 ## 集群部署
 

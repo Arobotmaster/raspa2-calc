@@ -143,6 +143,8 @@ check_dependencies() {
     
     local raspa2_found=false
     local raspa3_found=false
+    local pymser_found=false
+    local conda_base="${CONDA_PREFIX:-$HOME/anaconda3}"
 
     # 检查 RASPA2
     if [ -n "${RASPA_DIR:-}" ]; then
@@ -186,6 +188,23 @@ check_dependencies() {
         fi
     fi
 
+    # 检查 pyMSER 环境 (pymser)
+    if command -v conda >/dev/null 2>&1; then
+        if conda env list | awk '{print $1}' | grep -qx "pymser"; then
+            echo "  ✅ pymser 环境已存在 (pyMSER 用)"
+            pymser_found=true
+        else
+            if [ -d "$conda_base/envs/pymser" ]; then
+                echo "  ✅ pymser 环境已存在 (目录检测)"
+                pymser_found=true
+            else
+                echo "  ℹ️  未检测到 pymser 环境（用于 pyMSER 自动平衡）"
+            fi
+        fi
+    else
+        echo "  ⚠️  未检测到 conda，无法检查/创建 raspa2/raspa3/pymser 环境"
+    fi
+
     if [ "$raspa2_found" = false ] && [ "$raspa3_found" = false ]; then
         echo ""
         echo "⚠️  未检测到 RASPA2 或 RASPA3"
@@ -194,6 +213,21 @@ check_dependencies() {
         echo "   - RASPA3: conda install -c conda-forge raspa3"
         echo ""
         warnings+=("未检测到 RASPA 安装")
+    fi
+
+    if command -v conda >/dev/null 2>&1; then
+        if [ "$raspa2_found" = false ]; then
+            warnings+=("缺少 raspa2 环境")
+            echo "   建议：conda create --name raspa2 && conda activate raspa2 && conda install -c conda-forge raspa2"
+        fi
+        if [ "$raspa3_found" = false ]; then
+            warnings+=("缺少 raspa3 环境")
+            echo "   建议：conda create --name raspa3 && conda activate raspa3 && conda install -c conda-forge raspa3"
+        fi
+        if [ "$pymser_found" = false ]; then
+            warnings+=("缺少 pymser 环境")
+            echo "   建议：conda env create -f $HOME/raspa2-calc/.raspa_tools/environment.yml"
+        fi
     fi
 
     echo ""
@@ -454,7 +488,11 @@ echo ""
 echo "📁 安装位置: $TOOL_DIR"
 echo ""
 echo "🚀 快速开始："
-echo "   1. 重新加载shell环境:"
+echo "   1. 确认三个 conda 环境："
+echo "      - raspa2: conda create --name raspa2 && conda activate raspa2 && conda install -c conda-forge raspa2"
+echo "      - raspa3: conda create --name raspa3 && conda activate raspa3 && conda install -c conda-forge raspa3"
+echo "      - pymser: conda env create -f \$HOME/raspa2-calc/.raspa_tools/environment.yml"
+echo "   2. 重新加载shell环境:"
 if [ "${ZSH_VERSION:-}" ]; then
     echo "      source ~/.zshrc"
 elif [ "${BASH_VERSION:-}" ]; then
@@ -462,9 +500,8 @@ elif [ "${BASH_VERSION:-}" ]; then
 else
     echo "      source ~/.profile"
 fi
-echo "   2. 进入工作目录: cd /path/to/your/project"
-echo "   3. 开始计算: raspa-calc 或 raspa-status"
-echo "   4. 如需 pyMSER：conda env create -f \$HOME/raspa2-calc/.raspa_tools/environment.yml"
+echo "   3. 进入工作目录: cd /path/to/your/project"
+echo "   4. 开始计算: raspa-calc 或 raspa-status"
 echo ""
 echo "🔧 可用命令："
 echo "   - raspa-calc: 主计算工具"
