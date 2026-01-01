@@ -172,9 +172,16 @@ def main():
 
         if os.path.exists(combined_csv):
             df_old = pd.read_csv(combined_csv)
+            try:
+                offset = int(df_old["cycle"].max())
+            except Exception:
+                offset = 0
+            df_new["cycle"] = df_new["cycle"].astype(int) + offset
             df = pd.concat([df_old, df_new], ignore_index=True)
         else:
             df = df_new
+        # 去重并排序，保证 cycle 连续增长
+        df = df.drop_duplicates(subset=["cycle"], keep="first").sort_values("cycle").reset_index(drop=True)
         df.to_csv(combined_csv, index=False)
 
         molkg_cols = [c for c in df.columns if c.endswith("_[mol/kg]")]

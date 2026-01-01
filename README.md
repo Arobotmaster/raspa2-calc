@@ -206,6 +206,11 @@ performance:
   show_progress: true
 ```
 
+### pyMSER 使用示例
+
+- RASPA2：在 `config.yaml` 里设 `environment.raspa_version: "raspa2"` 与 `calculation.mser.enable: true`，准备好 `RASPA_DIR` 指向 raspa2 安装；运行 `raspa-calc`，提交的任务会在模拟结束后自动用 `pymser` 环境做平衡判定、按 `add_cycles` 续跑直至达标或达到 `max_iter`。输出包含 `mser_timeseries.csv` 和 `stats_<T>_<P>.json`。
+- RASPA3：在 `config.yaml` 里设 `environment.raspa_version: "raspa3"`，并指定 `raspa3_conda_env`（运行 raspa3 的环境）以及 `calculation.mser.conda_env`（运行 pyMSER 的环境，默认 pymser）。运行 `raspa-calc` 后的 RASPA3 任务由 `runjobs_raspa3.sh` 调度：模拟阶段用 `raspa3_conda_env` 执行 `raspa3`，平衡判定与续跑用 `pymser` 环境解析输出并追加 `add_cycles`，多组分以 mol/kg 总和作为判据。
+
 ## 集群部署
 
 ### 多节点集群配置

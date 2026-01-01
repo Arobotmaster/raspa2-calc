@@ -313,6 +313,7 @@ cp -r "$SCRIPT_DIR/scripts" "$TOOL_DIR/" 2>/dev/null && echo "✅ scripts/ 复�
 echo "正在复制其他文件..."
 cp "$SCRIPT_DIR/README.md" "$TOOL_DIR/" 2>/dev/null && echo "✅ README.md 复制完成" || echo "⚠️  README.md 复制失败或不存在"
 cp "$SCRIPT_DIR/qdel.sh" "$TOOL_DIR/" 2>/dev/null && echo "✅ qdel.sh 复制完成" || echo "⚠️  qdel.sh 复制失败或不存在"
+cp "$SCRIPT_DIR/environment.yml" "$TOOL_DIR/" 2>/dev/null && echo "✅ environment.yml 复制完成（pymser 环境定义）" || echo "⚠️  environment.yml 复制失败或不存在"
 
 echo "正在复制配置文件..."
 cp "$SCRIPT_DIR/config.yaml" "$TOOL_DIR/" 2>/dev/null && echo "✅ config.yaml 复制完成" || echo "⚠️  config.yaml 复制失败或不存在"
@@ -366,6 +367,7 @@ EXECUTABLES=(
     "job_templates/local.sh"
     "job_templates/sbatch.sh"
     "job_templates/runjobs.sh"
+    "job_templates/runjobs_raspa3.sh"
     "job_templates/tasksrun.sh"
     "job_templates/job_array.sh"
     "job_templates/job_submit.sh"
@@ -462,6 +464,7 @@ else
 fi
 echo "   2. 进入工作目录: cd /path/to/your/project"
 echo "   3. 开始计算: raspa-calc 或 raspa-status"
+echo "   4. 如需 pyMSER：conda env create -f \$HOME/raspa2-calc/.raspa_tools/environment.yml"
 echo ""
 echo "🔧 可用命令："
 echo "   - raspa-calc: 主计算工具"
