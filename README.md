@@ -1,4 +1,4 @@
-# RASPA 高通量计算工具 v2.4.0
+# RASPA 高通量计算工具 v2.5.0
 
 <div align="center">
   <img src="figure/RASPA高性能分子模拟计算平台信息图.png" alt="RASPA高性能分子模拟计算平台信息图" width="50%">
@@ -6,7 +6,7 @@
 
 **高性能 RASPA 分子模拟计算平台** - 支持 RASPA2/RASPA3 双版本、参数筛选、高通量计算、数据处理、警告恢复、等温线绘制
 
-## v2.4.0 核心特性（2025-12）
+## v2.5.0 核心特性（2025-12）
 
 | 特性 | 说明 | 性能提升 |
 |------|------|--------|
@@ -16,7 +16,7 @@
 | **动态并发缩放** | `raspa-scale` 交互/自动选择并发 | 平滑升降，无需重启 |
 | **统一资源探测** | 与 raspa-calc 一致的集群资源视图 | 一处实现，脚本一致 |
 | **多节点集群** | NFS 共享存储 + 异构节点支持 | 支持 960+ 核心 |
-| **五大计算模式** | 参数筛选、高通量、数据提取、警告处理、等温线绘制 | 覆盖全周期 |
+| **六大计算模式** | 参数筛选、高通量、数据提取、警告处理、等温线、CSV/CIF筛选 | 覆盖全周期 |
 | **原子文件锁** | 基于 POSIX `noclobber` 的并发安全 | NFS友好，无race condition |
 | **智能环境检测** | 自动检测 SLURM/PBS/LOCAL 并适配 | 零配置部署 |
 | **实时任务监控** | `raspa-status` 基于当前目录统计 | 精确进度报告 |
@@ -71,12 +71,74 @@ raspa3_json_dir/
 
 ## 核心功能
 
-### 五大计算模式
+### 六大计算模式
 - **参数筛选** (`parameter_screening.py`)：快速测试参数组合，生成等温线
 - **高通量计算** (`calculate_params.py`)：批量处理框架结构，支持960+核心并行
 - **数据提取** (`data_extractor.py`)：解析RASPA输出，生成Excel/CSV报表，自动检测版本
 - **警告处理** (`warning_processor.py`)：提取失败任务、CSV数据替换
 - **等温线绘制** (`isotherm_plotter.py`)：可视化吸附数据
+- **CSV/CIF 筛选** (`ciffilter.py`)：交互式按条件/refcode筛选CSV，可复制匹配的CIF
+
+#### 模式 6：CSV/CIF 筛选示例
+```bash
+$ raspa-calc
+Welcome to RASPA Calculation System
+...
+=== RASPA计算模式选择 (RASPA3) ===
+1. 参数筛选模式（小批量运算）
+2. 高通量计算模式（大规模计算）
+3. 数据提取模式（从计算结果中提取数据）
+4. 警告处理模式（处理计算中的警告任务）
+5. 等温线绘制模式（批量绘制MOF等温吸附曲线）
+6. CSV/CIF 筛选模式（MOF筛选器）
+请选择运行模式 (1/2/3/4/5/6): 6
+
+=== CSV/CIF 筛选模式 ===
+该功能按条件/refcode筛选CSV并可选择复制对应的CIF文件
+
+... 选择工作模式、加载 CSV ...
+请输入CSV文件路径（支持相对路径或绝对路径）: /home/zjp/raspa2-calc/filter/All-property.csv
+✅ 文件读取成功（编码: gbk）
+
+▶ 数据概览
+文件名: All-property.csv
+数据总行数: 8808 行
+数据总列数: 56 列
+可用的列名 (部分):
+  1. number
+  2. coreid
+  3. refcode
+  4. name
+  5. mofid-v1
+  6. mofid-v2
+  7. LCD (脜)
+  8. PLD (脜)
+  ...
+
+▶ 设置筛选条件
+请输入要筛选的列名 (或按Enter结束条件设置): PLD (脜)
+数值筛选方式: 1) >  2) <  3) =  4) between
+请选择筛选方式 (1-4): 1
+请输入数值: 5
+✅ 已添加第 1 个条件，当前数据行数: 2706
+
+▶ 保存筛选结果
+请输入输出CSV文件名 (包含.csv后缀): pld.csv
+✅ 文件已保存: pld.csv
+
+是否需要复制筛选后的CIF文件? (y/n): y
+请输入包含文件名的列名: refcode
+源文件夹路径: /home/zjp/raspa2-calc/filter/8804
+目标文件夹路径: /home/zjp/raspa2-calc/filter/2705
+... 复制进度 ...
+
+▶ 复制结果统计
+总文件数: 2705
+成功复制: 2705 个
+未找到: 0 个
+成功率: 100.0%
+保存位置: /home/zjp/raspa2-calc/filter/2705
+```
 
 ### 执行优化
 - **SLURM作业数组**：`sbatch --array=1-N` 一次提交N个子任务，提交速度快50倍
@@ -95,25 +157,19 @@ raspa3_json_dir/
 
 ## 5分钟快速开始
 
-### 前置要求（三个 conda 环境）
+### 前置要求（base 环境 + 按需准备 raspa3/pymser）
 ```bash
-# 1) raspa2 环境（用于 RASPA2 模拟与基本命令）
-conda create --name raspa2
-conda activate raspa2
+# 基础检查（在 base 环境）：准备 raspa2和其他脚本所需环境
 conda install -c conda-forge raspa2
+pip install -r requirements.txt
 
-# 2) raspa3 环境（用于 RASPA3 模拟）
+# 若跑 RASPA3：准备 raspa3 环境
 conda create --name raspa3
 conda activate raspa3
 conda install -c conda-forge raspa3
-which raspa3
 
-# 3) pymser 环境（用于 pyMSER 自动平衡）
+# 如需 pyMSER：创建 pymser 环境
 conda env create -f environment.yml  # 生成名为 pymser 的环境
-
-# 基础检查
-python3 --version
-which bash find grep sed
 ```
 
 ### 安装步骤
@@ -131,43 +187,7 @@ source ~/.bashrc  # 或 source ~/.zshrc
 
 # 4. 验证安装
 raspa-diagnose
-```
 
-### 依赖包
-
-```
-numpy>=1.21.0          # 科学计算
-pandas>=1.3.0          # 数据处理
-gemmi>=0.5.0           # CIF文件处理和晶体学计算
-openpyxl>=3.0.0        # Excel支持
-tqdm>=4.60.0           # 进度条
-PyYAML>=6.0            # YAML配置
-```
-
-安装依赖：
-```bash
-pip install -r requirements.txt
-```
-
-如需使用 pyMSER 自动平衡，可直接创建共享环境（含 pymser/raspa2/numpy/pandas 等）：
-```bash
-conda env create -f environment.yml  # 生成名为 pymser 的环境
-```
-
-建议的 conda 环境准备：
-```bash
-# raspa2 模拟环境（用于 RASPA2）
-conda create --name raspa2
-conda activate raspa2
-conda install -c conda-forge raspa2
-
-# raspa3 模拟环境（用于 RASPA3）
-conda create --name raspa3
-conda activate raspa3
-conda install -c conda-forge raspa3
-
-# pymser 环境（用于 pyMSER 自动平衡）
-conda env create -f environment.yml
 ```
 
 ## 配置文件
@@ -234,12 +254,13 @@ performance:
 
 - RASPA2：在 `config.yaml` 里设 `environment.raspa_version: "raspa2"` 与 `calculation.mser.enable: true`，准备好 `RASPA_DIR` 指向 raspa2 安装；运行 `raspa-calc`，提交的任务会在模拟结束后自动用 `pymser` 环境做平衡判定、按 `add_cycles` 续跑直至达标或达到 `max_iter`。输出包含 `mser_timeseries.csv` 和 `stats_<T>_<P>.json`。
 - RASPA3：在 `config.yaml` 里设 `environment.raspa_version: "raspa3"`，并指定 `raspa3_conda_env`（运行 raspa3 的环境，如上创建的 raspa3）以及 `calculation.mser.conda_env`（运行 pyMSER 的环境，默认 pymser）。运行 `raspa-calc` 后的 RASPA3 任务由 `runjobs_raspa3.sh` 调度：模拟阶段用 `raspa3_conda_env` 执行 `raspa3`，平衡判定与续跑用 `pymser` 环境解析输出并追加 `add_cycles`，多组分以 mol/kg 总和作为判据。
+- 参数筛选：共用 `calculation.mser`，也可在 `parameter_screening.mser` 覆盖；生成的参数筛选作业会在模拟完成后自动运行 pyMSER，且会补齐 `WriteBinaryRestartEvery`/`RestartFile` 以支持续跑。
 
 ## 集群部署
 
 ### 多节点集群配置
 
-v2.4.0支持在SLURM/PBS集群上进行多节点高通量计算。详见 [CLUSTER_DEPLOYMENT_GUIDE.md](CLUSTER_DEPLOYMENT_GUIDE.md)。
+v2.5.0 支持在SLURM/PBS集群上进行多节点高通量计算。详见 [CLUSTER_DEPLOYMENT_GUIDE.md](CLUSTER_DEPLOYMENT_GUIDE.md)。
 
 #### NFS共享存储配置
 
@@ -416,7 +437,7 @@ A: 在 `raspa3_json_dir` 目录下放置所有需要的 JSON 文件：
 
 ### Q: 支持哪些作业调度系统？
 
-A: v2.4.0支持：
+A: v2.5.0 支持：
 - SLURM (sbatch) - 完整的多节点集群支持 + RASPA3
 - PBS (qsub) - RASPA2/RASPA3
 - 本地模式 (bash)
@@ -444,7 +465,7 @@ A: v2.4.0支持：
 - 动态并发缩放 - raspa-scale 实时调整
 
 **功能增强**：
-- 五大计算模式
+- 六大计算模式
 - 多节点集群支持
 - 原子文件锁
 - CSV数据集成

@@ -59,6 +59,22 @@ def load_config():
 
     return None
 
+def get_mser_settings(config):
+    """合并 pyMSER 配置（parameter_screening 优先，其次 calculation）"""
+    if not config:
+        return {}
+
+    merged = {}
+    calc_mser = config.get('calculation', {}).get('mser', {})
+    screening_mser = config.get('parameter_screening', {}).get('mser', {})
+
+    if calc_mser:
+        merged.update(calc_mser)
+    if screening_mser:
+        merged.update(screening_mser)
+
+    return merged
+
 def setup_arg_parser():
     """设置命令行参数解析器"""
     parser = argparse.ArgumentParser(description='RASPA参数筛选工具')
@@ -319,7 +335,7 @@ def copy_raspa3_json_files(json_dir, output_dir, component_names=None, cif_path=
         return False
 
 
-def create_simulation_json(template_path, params, cif_path, output_path, config=None, void_fraction_csv=None):
+def create_simulation_json(template_path, params, cif_path, output_path, config=None, void_fraction_csv=None, mser_config=None):
     """根据模板和参数创建 RASPA3 simulation.json 文件
 
     Args:
@@ -329,6 +345,7 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
         output_path: 输出文件路径
         config: 配置对象
         void_fraction_csv: 空隙率数据字典
+        mser_config: pyMSER 配置（可覆盖）
 
     RASPA3 参数映射:
         - CutOff / CutOffVDW -> Systems[0].CutOff
@@ -340,6 +357,10 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
         - framework -> Systems[0].Name (CIF 路径)
     """
     try:
+        mser_settings = mser_config or {}
+        mser_enable = bool(mser_settings.get('enable', False))
+        mser_add_cycles = int(mser_settings.get('add_cycles', 500)) if mser_enable else None
+
         # 读取模板文件
         with open(template_path, 'r', encoding='utf-8') as f:
             sim_config = json.load(f)
@@ -414,6 +435,17 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
                 sim_config['Systems'][0][json_key] = params[param_key]
                 logger.debug(f"设置 Systems[0].{json_key}: {params[param_key]}")
 
+        # pyMSER 续跑需要重启文件；若启用则补足配置并按追加步数启动（与高通量模式一致）
+        if mser_enable:
+            write_every = max(1, mser_add_cycles or 1)
+            sim_config['NumberOfCycles'] = mser_add_cycles or sim_config.get('NumberOfCycles', write_every)
+            sim_config['NumberOfInitializationCycles'] = 0
+            sim_config['NumberOfEquilibrationCycles'] = 0
+            sim_config['PrintEvery'] = 1
+            sim_config['WriteBinaryRestartEvery'] = write_every
+            # RASPA3 读取重启文件的键是 RestartFromBinaryFile；初始运行禁用读取
+            sim_config['RestartFromBinaryFile'] = False
+
         # 写入输出文件
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(sim_config, f, indent=2, ensure_ascii=False)
@@ -427,7 +459,7 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
         return False
 
 
-def create_job_script_raspa3(param_dir, job_name, scheduler_type="slurm", conda_env="raspa3"):
+def create_job_script_raspa3(param_dir, job_name, scheduler_type="slurm", conda_env="raspa3", mser_config=None):
     """创建 RASPA3 作业提交脚本
 
     Args:
@@ -435,11 +467,69 @@ def create_job_script_raspa3(param_dir, job_name, scheduler_type="slurm", conda_
         job_name: 作业名称
         scheduler_type: 调度系统类型 ('slurm', 'pbs', 或 'local')
         conda_env: RASPA3 conda 环境名称
+        mser_config: pyMSER 配置
 
     Returns:
         str: 脚本文件路径
     """
     script_path = os.path.join(param_dir, "job.sh")
+
+    mser_settings = mser_config or {}
+    mser_enable = bool(mser_settings.get('enable', False))
+    mser_target_cycles = int(mser_settings.get('target_cycles', 1000)) if mser_enable else None
+    mser_add_cycles = int(mser_settings.get('add_cycles', 500)) if mser_enable else None
+    mser_max_iter = int(mser_settings.get('max_iter', 20)) if mser_enable else None
+    mser_uncertainty = mser_settings.get('uncertainty', 'uSD') if mser_enable else 'uSD'
+    mser_conda_env = mser_settings.get('conda_env', 'pymser') if mser_enable else 'pymser'
+
+    status_file = "status.txt"
+    orig_dir = param_dir
+
+    mser_env_block = ""
+    mser_run_block = ""
+    if mser_enable:
+        mser_env_block = f"""
+# pyMSER 设置
+MSER_SCRIPT="${{RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}}/scripts/python/auto_mser_raspa3.py"
+export RASPA_MSER_ENABLE=true
+export RASPA_MSER_TARGET_CYCLES={mser_target_cycles}
+export RASPA_MSER_ADD_CYCLES={mser_add_cycles}
+export RASPA_MSER_MAX_ITER={mser_max_iter}
+export RASPA_MSER_UNCERTAINTY={mser_uncertainty}
+export RASPA_MSER_CONDA_ENV={mser_conda_env}
+export RASPA3_CONDA_ENV={conda_env}
+"""
+
+        mser_run_block = f"""
+if [ $raspa3_exit_code -eq 0 ] && [ -d "output" ]; then
+    output_count=$(find output -maxdepth 1 -type f \\( -name "output_*.txt" -o -name "output_*.json" \\) 2>/dev/null | wc -l)
+else
+    output_count=0
+fi
+if [ $output_count -gt 0 ] && [ -f "$MSER_SCRIPT" ]; then
+    echo " ==> 运行 pyMSER 自动平衡"
+    if command -v conda >/dev/null 2>&1; then
+        conda run -n "{mser_conda_env}" python "$MSER_SCRIPT" \\
+          --workdir "$(pwd)" \\
+          --target-cycles "{mser_target_cycles}" \\
+          --add-cycles "{mser_add_cycles}" \\
+          --max-iter "{mser_max_iter}" \\
+          --uncertainty "{mser_uncertainty}" \\
+          --conda-env "{mser_conda_env}" \\
+          --raspa3-conda-env "{conda_env}"
+    else
+        python "$MSER_SCRIPT" \\
+          --workdir "$(pwd)" \\
+          --target-cycles "{mser_target_cycles}" \\
+          --add-cycles "{mser_add_cycles}" \\
+          --max-iter "{mser_max_iter}" \\
+          --uncertainty "{mser_uncertainty}" \\
+          --conda-env "{mser_conda_env}" \\
+          --raspa3-conda-env "{conda_env}"
+    fi
+    mser_status=$?
+fi
+"""
 
     # conda 初始化脚本
     conda_init = '''
@@ -469,17 +559,43 @@ ulimit -s 16384
 export OPENBLAS_NUM_THREADS=1
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
+MSER_ENABLED={"1" if mser_enable else "0"}
+{mser_env_block}
 {conda_init}
 # 激活 RASPA3 环境
 conda activate {conda_env}
 
-# 设置工作目录
-cd {param_dir}
+ORIG_DIR="{orig_dir}"
+PARENT_DIR="$(dirname "$ORIG_DIR")"
+BASE_DIR="$(basename "$ORIG_DIR")"
+RUN_DIR="$ORIG_DIR"
+if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
+if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
+if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
+if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
+  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
+fi
+cd "$RUN_DIR" || exit 1
 
+echo "running" > "{status_file}"
 echo $SLURM_JOB_ID > jobid
 
 # 运行 RASPA3
+raspa3_exit_code=0
+mser_status=0
 raspa3
+raspa3_exit_code=$?
+{mser_run_block}
+if [ $raspa3_exit_code -ne 0 ]; then
+    echo "failed_simulate" > "{status_file}"
+    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
+    echo "failed_mser" > "{status_file}"
+    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+else
+    echo "done" > "{status_file}"
+    mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
+fi
 '''
     elif scheduler_type == "pbs":
         script_content = f'''#!/bin/bash
@@ -497,6 +613,8 @@ ulimit -s 16384
 export OPENBLAS_NUM_THREADS=1
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
+MSER_ENABLED={"1" if mser_enable else "0"}
+{mser_env_block}
 {conda_init}
 # 激活 RASPA3 环境
 conda activate {conda_env}
@@ -504,10 +622,37 @@ conda activate {conda_env}
 # 切换到作业目录
 cd $PBS_O_WORKDIR
 
+ORIG_DIR="{orig_dir}"
+PARENT_DIR="$(dirname "$ORIG_DIR")"
+BASE_DIR="$(basename "$ORIG_DIR")"
+RUN_DIR="$ORIG_DIR"
+if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
+if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
+if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
+if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
+  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
+fi
+cd "$RUN_DIR" || exit 1
+
 echo $PBS_JOBID > jobid
+echo "running" > "{status_file}"
 
 # 运行 RASPA3
+raspa3_exit_code=0
+mser_status=0
 raspa3
+raspa3_exit_code=$?
+{mser_run_block}
+if [ $raspa3_exit_code -ne 0 ]; then
+    echo "failed_simulate" > "{status_file}"
+    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
+    echo "failed_mser" > "{status_file}"
+    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+else
+    echo "done" > "{status_file}"
+    mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
+fi
 '''
     else:
         script_content = f'''#!/bin/bash
@@ -516,17 +661,44 @@ raspa3
 export OPENBLAS_NUM_THREADS=1
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
+MSER_ENABLED={"1" if mser_enable else "0"}
+{mser_env_block}
 {conda_init}
 # 激活 RASPA3 环境
 conda activate {conda_env}
 
 # 切换到作业目录
-cd {param_dir}
+ORIG_DIR="{orig_dir}"
+PARENT_DIR="$(dirname "$ORIG_DIR")"
+BASE_DIR="$(basename "$ORIG_DIR")"
+RUN_DIR="$ORIG_DIR"
+if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
+if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
+if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
+if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
+  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
+fi
+cd "$RUN_DIR" || exit 1
 
 echo $$ > jobid
+echo "running" > "{status_file}"
 
 # 运行 RASPA3
+raspa3_exit_code=0
+mser_status=0
 raspa3
+raspa3_exit_code=$?
+{mser_run_block}
+if [ $raspa3_exit_code -ne 0 ]; then
+    echo "failed_simulate" > "{status_file}"
+    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
+    echo "failed_mser" > "{status_file}"
+    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+else
+    echo "done" > "{status_file}"
+    mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
+fi
 '''
 
     with open(script_path, 'w') as f:
@@ -540,7 +712,7 @@ raspa3
 
 def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, template_path,
                                           output_dir, job_system, config=None,
-                                          void_fraction_csv=None, json_dir=None):
+                                          void_fraction_csv=None, json_dir=None, mser_config=None):
     """处理 RASPA3 所有参数组合并创建作业
 
     Args:
@@ -553,6 +725,7 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
         config: 配置对象
         void_fraction_csv: 空隙率数据字典
         json_dir: RASPA3 JSON 文件目录
+        mser_config: pyMSER 配置
     """
     # 生成所有参数组合
     combinations = generate_parameter_combinations(param_ranges)
@@ -588,6 +761,13 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
         param_dir_name = generate_directory_name(combo)
         param_dir = os.path.join(framework_dir, param_dir_name)
         os.makedirs(param_dir, exist_ok=True)
+        try:
+            with open(os.path.join(param_dir, "status.txt"), 'w') as sf:
+                sf.write("pending")
+            base_dir = os.path.basename(param_dir)
+            parent_dir = os.path.dirname(param_dir)
+        except Exception:
+            pass
 
         # 复制 RASPA3 JSON 文件（按框架/组分筛选力场）
         if json_dir:
@@ -600,10 +780,10 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
         # 创建 simulation.json 文件
         sim_json_path = os.path.join(param_dir, "simulation.json")
 
-        if create_simulation_json(template_path, sim_params, cif_path, sim_json_path, config, void_fraction_csv):
+        if create_simulation_json(template_path, sim_params, cif_path, sim_json_path, config, void_fraction_csv, mser_config):
             # 创建作业脚本
             job_name = f"{framework}_{param_dir_name}"[:63]  # SLURM 作业名限制
-            job_script_path = create_job_script_raspa3(param_dir, job_name, job_system, conda_env)
+            job_script_path = create_job_script_raspa3(param_dir, job_name, job_system, conda_env, mser_config)
 
             # 提交作业
             job_id = submit_job(job_script_path, job_system)
@@ -621,7 +801,7 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
 #                    RASPA2 参数筛选 (原有功能)
 # ============================================================
 
-def create_simulation_input(template_path, params, cif_path, output_path, config=None, void_fraction_csv=None):
+def create_simulation_input(template_path, params, cif_path, output_path, config=None, void_fraction_csv=None, mser_config=None):
     """根据模板和参数创建simulation.input文件 - 支持通用参数替换
 
     Args:
@@ -631,6 +811,7 @@ def create_simulation_input(template_path, params, cif_path, output_path, config
         output_path: 输出文件路径
         config: 配置对象,用于获取auto_unit_cells等设置
         void_fraction_csv: 空隙率数据字典(从CSV读取)
+        mser_config: pyMSER 配置
     """
     try:
         # 读取模板文件
@@ -639,6 +820,18 @@ def create_simulation_input(template_path, params, cif_path, output_path, config
 
         # 分行处理模板文件
         lines = template.split('\n')
+
+        # pyMSER 配置
+        mser_settings = mser_config or {}
+        mser_enable = bool(mser_settings.get('enable', False))
+        mser_add_cycles = int(mser_settings.get('add_cycles', 500)) if mser_enable else 500
+        mser_target_cycles = int(mser_settings.get('target_cycles', 1000)) if mser_enable else None
+        restart_set = False
+        write_restart_set = False
+        number_cycles_set = False
+        init_cycles_set = False
+        equil_cycles_set = False
+        print_every_set = False
 
         # 从CIF文件计算UnitCells参数
         unit_cells = None
@@ -705,6 +898,7 @@ def create_simulation_input(template_path, params, cif_path, output_path, config
             # 跳过空行和注释
             if not line.strip() or line.strip().startswith('#'):
                 continue
+            lower_line = line.strip().lower()
 
             # 通用参数匹配: 参数名 + 空格 + 值
             # 匹配格式: ParameterName   Value
@@ -720,6 +914,21 @@ def create_simulation_input(template_path, params, cif_path, output_path, config
                     new_value = params[param_name]
                     lines[i] = f"{indent}{param_name}{spaces}{new_value}"
                     logger.debug(f"替换参数 {param_name}: {old_value} -> {new_value}")
+                elif mser_enable:
+                    # 覆盖模板中的循环与打印设置以适配 pyMSER
+                    if lower_line.startswith('numberofcycles'):
+                        number_cycles_set = True
+                        lines[i] = f"{indent}NumberOfCycles{spaces}{mser_add_cycles}"
+                        logger.info(f"为 pyMSER 覆盖 NumberOfCycles -> {mser_add_cycles}")
+                    elif lower_line.startswith('numberofinitializationcycles'):
+                        init_cycles_set = True
+                        lines[i] = f"{indent}NumberOfInitializationCycles{spaces}0"
+                    elif lower_line.startswith('numberofequilibrationcycles'):
+                        equil_cycles_set = True
+                        lines[i] = f"{indent}NumberOfEquilibrationCycles{spaces}0"
+                    elif lower_line.startswith('printevery'):
+                        print_every_set = True
+                        lines[i] = f"{indent}PrintEvery{spaces}1"
 
             # 特殊处理: 框架名称
             if 'framework' in params and 'FrameworkName' in line:
@@ -749,6 +958,48 @@ def create_simulation_input(template_path, params, cif_path, output_path, config
                     lines[i] = f"{prefix}{void_fraction}"
                     logger.info(f"替换HeliumVoidFraction参数: {void_fraction}")
 
+            # pyMSER: 确保写重启与 RestartFile 设置
+            if mser_enable and lower_line.startswith('writebinaryrestartevery'):
+                write_restart_set = True
+                pattern = r'(\s*WriteBinaryRestartEvery\s+)(\S+)'
+                match = re.match(pattern, line, re.IGNORECASE)
+                if match:
+                    prefix = match.group(1)
+                    try:
+                        val = int(match.group(2))
+                    except Exception:
+                        val = 0
+                    if val <= 0:
+                        lines[i] = f"{prefix}{max(1, mser_add_cycles)}"
+                        logger.info(f"为 pyMSER 更新 WriteBinaryRestartEvery: {max(1, mser_add_cycles)}")
+
+            if mser_enable and lower_line.startswith('restartfile'):
+                restart_set = True
+                pattern = r'(\s*RestartFile\s+)(\S+)'
+                match = re.match(pattern, line, re.IGNORECASE)
+                if match:
+                    prefix = match.group(1)
+                    lines[i] = f"{prefix}no"
+                    logger.info("为 pyMSER 设置 RestartFile no")
+
+        # 若模板缺少重启配置，且启用了 pyMSER，则追加
+        if mser_enable:
+            if not write_restart_set:
+                lines.append(f"WriteBinaryRestartEvery {max(1, mser_add_cycles)}")
+                logger.info(f"添加 WriteBinaryRestartEvery {max(1, mser_add_cycles)} 以支持 pyMSER")
+            if not restart_set:
+                lines.append("RestartFile no")
+            if not number_cycles_set:
+                lines.append(f"NumberOfCycles {mser_add_cycles}")
+            if not init_cycles_set:
+                lines.append("NumberOfInitializationCycles 0")
+            if not equil_cycles_set:
+                lines.append("NumberOfEquilibrationCycles 0")
+            if not print_every_set:
+                lines.append("PrintEvery 1")
+            if mser_target_cycles is not None:
+                lines.append(f"# MSER target_cycles = {mser_target_cycles}")
+
         # 重新组合处理后的行
         template = '\n'.join(lines)
 
@@ -763,13 +1014,14 @@ def create_simulation_input(template_path, params, cif_path, output_path, config
         logger.debug(traceback.format_exc())
         return False
 
-def create_job_script(param_dir, job_name, scheduler_type="pbs"):
+def create_job_script(param_dir, job_name, scheduler_type="pbs", mser_config=None):
     """创建作业提交脚本
 
     Args:
         param_dir: 参数目录
         job_name: 作业名称
         scheduler_type: 调度系统类型 ('slurm', 'pbs', 或 'local')
+        mser_config: pyMSER 配置
 
     Returns:
         str: 脚本文件路径
@@ -780,6 +1032,55 @@ def create_job_script(param_dir, job_name, scheduler_type="pbs"):
     # 获取RASPA目录
     raspa_dir = os.environ.get('RASPA_DIR', '')
     raspa_cmd = os.path.join(raspa_dir, "bin", "simulate")
+
+    mser_settings = mser_config or {}
+    mser_enable = bool(mser_settings.get('enable', False))
+    mser_target_cycles = int(mser_settings.get('target_cycles', 1000)) if mser_enable else None
+    mser_add_cycles = int(mser_settings.get('add_cycles', 500)) if mser_enable else None
+    mser_max_iter = int(mser_settings.get('max_iter', 20)) if mser_enable else None
+    mser_uncertainty = mser_settings.get('uncertainty', 'uSD') if mser_enable else 'uSD'
+    mser_conda_env = mser_settings.get('conda_env', 'pymser') if mser_enable else 'pymser'
+
+    status_file = "status.txt"
+    orig_dir = param_dir
+
+    mser_env_block = ""
+    mser_run_block = ""
+    if mser_enable:
+        mser_env_block = f"""
+# pyMSER 设置
+MSER_SCRIPT="${{RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}}/scripts/python/auto_mser_raspa2.py"
+export RASPA_MSER_ENABLE=true
+export RASPA_MSER_TARGET_CYCLES={mser_target_cycles}
+export RASPA_MSER_ADD_CYCLES={mser_add_cycles}
+export RASPA_MSER_MAX_ITER={mser_max_iter}
+export RASPA_MSER_UNCERTAINTY={mser_uncertainty}
+export RASPA_MSER_CONDA_ENV={mser_conda_env}
+"""
+        mser_run_block = f"""
+if [ $sim_exit_code -eq 0 ] && [ -f "$MSER_SCRIPT" ]; then
+  echo " ==> 运行 pyMSER 自动平衡"
+  mser_status=0
+  if command -v conda >/dev/null 2>&1; then
+    conda run -n "{mser_conda_env}" python "$MSER_SCRIPT" \\
+      --workdir "$(pwd)" \\
+      --target-cycles "{mser_target_cycles}" \\
+      --add-cycles "{mser_add_cycles}" \\
+      --max-iter "{mser_max_iter}" \\
+      --uncertainty "{mser_uncertainty}" \\
+      --conda-env "{mser_conda_env}"
+  else
+    python "$MSER_SCRIPT" \\
+      --workdir "$(pwd)" \\
+      --target-cycles "{mser_target_cycles}" \\
+      --add-cycles "{mser_add_cycles}" \\
+      --max-iter "{mser_max_iter}" \\
+      --uncertainty "{mser_uncertainty}" \\
+      --conda-env "{mser_conda_env}"
+  fi
+  mser_status=$?
+fi
+"""
     
     # 根据调度系统类型生成不同的脚本内容
     if scheduler_type == "slurm":
@@ -801,14 +1102,41 @@ ulimit -s 16384
 export OPENBLAS_NUM_THREADS=1 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
+MSER_ENABLED={"1" if mser_enable else "0"}
+{mser_env_block}
 
-# 设置工作目录
-cd {param_dir}
+# 设置工作目录并重命名状态
+ORIG_DIR="{orig_dir}"
+PARENT_DIR="$(dirname "$ORIG_DIR")"
+BASE_DIR="$(basename "$ORIG_DIR")"
+RUN_DIR="$ORIG_DIR"
+if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
+if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
+if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
+if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
+  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
+fi
+cd "$RUN_DIR" || exit 1
 
+echo "running" > "{status_file}"
 echo $SLURM_JOB_ID > jobid
 
 # 运行RASPA
+sim_exit_code=0
+mser_status=0
 {raspa_cmd}
+sim_exit_code=$?
+{mser_run_block}
+if [ $sim_exit_code -ne 0 ]; then
+  echo "failed_simulate" > "{status_file}"
+  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
+  echo "failed_mser" > "{status_file}"
+  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+else
+  echo "done" > "{status_file}"
+  mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
+fi
 """
     elif scheduler_type == "pbs":
         # PBS脚本
@@ -827,14 +1155,41 @@ ulimit -s 16384
 export OPENBLAS_NUM_THREADS=1 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
+MSER_ENABLED={"1" if mser_enable else "0"}
+{mser_env_block}
 
 # 切换到作业提交的目录
 cd $PBS_O_WORKDIR
 
+ORIG_DIR="{orig_dir}"
+RUN_DIR="$ORIG_DIR"
+if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
+if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
+if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
+if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
+  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
+fi
+cd "$RUN_DIR" || exit 1
+
 echo $PBS_JOBID > jobid
+echo "running" > "{status_file}"
 
 # 运行RASPA
+sim_exit_code=0
+mser_status=0
 {raspa_cmd}
+sim_exit_code=$?
+{mser_run_block}
+if [ $sim_exit_code -ne 0 ]; then
+  echo "failed_simulate" > "{status_file}"
+  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
+  echo "failed_mser" > "{status_file}"
+  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+else
+  echo "done" > "{status_file}"
+  mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
+fi
 """
     else:
         # 本地脚本
@@ -844,14 +1199,41 @@ echo $PBS_JOBID > jobid
 export OPENBLAS_NUM_THREADS=1 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
+MSER_ENABLED={"1" if mser_enable else "0"}
+{mser_env_block}
 
 # 切换到作业目录
-cd {param_dir}
+ORIG_DIR="{orig_dir}"
+PARENT_DIR="$(dirname "$ORIG_DIR")"
+BASE_DIR="$(basename "$ORIG_DIR")"
+RUN_DIR="$ORIG_DIR"
+if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
+if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
+if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
+if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
+  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
+fi
+cd "$RUN_DIR" || exit 1
 
 echo $$ > jobid
+echo "running" > "{status_file}"
 
 # 运行RASPA
+sim_exit_code=0
+mser_status=0
 {raspa_cmd}
+sim_exit_code=$?
+{mser_run_block}
+if [ $sim_exit_code -ne 0 ]; then
+  echo "failed_simulate" > "{status_file}"
+  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
+  echo "failed_mser" > "{status_file}"
+  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
+else
+  echo "done" > "{status_file}"
+  mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
+fi
 """
 
     # 写入脚本文件
@@ -1183,7 +1565,7 @@ def interactive_parameter_selection(framework_name, cif_dir=None, reuse_params=N
     
     return params
 
-def process_parameter_combinations(framework, cif_path, param_ranges, template_path, output_dir, job_system, config=None, void_fraction_csv=None):
+def process_parameter_combinations(framework, cif_path, param_ranges, template_path, output_dir, job_system, config=None, void_fraction_csv=None, mser_config=None):
     """处理所有参数组合并创建作业
 
     Args:
@@ -1195,6 +1577,7 @@ def process_parameter_combinations(framework, cif_path, param_ranges, template_p
         job_system: 作业系统类型
         config: 配置对象
         void_fraction_csv: 空隙率数据字典
+        mser_config: pyMSER 配置
     """
     # 生成所有参数组合
     combinations = generate_parameter_combinations(param_ranges)
@@ -1215,6 +1598,13 @@ def process_parameter_combinations(framework, cif_path, param_ranges, template_p
         param_dir_name = generate_directory_name(combo)
         param_dir = os.path.join(framework_dir, param_dir_name)
         os.makedirs(param_dir, exist_ok=True)
+        try:
+            with open(os.path.join(param_dir, "status.txt"), 'w') as sf:
+                sf.write("pending")
+            base_dir = os.path.basename(param_dir)
+            parent_dir = os.path.dirname(param_dir)
+        except Exception:
+            pass
 
         # 准备参数字典
         sim_params = combo.copy()
@@ -1223,10 +1613,10 @@ def process_parameter_combinations(framework, cif_path, param_ranges, template_p
         # 创建simulation.input文件
         sim_input_path = os.path.join(param_dir, "simulation.input")
 
-        if create_simulation_input(template_path, sim_params, cif_path, sim_input_path, config, void_fraction_csv):
+        if create_simulation_input(template_path, sim_params, cif_path, sim_input_path, config, void_fraction_csv, mser_config):
             # 创建作业脚本
             job_name = f"{framework}_{param_dir_name}"
-            job_script_path = create_job_script(param_dir, job_name, job_system)
+            job_script_path = create_job_script(param_dir, job_name, job_system, mser_config)
 
             # 提交作业
             job_id = submit_job(job_script_path, job_system)
@@ -1266,6 +1656,7 @@ def main():
         # 从配置文件获取参数
         env_config = config.get('environment', {})
         calc_config = config.get('calculation', {})
+        mser_config = get_mser_settings(config)
 
         # 检测 RASPA 版本
         raspa_version = env_config.get('raspa_version', 'raspa2').lower()
@@ -1416,7 +1807,7 @@ def main():
                 if raspa_version == 'raspa3':
                     # RASPA3: 预览 simulation.json
                     preview_path = os.path.join(td, 'simulation.json')
-                    if preview_cif and create_simulation_json(template_path, sim_params, preview_cif, preview_path, config, None):
+                    if preview_cif and create_simulation_json(template_path, sim_params, preview_cif, preview_path, config, None, mser_config):
                         print("\n=== 示例 simulation.json 预览（首个框架 + 首个参数组合）===\n")
                         try:
                             with open(preview_path, 'r', encoding='utf-8') as pf:
@@ -1427,7 +1818,7 @@ def main():
                 else:
                     # RASPA2: 预览 simulation.input
                     preview_path = os.path.join(td, 'simulation.input')
-                    if preview_cif and create_simulation_input(template_path, sim_params, preview_cif, preview_path, config, None):
+                    if preview_cif and create_simulation_input(template_path, sim_params, preview_cif, preview_path, config, None, mser_config):
                         print("\n=== 示例 simulation.input 预览（首个框架 + 首个参数组合）===\n")
                         try:
                             with open(preview_path, 'r', encoding='utf-8') as pf:
@@ -1485,7 +1876,8 @@ def main():
                     job_system=job_system,
                     config=config,
                     void_fraction_csv=void_fraction_csv,
-                    json_dir=json_dir
+                    json_dir=json_dir,
+                    mser_config=mser_config
                 )
             else:
                 # RASPA2: 使用文本格式
@@ -1497,7 +1889,8 @@ def main():
                     output_dir=output_dir,
                     job_system=job_system,
                     config=config,
-                    void_fraction_csv=void_fraction_csv
+                    void_fraction_csv=void_fraction_csv,
+                    mser_config=mser_config
                 )
             all_jobs.extend(jobs)
 

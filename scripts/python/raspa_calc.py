@@ -5,7 +5,7 @@ import subprocess
 import importlib
 
 # 版本信息
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 __version_name__ = "RASPA2/RASPA3 双版本支持"
 
 # 全局配置
@@ -254,6 +254,18 @@ def show_help():
     print("     - 自动检测 RASPA2/RASPA3 输出格式")
     print("     - 生成Excel表格")
     print()
+    print("  4. 警告处理模式（处理计算中的警告任务）")
+    print("     - 扫描CSV中的警告信息并创建独立任务")
+    print()
+    print("  5. 等温线绘制模式（批量绘制MOF等温吸附曲线）")
+    print("     - 自动扫描计算结果目录并输出图片")
+    print()
+    print("  6. CSV/CIF 筛选模式（MOF筛选器）")
+    print("     - 交互式按条件/refcode筛选CSV并可复制对应CIF")
+    print()
+    print("v2.5.0 新特性:")
+    print("  ✅ CSV/CIF 筛选模式 - 直接从 raspa-calc 入口调用 MOF 筛选工具")
+    print()
     print("v2.4.0 新特性:")
     print("  ✅ RASPA3 支持 - 完整支持 RASPA3 版本")
     print("  ✅ 版本自动检测 - 自动识别输出文件格式")
@@ -284,6 +296,7 @@ def show_version():
     print(f"RASPA 高通量计算工具 v{__version__} ({__version_name__})")
     print()
     print("版本特性:")
+    print("  ✅ CSV/CIF 筛选模式 - 直接在主菜单运行 MOF 筛选器")
     print("  ✅ RASPA2/RASPA3 双版本支持 - 可在配置文件中切换版本")
     print("  ✅ 版本自动检测 - 自动识别输出文件格式进行数据提取")
     print("  ✅ 多节点集群支持 - 支持SLURM集群跨节点调度(960+CPU核心)")
@@ -343,12 +356,13 @@ def main():
     print("3. 数据提取模式（从计算结果中提取数据）")
     print("4. 警告处理模式（处理计算中的警告任务）")
     print("5. 等温线绘制模式（批量绘制MOF等温吸附曲线）")
+    print("6. CSV/CIF 筛选模式（MOF筛选器）")
     print()
     print(f"💡 切换 RASPA 版本: 修改 config.yaml 中的 raspa_version 配置项")
 
     # 获取用户选择
     try:
-        choice = input("请选择运行模式 (1/2/3/4/5): ").strip()
+        choice = input("请选择运行模式 (1/2/3/4/5/6): ").strip()
 
         if choice == '1':
             # 参数筛选模式
@@ -365,8 +379,11 @@ def main():
         elif choice == '5':
             # 等温线绘制模式
             run_isotherm_plotter()
+        elif choice == '6':
+            # CSV/CIF 筛选模式
+            run_ciffilter_tool()
         else:
-            print("无效的选择，请输入1、2、3、4或5")
+            print("无效的选择，请输入1、2、3、4、5或6")
             sys.exit(1)
     except KeyboardInterrupt:
         print("\n用户取消操作")
@@ -689,6 +706,36 @@ def run_isotherm_plotter():
         print(f"❌ 等温线绘制过程中出错: {e}")
         import traceback
         traceback.print_exc()
+        sys.exit(1)
+
+def run_ciffilter_tool():
+    """运行 CSV/CIF 筛选模式（MOF筛选器）"""
+    print("\n=== CSV/CIF 筛选模式 ===")
+    print("该功能按条件/refcode筛选CSV并可选择复制对应的CIF文件")
+
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        tool_dir = os.path.abspath(os.path.join(script_dir, "..", ".."))
+        default_tool_dir = os.path.join(os.environ.get('HOME', ''), 'raspa2-calc', '.raspa_tools')
+
+        for path in [tool_dir, default_tool_dir]:
+            if path and path not in sys.path:
+                sys.path.insert(0, path)
+
+        try:
+            from ciffilter import MOFFilterTool
+        except ImportError as e:
+            print(f"错误: 无法导入 CSV/CIF 筛选工具: {e}")
+            print(f"请确认 ciffilter.py 位于 {tool_dir}，并已安装 pandas 等依赖")
+            sys.exit(1)
+
+        tool = MOFFilterTool()
+        tool.run()
+    except KeyboardInterrupt:
+        print("\n⚠️  用户取消操作")
+        sys.exit(130)
+    except Exception as e:
+        print(f"❌ CSV/CIF 筛选过程中出错: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
