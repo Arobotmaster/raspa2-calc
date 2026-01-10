@@ -289,6 +289,22 @@ cd /home/zjp/raspa2-calc
 raspa-calc
 ```
 
+#### 节点优先级配置
+
+在 `config.yaml` 的 `environment.node_priorities` 设置节点权重，数字越大优先级越高。例如：
+
+```yaml
+environment:
+  node_priorities:
+    worker-node-01: 100
+    worker-node-02: 70
+    worker-node-03: 50
+    master-node: 10
+```
+
+- `raspa-calc` 高通量模式：会按优先级和实时空闲核数生成 `.raspa_node_plan`，日志显示“节点任务分配总览”。每个 sbatch 显式带 `--nodelist`。
+- `raspa-scale` 扩缩容：自动读取优先级（即使无 PyYAML 也能解析），重建 `.raspa_node_plan` 后补交缺口，sbatch 同样带 `--nodelist`。
+
 ### 环境变量设置
 
 ```bash

@@ -125,6 +125,28 @@ def count_numbered_labels(cif_path):
     return count
 
 
+def parse_node_priorities(raw=None):
+    """Parse node priorities from env string 'node:priority,...'."""
+    text = raw if raw is not None else os.environ.get('RASPA_NODE_PRIORITIES', '')
+    priorities = {}
+    if not text:
+        return priorities
+
+    parts = [p for p in text.split(',') if p.strip()]
+    for part in parts:
+        if ':' not in part:
+            continue
+        name, value = part.split(':', 1)
+        name = name.strip()
+        try:
+            prio = int(value.strip())
+        except Exception:
+            continue
+        if name:
+            priorities[name] = prio
+    return priorities
+
+
 def _get_slurm_summary():
     """备用：获取SLURM聚合CPU统计信息"""
     try:
@@ -276,65 +298,42 @@ def build_node_plan(cluster_info, cpu_cores):
     if not nodes or cpu_cores <= 0:
         return "", []
 
+    priority_map = parse_node_priorities()
+    if priority_map:
+        ordered_items = ", ".join(
+            f"{name}:{prio}" for name, prio in sorted(priority_map.items(), key=lambda x: -x[1])
+        )
+        logger.info(f"应用节点优先级: {ordered_items}")
+
+    def node_priority(node):
+        return priority_map.get(node.get('node'), 0)
+
     def sort_group(group):
         return sorted(
             group,
             key=lambda n: (
+                -node_priority(n),
                 -(n.get('free_cpus', 0) or 0),
                 n.get('load') if n.get('load') is not None else 0
             )
         )
 
-    ht_nodes = [n for n in nodes if (n.get('threads_per_core') or 1) > 1]
-    other_nodes = [n for n in nodes if (n.get('threads_per_core') or 1) <= 1]
-    ordered_ht = sort_group(ht_nodes)
-    ordered_other = sort_group(other_nodes)
-
+    ordered_nodes = sort_group(nodes)
     plan_counts = OrderedDict()
     plan_queue = []
     remaining = cpu_cores
 
-    def expand_nodes(nodes_list, remaining_slots):
-        queue = []
-        if not nodes_list or remaining_slots <= 0:
-            return queue, remaining_slots
-        caps = []
-        for n in nodes_list:
-            cap = int(n.get('free_cpus', 0) or 0)
-            if cap < 0:
-                cap = 0
-            caps.append(cap)
-        max_cap = max(caps) if caps else 0
-        if max_cap <= 0:
-            return queue, remaining_slots
-        for step in range(max_cap):
-            if remaining_slots <= 0:
-                break
-            for idx, node in enumerate(nodes_list):
-                if remaining_slots <= 0:
-                    break
-                if caps[idx] > step:
-                    queue.append(node['node'])
-                    remaining_slots -= 1
-        return queue, remaining_slots
-
-    segment, remaining = expand_nodes(ordered_ht, remaining)
-    plan_queue.extend(segment)
-    segment, remaining = expand_nodes(ordered_other, remaining)
-    plan_queue.extend(segment)
-
-    if remaining > 0:
-        # 仍有剩余并发，按负载从低到高轮询补齐
-        fallback_nodes = sorted(
-            nodes,
-            key=lambda n: (n.get('load') if n.get('load') is not None else 0)
-        )
-        idx = 0
-        while remaining > 0 and fallback_nodes:
-            node = fallback_nodes[idx % len(fallback_nodes)]
-            plan_queue.append(node['node'])
-            remaining -= 1
-            idx += 1
+    for node in ordered_nodes:
+        if remaining <= 0:
+            break
+        cap = int(node.get('free_cpus', 0) or 0)
+        if cap < 0:
+            cap = 0
+        if cap <= 0:
+            continue
+        take = min(cap, remaining)
+        plan_queue.extend([node['node']] * take)
+        remaining -= take
 
     for node_name in plan_queue:
         plan_counts[node_name] = plan_counts.get(node_name, 0) + 1
@@ -540,6 +539,9 @@ def get_computation_setup(total_tasks, cif_dir=None):
         if plan_string:
             os.environ['RASPA_NODE_PLAN'] = plan_string
             logger.info(f"节点分配计划: {plan_string}")
+            if plan_pairs:
+                summary = ", ".join(f"{n}:{c}" for n, c in plan_pairs)
+                logger.info(f"节点任务分配总览: {summary}")
             plan_path = None
             if CURRENT_TOPDIR and CURRENT_SUBDIR:
                 plan_path = os.path.join(CURRENT_TOPDIR, CURRENT_SUBDIR, ".raspa_node_plan")

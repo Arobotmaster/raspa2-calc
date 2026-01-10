@@ -84,6 +84,82 @@ RAW_SUBDIR=${1:-""}
 ABS_PWD="$(pwd -P)"
 ROOT_DIR="$(cd "$(dirname "$0")"/../.. && pwd)"
 
+# 尝试从配置读取节点优先级，供后续重排/生成计划（支持无 PyYAML 场景的简易解析）
+if [ -z "${RASPA_NODE_PRIORITIES:-}" ]; then
+  RASPA_NODE_PRIORITIES=$(python - <<'PY' 2>/dev/null || true
+import os
+
+search = []
+pwd = os.getcwd()
+search.append(os.path.join(pwd, "config.yaml"))
+search.append(os.path.join(pwd, ".raspa_tools", "config.yaml"))
+search.append(os.path.expanduser("~/raspa2-calc/.raspa_tools/config.yaml"))
+
+def parse_simple(path: str):
+    pr = {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except Exception:
+        return pr
+    inside = False
+    indent = None
+    for line in lines:
+        if "node_priorities:" in line and not line.lstrip().startswith("#"):
+            inside = True
+            indent = len(line) - len(line.lstrip())
+            continue
+        if not inside:
+            continue
+        # stop if dedent
+        cur_indent = len(line) - len(line.lstrip())
+        if cur_indent <= indent:
+            break
+        if ":" not in line:
+            continue
+        try:
+            key, val = line.split(":", 1)
+            key = key.strip()
+            val = val.strip()
+            if key and val:
+                pr[key] = int(val)
+        except Exception:
+            continue
+    return pr
+
+def parse_yaml(path: str):
+    try:
+        import yaml  # type: ignore
+    except Exception:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        env = data.get("environment") or {}
+        np = env.get("node_priorities") or {}
+        if isinstance(np, dict):
+            return {str(k): int(v) for k, v in np.items() if str(k)}
+    except Exception:
+        return {}
+    return {}
+
+prio = {}
+for path in search:
+    if not os.path.exists(path):
+        continue
+    prio = parse_yaml(path)
+    if not prio:
+        prio = parse_simple(path)
+    if prio:
+        break
+
+if prio:
+    print(",".join(f"{k}:{v}" for k, v in prio.items()))
+PY
+  )
+  export RASPA_NODE_PRIORITIES
+fi
+
 # 尝试在当前路径向上寻找 job_templates 目录
 BASE_DIR="$ABS_PWD"
 while [ "$BASE_DIR" != "/" ] && [ ! -d "$BASE_DIR/job_templates" ]; do
@@ -311,10 +387,75 @@ fi
 echo "$NEW_LIMIT" > "$LIMIT_FILE"
 echo "已设置 .raspa_worker_limit = $NEW_LIMIT ($TARGET_DIR)"
 
-# PBS: 直接委托给 raspa-scale-pbs，复用同一套“立即扩缩容 + 去重 + 最短优先”逻辑
-if command -v qsub >/dev/null 2>&1 && command -v qstat >/dev/null 2>&1; then
-  if [ -x "$ROOT_DIR/.raspa_tools/bin/raspa-scale-pbs" ]; then
-    exec "$ROOT_DIR/.raspa_tools/bin/raspa-scale-pbs" "$NEW_LIMIT" "$SUBDIR"
+# 若有优先级与集群信息，重建节点分配计划（覆盖旧计划）
+if [ -n "$RASPA_NODE_PRIORITIES" ] && [ -n "$PY_RES_JSON" ]; then
+  PLAN_REBUILT=$(NODE_PLAN_LIMIT="$NEW_LIMIT" PRIORITIES="$RASPA_NODE_PRIORITIES" PY_JSON="$PY_RES_JSON" python - <<'PY' 2>/dev/null || true
+import os, json
+
+def parse_prio(raw):
+    pr = {}
+    if not raw:
+        return pr
+    for part in raw.split(','):
+        if ':' not in part:
+            continue
+        name, val = part.split(':', 1)
+        name = name.strip()
+        try:
+            pr[name] = int(val.strip())
+        except Exception:
+            continue
+    return pr
+
+data = os.environ.get("PY_JSON", "")
+limit = int(os.environ.get("NODE_PLAN_LIMIT", "0") or 0)
+prio = parse_prio(os.environ.get("PRIORITIES", ""))
+if not data or limit <= 0:
+    raise SystemExit
+info = json.loads(data)
+nodes = info.get("nodes") or []
+if not nodes:
+    raise SystemExit
+
+def node_priority(n):
+    return prio.get(n.get("node"), 0)
+
+ordered_nodes = sorted(
+    nodes,
+    key=lambda n: (
+        -node_priority(n),
+        -(n.get("free_cpus", 0) or 0),
+        n.get("load") if n.get("load") is not None else 0,
+    ),
+)
+queue = []
+remaining = limit
+
+for n in ordered_nodes:
+    if remaining <= 0:
+        break
+    cap = int(n.get("free_cpus", 0) or 0)
+    if cap < 0:
+        cap = 0
+    if cap <= 0:
+        continue
+    take = cap if cap < remaining else remaining
+    queue.extend([n["node"]] * take)
+    remaining -= take
+
+counts = {}
+for n in queue:
+    counts[n] = counts.get(n, 0) + 1
+plan = ",".join(f"{k}:{v}" for k, v in counts.items() if v > 0)
+if plan:
+    print(plan)
+PY
+  )
+  if [ -n "$PLAN_REBUILT" ]; then
+    NODE_PLAN="$PLAN_REBUILT"
+    PLAN_FILE="$TARGET_DIR/.raspa_node_plan"
+    echo "$NODE_PLAN" > "$PLAN_FILE"
+    echo "$(ts) - INFO - 重建节点分配计划: $NODE_PLAN"
   fi
 fi
 
@@ -369,19 +510,136 @@ if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1; then
     IFS=',' read -r -a arr <<< "$missing_csv"
     local -a plan_queue=()
     local plan_len=0
+    # 若不存在节点计划，尝试基于集群信息和优先级生成
+    if [ -z "$NODE_PLAN" ] && [ -n "$PY_RES_JSON" ] && [ "$NEW_LIMIT" -gt 0 ]; then
+      NODE_PLAN=$(NODE_PLAN_LIMIT="$NEW_LIMIT" PRIORITIES="$RASPA_NODE_PRIORITIES" PY_JSON="$PY_RES_JSON" python - <<'PY' 2>/dev/null || true
+import os, json
+
+def parse_prio(raw):
+    pr = {}
+    if not raw:
+        return pr
+    for part in raw.split(','):
+        if ':' not in part:
+            continue
+        name, val = part.split(':', 1)
+        name = name.strip()
+        try:
+            pr[name] = int(val.strip())
+        except Exception:
+            continue
+    return pr
+
+data = os.environ.get("PY_JSON", "")
+limit = int(os.environ.get("NODE_PLAN_LIMIT", "0") or 0)
+prio = parse_prio(os.environ.get("PRIORITIES", ""))
+if not data or limit <= 0:
+    raise SystemExit
+info = json.loads(data)
+nodes = info.get("nodes") or []
+if not nodes:
+    raise SystemExit
+
+def node_priority(n):
+    return prio.get(n.get("node"), 0)
+
+ordered_nodes = sorted(
+    nodes,
+    key=lambda n: (
+        -node_priority(n),
+        -(n.get("free_cpus", 0) or 0),
+        n.get("load") if n.get("load") is not None else 0,
+    ),
+)
+queue = []
+remaining = limit
+
+for n in ordered_nodes:
+    if remaining <= 0:
+        break
+    cap = int(n.get("free_cpus", 0) or 0)
+    if cap < 0:
+        cap = 0
+    if cap <= 0:
+        continue
+    take = cap if cap < remaining else remaining
+    queue.extend([n["node"]] * take)
+    remaining -= take
+
+counts = {}
+for n in queue:
+    counts[n] = counts.get(n, 0) + 1
+plan = ",".join(f"{k}:{v}" for k, v in counts.items() if v > 0)
+if plan:
+    print(plan)
+PY
+      )
+    fi
     if [ -n "$NODE_PLAN" ]; then
-      local -a plan_entries
-      IFS=',' read -r -a plan_entries <<< "$NODE_PLAN"
-      local entry node count
-      for entry in "${plan_entries[@]}"; do
-        node="${entry%%:*}"
-        count="${entry#*:}"
-        if [ -n "$node" ] && [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt 0 ]; then
-          for ((i=0; i<count; i++)); do
-            plan_queue+=("$node")
-          done
-        fi
-      done
+      local PRIORITY_RAW="${RASPA_NODE_PRIORITIES:-}"
+      local py_out plan_queue_str plan_str_sorted
+      py_out=$(NODE_PLAN_INPUT="$NODE_PLAN" PRIORITIES="$PRIORITY_RAW" python - <<'PY' 2>/dev/null || true
+import os
+
+plan = os.environ.get("NODE_PLAN_INPUT", "").strip()
+prio_raw = os.environ.get("PRIORITIES", "").strip()
+
+entries = []
+for part in plan.split(','):
+    if not part or ':' not in part:
+        continue
+    node, count = part.split(':', 1)
+    node = node.strip()
+    try:
+        cnt = int(count.strip())
+    except Exception:
+        continue
+    if node and cnt > 0:
+        entries.append((node, cnt))
+
+priority = {}
+for part in prio_raw.split(','):
+    if ':' not in part:
+        continue
+    name, val = part.split(':', 1)
+    name = name.strip()
+    try:
+        priority[name] = int(val.strip())
+    except Exception:
+        continue
+
+if priority:
+    entries = sorted(entries, key=lambda item: (-priority.get(item[0], 0), item[0]))
+
+plan_str = ",".join(f"{n}:{c}" for n, c in entries)
+queue = []
+for n, c in entries:
+    queue.extend([n] * c)
+
+print(plan_str)
+print(" ".join(queue))
+PY
+)
+      plan_str_sorted=$(printf "%s\n" "$py_out" | sed -n '1p')
+      plan_queue_str=$(printf "%s\n" "$py_out" | sed -n '2p')
+      if [ -z "$plan_queue_str" ]; then
+        # 回退：按原始顺序展开
+        local -a plan_entries
+        IFS=',' read -r -a plan_entries <<< "$NODE_PLAN"
+        local entry node count
+        for entry in "${plan_entries[@]}"; do
+          node="${entry%%:*}"
+          count="${entry#*:}"
+          if [ -n "$node" ] && [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt 0 ]; then
+            for ((i=0; i<count; i++)); do
+              plan_queue+=("$node")
+            done
+          fi
+        done
+      else
+        NODE_PLAN="${plan_str_sorted:-$NODE_PLAN}"
+        read -r -a plan_queue <<< "$plan_queue_str"
+      fi
       plan_len=${#plan_queue[@]}
     fi
     local plan_index=0
@@ -416,7 +674,11 @@ if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1; then
         "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
       # 提交（强制日志到 1log）
       out="$LOG_DIR/${name}.out"; err="$LOG_DIR/${name}.err"
-      submit_result=$(sbatch -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1)
+      if [ -n "$TARGET_NODE" ]; then
+        submit_result=$(sbatch --nodelist="$TARGET_NODE" -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1)
+      else
+        submit_result=$(sbatch -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1)
+      fi
       echo "$submit_result"
       if [[ "$submit_result" =~ Submitted\ batch\ job\ ([0-9]+) ]]; then
         jid="${BASH_REMATCH[1]}"

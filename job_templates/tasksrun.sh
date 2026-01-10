@@ -359,7 +359,11 @@ do
             JOB_OUT="/dev/null"
             JOB_ERR="/dev/null"
         fi
-        submit_result=$($SUBMIT_CMD -o "$JOB_OUT" -e "$JOB_ERR" "$SCRIPT_DIR/job_submit_ht.sh" 2>&1)
+        if [ -n "$TARGET_NODE" ]; then
+            submit_result=$($SUBMIT_CMD --nodelist="$TARGET_NODE" -o "$JOB_OUT" -e "$JOB_ERR" "$SCRIPT_DIR/job_submit_ht.sh" 2>&1)
+        else
+            submit_result=$($SUBMIT_CMD -o "$JOB_OUT" -e "$JOB_ERR" "$SCRIPT_DIR/job_submit_ht.sh" 2>&1)
+        fi
     elif [ "$JOB_SYSTEM" = "PBS" ]; then
         if [ "$LOG_ENABLE" = true ]; then
             submit_result=$($SUBMIT_CMD -N "$NAMENEW" -o "$LOG_DIR/${NAMENEW}.out" -e "$LOG_DIR/${NAMENEW}.err" "$SCRIPT_DIR/job_submit_ht.sh" 2>&1)

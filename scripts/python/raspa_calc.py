@@ -418,6 +418,18 @@ def run_task_runner():
             env_config = config.get('environment', {})
             calc_config = config.get('calculation', {})
 
+            # 统一工作目录：优先使用配置中的 work_dir，否则保持当前
+            work_dir_cfg = env_config.get('work_dir') or os.environ.get('RASPA_WORK_DIR')
+            if work_dir_cfg:
+                os.environ['RASPA_WORK_DIR'] = work_dir_cfg
+                try:
+                    os.chdir(work_dir_cfg)
+                except FileNotFoundError:
+                    print(f"❌ 工作目录不存在: {work_dir_cfg}")
+                    sys.exit(1)
+            else:
+                os.environ['RASPA_WORK_DIR'] = os.getcwd()
+
             # 根据 RASPA 版本设置 CIF 目录
             raspa_ver = env_config.get('raspa_version', 'raspa2').lower()
             if raspa_ver == 'raspa3':
@@ -472,6 +484,21 @@ def run_task_runner():
                 # RASPA2: 使用 template_path (simulation.input)
                 if 'template_path' in env_config and env_config['template_path']:
                     os.environ['RASPA_TEMPLATE_PATH'] = env_config['template_path']
+
+            # 节点优先级（可选），格式: node:priority,node2:priority
+            if 'RASPA_NODE_PRIORITIES' not in os.environ:
+                node_pri_cfg = env_config.get('node_priorities')
+                if (not node_pri_cfg) and isinstance(calc_config.get('node_priorities'), dict):
+                    node_pri_cfg = calc_config.get('node_priorities')
+                if isinstance(node_pri_cfg, dict) and node_pri_cfg:
+                    parts = []
+                    for k, v in node_pri_cfg.items():
+                        try:
+                            parts.append(f"{k}:{int(v)}")
+                        except Exception:
+                            continue
+                    if parts:
+                        os.environ['RASPA_NODE_PRIORITIES'] = ",".join(parts)
 
             # 设置空隙率相关参数
             if 'use_void_csv' in calc_config:

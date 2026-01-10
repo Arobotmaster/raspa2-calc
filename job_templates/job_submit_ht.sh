@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=10
+#SBATCH --job-name=6
 #SBATCH --nodes=1
-export RASPA_TOTAL_CPUS="10"
+export RASPA_TOTAL_CPUS="6"
 export RASPA_WORK_DIR="/home/zjp/raspa2-calc/work"
-export RASPA_OUTPUT_DIR="1pymser"
-export RASPA_SUBDIR="1pymser"
-export RASPA_WORKER_ID="10"
+export RASPA_OUTPUT_DIR="6493CO2"
+export RASPA_SUBDIR="6493CO2"
+export RASPA_WORKER_ID="6"
 export RASPA_VERSION="raspa3"
 ## 单作业=1个进程（RASPA为单线程），每进程仅用1个CPU
 #SBATCH --ntasks-per-node=1
@@ -13,9 +13,9 @@ export RASPA_VERSION="raspa3"
 ## 偏好使用超线程（若节点支持会利用，否则自动退化）
 #SBATCH --hint=multithread
 ## 输出与时限
-#SBATCH --output=/home/zjp/raspa2-calc/work/1pymser/1log/10.out
-#SBATCH --error=/home/zjp/raspa2-calc/work/1pymser/1log/10.err
-#SBATCH --nodelist=worker-node-02
+#SBATCH --output=/home/zjp/raspa2-calc/work/6493CO2/1log/6.out
+#SBATCH --error=/home/zjp/raspa2-calc/work/6493CO2/1log/6.err
+#SBATCH --nodelist=worker-node-01
 #SBATCH --time=99999:00:00       ##设置作业的最大运行时间
 
 # 设置环境变量，防止数学库线程冲突
