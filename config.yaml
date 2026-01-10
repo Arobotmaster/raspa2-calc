@@ -80,7 +80,7 @@ calculation:
   # pyMSER 自动平衡
   mser:
     enable: true
-    target_cycles: 1000
+    target_cycles: 2000
     add_cycles: 400
     max_iter: 20
     uncertainty: "uSD"   # SD, SE, uSD, uSE
@@ -96,7 +96,7 @@ calculation:
 # - RASPA3: 修改 simulation.json JSON 文件
 parameter_screening:
   # 输出目录名
-  output_directory: "104"
+  output_directory: "wxj-1"
 
   # 是否自动计算 UnitCells
   auto_unit_cells: true
@@ -122,11 +122,10 @@ parameter_screening:
     CutOffVDW: [12.8]
 
     # 压力点 (Pa)
-    ExternalPressure: [1700, 2000, 2500]
-    # ExternalPressure: [100, 300, 500, 700, 900, 1100, 1400, 1700, 2000, 2500]
+    ExternalPressure: [100, 500, 1000, 2000, 3000, 4000, 5000, 6000]
 
     # 温度点 (K) - 可选
-    # ExternalTemperature: [298.0]
+    # ExternalTemperature: [323.0]
 
     # 模拟循环次数 - 可选
     # NumberOfCycles: [10000, 50000]

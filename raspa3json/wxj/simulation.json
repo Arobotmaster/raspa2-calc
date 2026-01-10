@@ -9,12 +9,11 @@
       "Type" : "Framework",
       "Name" : "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif/UIO-66_ASR_pacman.cif",
       "NumberOfUnitCells" : [2, 2, 2],
-      "ExternalTemperature" : 298.0,
+      "ExternalTemperature" : 323.0,
       "ExternalPressure" : 6000,
       "ChargeMethod" : "None",
       "ComputeDensityGrid" : true,
       "SampleDensityGridEvery" : 10,
-      "WriteDensityGridEvery" : 50000,
       "DensityGridSize" : [128, 128, 128]
     }
   ],
