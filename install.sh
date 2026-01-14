@@ -1,11 +1,13 @@
 #!/bin/bash
 
 # RASPA 高通量计算工具安装脚本
-# 版本: v2.4.0 (RASPA3 支持版本)
+# 版本: v2.5.0 (RASPA3 支持版本)
 # 新增: RASPA2/RASPA3 双版本支持、自动版本检测、RASPA3 数据提取器
 
+VERSION="2.5.0"
+
 echo "=================================================="
-echo "    RASPA 高通量计算工具 v2.4.0 安装程序"
+echo "    RASPA 高通量计算工具 v${VERSION} 安装程序"
 echo "=================================================="
 echo ""
 
@@ -267,6 +269,14 @@ validate_installation() {
         fi
     done
 
+    # 检查关键目录
+    local key_dirs=("raspa3json" "nfs")
+    for dir in "${key_dirs[@]}"; do
+        if [ ! -d "$TOOL_DIR/$dir" ]; then
+            errors+=("关键目录缺失: $dir/")
+        fi
+    done
+
     if [ ${#errors[@]} -ne 0 ]; then
         echo "❌ 安装验证失败:"
         for error in "${errors[@]}"; do
@@ -281,7 +291,7 @@ validate_installation() {
 
 # 主函数
 main() {
-    echo "🚀 开始安装 RASPA 高通量计算工具 v2.4.0..."
+    echo "🚀 开始安装 RASPA 高通量计算工具 v${VERSION}..."
     echo ""
 
     # 检查依赖
@@ -293,6 +303,17 @@ main() {
 
 # 设置工具目录
 TOOL_DIR="$HOME/raspa2-calc/.raspa_tools"
+
+# 预检查：若 NFS 挂载出现 Stale file handle，会导致 Slurm 作业 0 秒失败且无 stdout/err
+if [ -d "$HOME/raspa2-calc" ]; then
+    if ! ls -ld "$HOME/raspa2-calc" >/dev/null 2>&1; then
+        echo "❌ 检测到目录无法访问: $HOME/raspa2-calc"
+        echo "   这通常是 NFS 的 Stale file handle，先修复挂载再安装："
+        echo "   - sudo umount -fl $HOME/raspa2-calc && sudo mount -a"
+        echo "   - 或运行: bash \"$SCRIPT_DIR/nfs/nfs_client_setup.sh\" --recover"
+        exit 1
+    fi
+fi
 
 # 备份现有安装
 backup_existing_installation() {
@@ -340,6 +361,15 @@ cp -r "$SCRIPT_DIR/job_templates" "$TOOL_DIR/" 2>/dev/null && echo "✅ job_temp
 
 echo "正在复制 scripts/ 目录..."
 cp -r "$SCRIPT_DIR/scripts" "$TOOL_DIR/" 2>/dev/null && echo "✅ scripts/ 复制完成" || echo "⚠️  scripts/ 复制失败或不存在"
+
+echo "正在复制 raspa3json/ 目录..."
+cp -r "$SCRIPT_DIR/raspa3json" "$TOOL_DIR/" 2>/dev/null && echo "✅ raspa3json/ 复制完成（RASPA3 模板与分子库）" || echo "⚠️  raspa3json/ 复制失败或不存在"
+
+echo "正在复制 raspa2-3/ 目录..."
+cp -r "$SCRIPT_DIR/raspa2-3" "$TOOL_DIR/" 2>/dev/null && echo "✅ raspa2-3/ 复制完成" || echo "⚠️  raspa2-3/ 复制失败或不存在"
+
+echo "正在复制 nfs/ 目录..."
+cp -r "$SCRIPT_DIR/nfs" "$TOOL_DIR/" 2>/dev/null && echo "✅ nfs/ 复制完成（NFS 挂载/修复脚本）" || echo "⚠️  nfs/ 复制失败或不存在"
 
 echo "正在复制其他文件..."
 cp "$SCRIPT_DIR/README.md" "$TOOL_DIR/" 2>/dev/null && echo "✅ README.md 复制完成" || echo "⚠️  README.md 复制失败或不存在"
@@ -404,6 +434,9 @@ EXECUTABLES=(
     "job_templates/job_array.sh"
     "job_templates/job_submit.sh"
     "job_templates/job_submit_ht.sh"
+
+    "nfs/nfs_client_setup.sh"
+    "nfs/nfs_setup_all_nodes.sh"
 )
 
 for exe in "${EXECUTABLES[@]}"; do
@@ -466,9 +499,9 @@ echo "=================================================="
 echo "              安装完成！"
 echo "=================================================="
 echo ""
-echo "🎉 RASPA 高通量计算工具 v2.4.0 完整安装成功！"
+echo "🎉 RASPA 高通量计算工具 v${VERSION} 完整安装成功！"
 echo ""
-echo "📋 v2.4.0 核心特性："
+echo "📋 v${VERSION} 核心特性："
 echo "   ✅ RASPA2/RASPA3 双版本支持 (自动检测版本，支持配置切换)"
 echo "   ✅ RASPA3 数据提取器 (科学计数法格式解析)"
 echo "   ✅ 自动版本检测 (simulation.json→RASPA3 / simulation.input→RASPA2)"
@@ -484,6 +517,11 @@ echo "   ✅ 实时任务监控 (raspa-status精确统计)"
 echo "   ✅ 警告处理系统 (失败任务提取 + CSV数据替换)"
 echo ""
 echo "📁 安装位置: $TOOL_DIR"
+echo ""
+echo "🗂️  NFS/集群提示："
+echo "   - 若 Slurm 作业 0 秒失败且无 stdout/err，优先检查 NFS 是否报 Stale file handle"
+echo "   - 单节点修复: bash \"$TOOL_DIR/nfs/nfs_client_setup.sh\" --recover"
+echo "   - 批量修复: bash \"$TOOL_DIR/nfs/nfs_setup_all_nodes.sh\" recover --run"
 echo ""
 echo "🚀 快速开始："
 echo "   1. 确认三个 conda 环境："
