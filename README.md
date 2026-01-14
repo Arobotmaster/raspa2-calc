@@ -196,15 +196,9 @@ performance:
 
 ### pyMSER 使用示例
 
-- RASPA2：在 `config.yaml` 里设 `environment.raspa_version: "raspa2"` 与 `calculation.mser.enable: true`，准备好 `RASPA_DIR` 指向 raspa2 安装；
-运行 `raspa-calc`，提交的任务会在模拟结束后自动用 `pymser` 环境做平衡判定、按 `add_cycles` 续跑直至达标或达到 `max_iter`。
-输出包含 `mser_timeseries.csv` 和 `stats_<T>_<P>.json`。
-- RASPA3：在 `config.yaml` 里设 `environment.raspa_version: "raspa3"`，
-并指定 `raspa3_conda_env`（运行 raspa3 的环境，如上创建的 raspa3）以及 `calculation.mser.conda_env`（运行 pyMSER 的环境，默认 pymser）。
-运行 `raspa-calc` 后的 RASPA3 任务由 `runjobs_raspa3.sh` 调度：模拟阶段用 `raspa3_conda_env` 执行 `raspa3`，
-平衡判定与续跑用 `pymser` 环境解析输出并追加 `add_cycles`，多组分以 mol/kg 总和作为判据。
-- 参数筛选：共用 `calculation.mser`，也可在 `parameter_screening.mser` 覆盖；
-生成的参数筛选作业会在模拟完成后自动运行 pyMSER，并基于 JSON 重启（`RestartFileName`）续跑，不再使用二进制重启。
+- RASPA2：在 `config.yaml` 里设 `environment.raspa_version: "raspa2"` 与 `calculation.mser.enable: true`，准备好 `RASPA_DIR` 指向 raspa2 安装；运行 `raspa-calc`，提交的任务会在模拟结束后自动用 `pymser` 环境做平衡判定、按 `add_cycles` 续跑直至达标或达到 `max_iter`。输出包含 `mser_timeseries.csv` 和 `stats_<T>_<P>.json`。
+- RASPA3：在 `config.yaml` 里设 `environment.raspa_version: "raspa3"`，并指定 `raspa3_conda_env`（运行 raspa3 的环境，如上创建的 raspa3）以及 `calculation.mser.conda_env`（运行 pyMSER 的环境，默认 pymser）。运行 `raspa-calc` 后的 RASPA3 任务由 `runjobs_raspa3.sh` 调度：模拟阶段用 `raspa3_conda_env` 执行 `raspa3`，平衡判定与续跑用 `pymser` 环境解析输出并追加 `add_cycles`，多组分以 mol/kg 总和作为判据。
+- 参数筛选：共用 `calculation.mser`，也可在 `parameter_screening.mser` 覆盖；生成的参数筛选作业会在模拟完成后自动运行 pyMSER，并基于 JSON 重启（`RestartFileName`）续跑，不再使用二进制重启。
 
 ## 集群部署
 
@@ -257,10 +251,10 @@ raspa-calc
 ```yaml
 environment:
   node_priorities:
-    worker-node-01: 100
-    worker-node-02: 70
-    worker-node-03: 50
-    master-node: 10
+    worker-node-01: 4
+    worker-node-02: 3
+    worker-node-03: 2
+    master-node: 1
 ```
 
 - `raspa-calc` 高通量模式：会按优先级和实时空闲核数生成 `.raspa_node_plan`，日志显示“节点任务分配总览”。每个 sbatch 显式带 `--nodelist`。
@@ -374,70 +368,6 @@ python scripts/python/warning_processor.py
 python scripts/python/warning_processor.py
 # 选择模式2：CSV数据替换
 ```
-#### 模式 6：CSV/CIF 筛选示例
-```bash
-$ raspa-calc
-Welcome to RASPA Calculation System
-...
-=== RASPA计算模式选择 (RASPA3) ===
-1. 参数筛选模式（小批量运算）
-2. 高通量计算模式（大规模计算）
-3. 数据提取模式（从计算结果中提取数据）
-4. 警告处理模式（处理计算中的警告任务）
-5. 等温线绘制模式（批量绘制MOF等温吸附曲线）
-6. CSV/CIF 筛选模式（MOF筛选器）
-请选择运行模式 (1/2/3/4/5/6): 6
-
-=== CSV/CIF 筛选模式 ===
-该功能按条件/refcode筛选CSV并可选择复制对应的CIF文件
-
-# 支持表达式输入 (AND/OR、区间、多值 in 列表)
-# 例：PLD (脜)>5 AND (LCD (脜)>=4 OR Metal Types in [Co,Ni])
-
-... 选择工作模式、加载 CSV ...
-请输入CSV文件路径（支持相对路径或绝对路径）: /home/zjp/raspa2-calc/filter/All-property.csv
-✅ 文件读取成功（编码: gbk）
-
-▶ 数据概览
-文件名: All-property.csv
-数据总行数: 8808 行
-数据总列数: 56 列
-可用的列名 (部分):
-  1. number
-  2. coreid
-  3. refcode
-  4. name
-  5. mofid-v1
-  6. mofid-v2
-  7. LCD (脜)
-  8. PLD (脜)
-  ...
-
-▶ 设置筛选条件
-请输入要筛选的列名 (或按Enter结束条件设置): PLD (脜)
-数值筛选方式: 1) >  2) <  3) =  4) between
-请选择筛选方式 (1-4): 1
-请输入数值: 5
-✅ 已添加第 1 个条件，当前数据行数: 2706
-
-▶ 保存筛选结果
-请输入输出CSV文件名 (包含.csv后缀): pld.csv
-✅ 文件已保存: pld.csv
-
-是否需要复制筛选后的CIF文件? (y/n): y
-请输入包含文件名的列名: refcode
-源文件夹路径: /home/zjp/raspa2-calc/filter/8804
-目标文件夹路径: /home/zjp/raspa2-calc/filter/2705
-... 复制进度 ...
-
-▶ 复制结果统计
-总文件数: 2705
-成功复制: 2705 个
-未找到: 0 个
-成功率: 100.0%
-保存位置: /home/zjp/raspa2-calc/filter/2705
-```
-
 
 ## 常见问题
 
