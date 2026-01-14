@@ -57,7 +57,7 @@
 - *CSV/CIF 筛选* (`ciffilter.py`)：交互式按条件/refcode筛选CSV，可复制匹配的CIF
 ####
  **详细指南** 参考`docs/`（各个功能使用说明）
- 
+
 ### 执行优化
 - *SLURM作业数组*：`sbatch --array=1-N` 一次提交N个子任务，提交速度快50倍
 - *共享任务队列*：`.raspa_task_queue` 原子弹出机制，减少90% NFS扫描
@@ -106,7 +106,7 @@ source ~/.bashrc  # 或 source ~/.zshrc
 raspa-diagnose
 
 ```
-## 命令行工具参考
+## 命令行工具参考-**详细指南看docs**
 
 ### 主入口：raspa-calc
 ```bash
