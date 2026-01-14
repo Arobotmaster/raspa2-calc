@@ -26,7 +26,6 @@
       "RotationProbability" : 0.5,
       "ReinsertionProbability" : 0.5,
       "SwapProbability" : 1.0,
-      "WidomProbability" : 1.0,
       "CreateNumberOfMolecules" : 0
     }
   ]

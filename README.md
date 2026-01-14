@@ -79,70 +79,6 @@ raspa3_json_dir/
 - **等温线绘制** (`isotherm_plotter.py`)：可视化吸附数据
 - **CSV/CIF 筛选** (`ciffilter.py`)：交互式按条件/refcode筛选CSV，可复制匹配的CIF
 
-#### 模式 6：CSV/CIF 筛选示例
-```bash
-$ raspa-calc
-Welcome to RASPA Calculation System
-...
-=== RASPA计算模式选择 (RASPA3) ===
-1. 参数筛选模式（小批量运算）
-2. 高通量计算模式（大规模计算）
-3. 数据提取模式（从计算结果中提取数据）
-4. 警告处理模式（处理计算中的警告任务）
-5. 等温线绘制模式（批量绘制MOF等温吸附曲线）
-6. CSV/CIF 筛选模式（MOF筛选器）
-请选择运行模式 (1/2/3/4/5/6): 6
-
-=== CSV/CIF 筛选模式 ===
-该功能按条件/refcode筛选CSV并可选择复制对应的CIF文件
-
-# 支持表达式输入 (AND/OR、区间、多值 in 列表)
-# 例：PLD (脜)>5 AND (LCD (脜)>=4 OR Metal Types in [Co,Ni])
-
-... 选择工作模式、加载 CSV ...
-请输入CSV文件路径（支持相对路径或绝对路径）: /home/zjp/raspa2-calc/filter/All-property.csv
-✅ 文件读取成功（编码: gbk）
-
-▶ 数据概览
-文件名: All-property.csv
-数据总行数: 8808 行
-数据总列数: 56 列
-可用的列名 (部分):
-  1. number
-  2. coreid
-  3. refcode
-  4. name
-  5. mofid-v1
-  6. mofid-v2
-  7. LCD (脜)
-  8. PLD (脜)
-  ...
-
-▶ 设置筛选条件
-请输入要筛选的列名 (或按Enter结束条件设置): PLD (脜)
-数值筛选方式: 1) >  2) <  3) =  4) between
-请选择筛选方式 (1-4): 1
-请输入数值: 5
-✅ 已添加第 1 个条件，当前数据行数: 2706
-
-▶ 保存筛选结果
-请输入输出CSV文件名 (包含.csv后缀): pld.csv
-✅ 文件已保存: pld.csv
-
-是否需要复制筛选后的CIF文件? (y/n): y
-请输入包含文件名的列名: refcode
-源文件夹路径: /home/zjp/raspa2-calc/filter/8804
-目标文件夹路径: /home/zjp/raspa2-calc/filter/2705
-... 复制进度 ...
-
-▶ 复制结果统计
-总文件数: 2705
-成功复制: 2705 个
-未找到: 0 个
-成功率: 100.0%
-保存位置: /home/zjp/raspa2-calc/filter/2705
-```
-
 ### 执行优化
 - **SLURM作业数组**：`sbatch --array=1-N` 一次提交N个子任务，提交速度快50倍
 - **共享任务队列**：`.raspa_task_queue` 原子弹出机制，减少90% NFS扫描
@@ -432,6 +368,70 @@ python scripts/python/warning_processor.py
 python scripts/python/warning_processor.py
 # 选择模式2：CSV数据替换
 ```
+#### 模式 6：CSV/CIF 筛选示例
+```bash
+$ raspa-calc
+Welcome to RASPA Calculation System
+...
+=== RASPA计算模式选择 (RASPA3) ===
+1. 参数筛选模式（小批量运算）
+2. 高通量计算模式（大规模计算）
+3. 数据提取模式（从计算结果中提取数据）
+4. 警告处理模式（处理计算中的警告任务）
+5. 等温线绘制模式（批量绘制MOF等温吸附曲线）
+6. CSV/CIF 筛选模式（MOF筛选器）
+请选择运行模式 (1/2/3/4/5/6): 6
+
+=== CSV/CIF 筛选模式 ===
+该功能按条件/refcode筛选CSV并可选择复制对应的CIF文件
+
+# 支持表达式输入 (AND/OR、区间、多值 in 列表)
+# 例：PLD (脜)>5 AND (LCD (脜)>=4 OR Metal Types in [Co,Ni])
+
+... 选择工作模式、加载 CSV ...
+请输入CSV文件路径（支持相对路径或绝对路径）: /home/zjp/raspa2-calc/filter/All-property.csv
+✅ 文件读取成功（编码: gbk）
+
+▶ 数据概览
+文件名: All-property.csv
+数据总行数: 8808 行
+数据总列数: 56 列
+可用的列名 (部分):
+  1. number
+  2. coreid
+  3. refcode
+  4. name
+  5. mofid-v1
+  6. mofid-v2
+  7. LCD (脜)
+  8. PLD (脜)
+  ...
+
+▶ 设置筛选条件
+请输入要筛选的列名 (或按Enter结束条件设置): PLD (脜)
+数值筛选方式: 1) >  2) <  3) =  4) between
+请选择筛选方式 (1-4): 1
+请输入数值: 5
+✅ 已添加第 1 个条件，当前数据行数: 2706
+
+▶ 保存筛选结果
+请输入输出CSV文件名 (包含.csv后缀): pld.csv
+✅ 文件已保存: pld.csv
+
+是否需要复制筛选后的CIF文件? (y/n): y
+请输入包含文件名的列名: refcode
+源文件夹路径: /home/zjp/raspa2-calc/filter/8804
+目标文件夹路径: /home/zjp/raspa2-calc/filter/2705
+... 复制进度 ...
+
+▶ 复制结果统计
+总文件数: 2705
+成功复制: 2705 个
+未找到: 0 个
+成功率: 100.0%
+保存位置: /home/zjp/raspa2-calc/filter/2705
+```
+
 
 ## 常见问题
 
