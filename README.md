@@ -105,157 +105,6 @@ source ~/.bashrc  # 或 source ~/.zshrc
 raspa-diagnose
 
 ```
-
-## 配置文件
-
-### 完整配置示例
-
-```yaml
-# 环境配置
-environment:
-  work_dir: "/path/to/work"
-
-  # ============ RASPA 版本选择 ============
-  raspa_version: "raspa3"  # 或 "raspa2"
-
-  # ============ RASPA2 配置 ============
-  raspa_dir: "/path/to/raspa2"
-  raspa2_cif_dir: "/path/to/cif"
-
-  # ============ RASPA3 配置 ============
-  raspa3_conda_env: "raspa3"
-  raspa3_json_dir: "/path/to/raspa3json"
-  raspa3_cif_base_path: "/path/to/cif"
-  raspa3_template_path: "/path/to/simulation.json"
-
-# 配置片段（含 pyMSER）
-environment:
-  work_dir: "/path/to/work"
-  raspa_version: "raspa2"           # 或 raspa3
-  raspa_dir: "/path/to/raspa2"      # RASPA2 路径
-  raspa2_cif_dir: "/path/to/cif"
-  template_path: "/path/to/simulation.input"
-  raspa3_conda_env: "raspa3"
-  raspa3_json_dir: "/path/to/raspa3json"
-  raspa3_cif_base_path: "/path/to/cif/files"
-  raspa3_template_path: "/path/to/simulation.json"
-
-calculation:
-  cutoff_radius: 12.8
-  default_molecules: "CO2 CH4"
-  csv_file_path: "data/structures.csv"
-  framework_column: "refcode"
-  output_directory: "calc_output"
-  # pyMSER 自动平衡（RASPA2/3 通用，多组分按 mol/kg 总和判定）
-  mser:
-    enable: true          # 开启后 pyMSER 自动续跑
-    target_cycles: 2000   # 期望平衡后样本数
-    add_cycles: 400       # 每次追加的循环数
-    max_iter: 20          # 最多追加次数
-    uncertainty: "uSD"    # SD/SE/uSD/uSE
-    conda_env: "pymser"   # 含 pymser+raspa3 的 conda 环境，R2/R3 共享
-    llm: true             # 使用 MSER-LLM 截断（更靠前、平滑）
-    batch_size: 5         # MSER 批大小（默认 5，平滑序列）
-    tail_rel_std: 0.0     # 尾部相对波动阈值（<=0 不检查；>0 时超阈续跑）
-    tail_window: 2000     # 尾部波动检测窗口（实际取 min(window, 产线样本数)）
-    min_t0_frac: 0.0      # 最小 t0 占比（<=0 不限制；>0 时强制跳过前置占比）
-
-logging:
-  level: "INFO"
-  file: "raspa_calc.log"
-  output_dir: "1log"
-  enable_job_logs: true
-
-performance:
-  enable_cache: true
-  show_progress: true
-```
-
-### pyMSER 使用示例
-
-- RASPA2：在 `config.yaml` 里设 `environment.raspa_version: "raspa2"` 与 `calculation.mser.enable: true`，准备好 `RASPA_DIR` 指向 raspa2 安装；运行 `raspa-calc`，提交的任务会在模拟结束后自动用 `pymser` 环境做平衡判定、按 `add_cycles` 续跑直至达标或达到 `max_iter`。输出包含 `mser_timeseries.csv` 和 `stats_<T>_<P>.json`。
-- RASPA3：在 `config.yaml` 里设 `environment.raspa_version: "raspa3"`，并指定 `raspa3_conda_env`（运行 raspa3 的环境，如上创建的 raspa3）以及 `calculation.mser.conda_env`（运行 pyMSER 的环境，默认 pymser）。运行 `raspa-calc` 后的 RASPA3 任务由 `runjobs_raspa3.sh` 调度：模拟阶段用 `raspa3_conda_env` 执行 `raspa3`，平衡判定与续跑用 `pymser` 环境解析输出并追加 `add_cycles`，多组分以 mol/kg 总和作为判据。
-- 参数筛选：共用 `calculation.mser`，也可在 `parameter_screening.mser` 覆盖；生成的参数筛选作业会在模拟完成后自动运行 pyMSER，并基于 JSON 重启（`RestartFileName`）续跑，不再使用二进制重启。
-
-## 集群部署
-
-### 多节点集群配置
-
-v2.5.0 支持在SLURM/PBS集群上进行多节点高通量计算。详见 [CLUSTER_DEPLOYMENT_GUIDE.md](CLUSTER_DEPLOYMENT_GUIDE.md)。
-
-#### NFS共享存储配置
-
-> v2.5.0+ 推荐使用 `/.raspa_tools/nfs/` 目录下的脚本来配置 NFS（已整合并重命名）。
-
-**服务器端**：
-```bash
-sudo mkdir -p /shared/raspa2-calc
-sudo chown -R zjp:zjp /shared/raspa2-calc
-echo "/shared/raspa2-calc 10.10.14.0/24(rw,sync,no_root_squash)" | sudo tee -a /etc/exports
-sudo systemctl enable --now nfs-server rpcbind
-sudo exportfs -ra
-```
-
-**客户端**：
-```bash
-sudo yum install -y nfs-utils
-echo "10.10.14.12:/shared/raspa2-calc /home/zjp/raspa2-calc nfs4 rw,hard,intr 0 0" | sudo tee -a /etc/fstab
-sudo mount -a
-```
-
-**脚本方式（推荐）**：
-```bash
-# 单节点客户端配置（在客户端执行）
-bash .raspa_tools/nfs/nfs_client_setup.sh
-
-# 批量把客户端脚本拷贝到各节点（在 NFS 服务器上执行）
-bash .raspa_tools/nfs/nfs_setup_all_nodes.sh
-```
-
-#### 使用方法
-
-**重要**：多节点任务调度必须在NFS挂载目录下提交任务：
-
-```bash
-cd /home/zjp/raspa2-calc
-raspa-calc
-```
-
-#### 节点优先级配置
-
-在 `config.yaml` 设置节点权重，数字越大优先级越高。支持 `environment.node_priorities` 与 `calculation.node_priorities` 两处配置。例如：
-
-```yaml
-environment:
-  node_priorities:
-    worker-node-01: 4
-    worker-node-02: 3
-    worker-node-03: 2
-    master-node: 1
-```
-
-- `raspa-calc` 高通量模式：会按优先级和实时空闲核数生成 `.raspa_node_plan`，日志显示“节点任务分配总览”。每个 sbatch 显式带 `--nodelist`。
-- `raspa-scale` 扩缩容：自动读取优先级（即使无 PyYAML 也能解析），重建 `.raspa_node_plan` 后补交缺口，sbatch 同样带 `--nodelist`。
-- 负载感知：当节点 CPU 负载或已分配比例 ≥85% 时跳过，≥70% 时仅按可用核的一半分配，优先把任务洒向空闲且高权重的节点。
-
-### 环境变量设置
-
-```bash
-# RASPA 通用
-export RASPA_WORK_DIR=/path/to/work
-
-# RASPA2 专用
-export RASPA_DIR=/path/to/raspa2
-
-# RASPA3 conda 初始化
-source ~/anaconda3/etc/profile.d/conda.sh
-
-# 防止线程冲突
-export OPENBLAS_NUM_THREADS=1
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-```
-
 ## 命令行工具参考
 
 ### 主入口：raspa-calc
@@ -344,6 +193,156 @@ python scripts/python/warning_processor.py
 ```bash
 python scripts/python/warning_processor.py
 # 选择模式2：CSV数据替换
+```
+
+## 高通量计算配置文件
+
+### 完整配置示例
+
+```yaml
+# 环境配置
+environment:
+  work_dir: "/path/to/work"
+
+  # ============ RASPA 版本选择 ============
+  raspa_version: "raspa3"  # 或 "raspa2"
+
+  # ============ RASPA2 配置 ============
+  raspa_dir: "/path/to/raspa2"
+  raspa2_cif_dir: "/path/to/cif"
+
+  # ============ RASPA3 配置 ============
+  raspa3_conda_env: "raspa3"
+  raspa3_json_dir: "/path/to/raspa3json"
+  raspa3_cif_base_path: "/path/to/cif"
+  raspa3_template_path: "/path/to/simulation.json"
+
+# 配置片段（含 pyMSER）
+environment:
+  work_dir: "/path/to/work"
+  raspa_version: "raspa2"           # 或 raspa3
+  raspa_dir: "/path/to/raspa2"      # RASPA2 路径
+  raspa2_cif_dir: "/path/to/cif"
+  template_path: "/path/to/simulation.input"
+  raspa3_conda_env: "raspa3"
+  raspa3_json_dir: "/path/to/raspa3json"
+  raspa3_cif_base_path: "/path/to/cif/files"
+  raspa3_template_path: "/path/to/simulation.json"
+
+calculation:
+  cutoff_radius: 12.8
+  default_molecules: "CO2 CH4"
+  csv_file_path: "data/structures.csv"
+  framework_column: "refcode"
+  output_directory: "calc_output"
+  # pyMSER 自动平衡（RASPA2/3 通用，多组分按 mol/kg 总和判定）
+  mser:
+    enable: true          # 开启后 pyMSER 自动续跑
+    target_cycles: 2000   # 期望平衡后样本数
+    add_cycles: 400       # 每次追加的循环数
+    max_iter: 20          # 最多追加次数
+    uncertainty: "uSD"    # SD/SE/uSD/uSE
+    conda_env: "pymser"   # 含 pymser+raspa3 的 conda 环境，R2/R3 共享
+    llm: true             # 使用 MSER-LLM 截断（更靠前、平滑）
+    batch_size: 5         # MSER 批大小（默认 5，平滑序列）
+    tail_rel_std: 0.0     # 尾部相对波动阈值（<=0 不检查；>0 时超阈续跑）
+    tail_window: 2000     # 尾部波动检测窗口（实际取 min(window, 产线样本数)）
+    min_t0_frac: 0.0      # 最小 t0 占比（<=0 不限制；>0 时强制跳过前置占比）
+
+logging:
+  level: "INFO"
+  file: "raspa_calc.log"
+  output_dir: "1log"
+  enable_job_logs: true
+
+performance:
+  enable_cache: true
+  show_progress: true
+```
+
+### pyMSER 使用示例
+
+- RASPA2：在 `config.yaml` 里设 `environment.raspa_version: "raspa2"` 与 `calculation.mser.enable: true`，准备好 `RASPA_DIR` 指向 raspa2 安装；运行 `raspa-calc`，提交的任务会在模拟结束后自动用 `pymser` 环境做平衡判定、按 `add_cycles` 续跑直至达标或达到 `max_iter`。输出包含 `mser_timeseries.csv` 和 `stats_<T>_<P>.json`。
+- RASPA3：在 `config.yaml` 里设 `environment.raspa_version: "raspa3"`，并指定 `raspa3_conda_env`（运行 raspa3 的环境，如上创建的 raspa3）以及 `calculation.mser.conda_env`（运行 pyMSER 的环境，默认 pymser）。运行 `raspa-calc` 后的 RASPA3 任务由 `runjobs_raspa3.sh` 调度：模拟阶段用 `raspa3_conda_env` 执行 `raspa3`，平衡判定与续跑用 `pymser` 环境解析输出并追加 `add_cycles`，多组分以 mol/kg 总和作为判据。
+- 参数筛选：共用 `calculation.mser`，也可在 `parameter_screening.mser` 覆盖；生成的参数筛选作业会在模拟完成后自动运行 pyMSER，并基于 JSON 重启（`RestartFileName`）续跑，不再使用二进制重启。
+
+#### 节点优先级配置
+
+在 `config.yaml` 设置节点权重，数字越大优先级越高。支持 `environment.node_priorities` 与 `calculation.node_priorities` 两处配置。例如：
+
+```yaml
+environment:
+  node_priorities:
+    worker-node-01: 4
+    worker-node-02: 3
+    worker-node-03: 2
+    master-node: 1
+```
+
+- `raspa-calc` 高通量模式：会按优先级和实时空闲核数生成 `.raspa_node_plan`，日志显示“节点任务分配总览”。每个 sbatch 显式带 `--nodelist`。
+- `raspa-scale` 扩缩容：自动读取优先级（即使无 PyYAML 也能解析），重建 `.raspa_node_plan` 后补交缺口，sbatch 同样带 `--nodelist`。
+- 负载感知：当节点 CPU 负载或已分配比例 ≥85% 时跳过，≥70% 时仅按可用核的一半分配，优先把任务洒向空闲且高权重的节点。
+
+## 集群部署
+
+### 多节点集群配置
+
+v2.5.0 支持在SLURM/PBS集群上进行多节点高通量计算。详见 [CLUSTER_DEPLOYMENT_GUIDE.md](CLUSTER_DEPLOYMENT_GUIDE.md)。
+
+#### NFS共享存储配置
+
+> v2.5.0+ 推荐使用 `/.raspa_tools/nfs/` 目录下的脚本来配置 NFS（已整合并重命名）。
+
+**服务器端**：
+```bash
+sudo mkdir -p /shared/raspa2-calc
+sudo chown -R zjp:zjp /shared/raspa2-calc
+echo "/shared/raspa2-calc 10.10.14.0/24(rw,sync,no_root_squash)" | sudo tee -a /etc/exports
+sudo systemctl enable --now nfs-server rpcbind
+sudo exportfs -ra
+```
+
+**客户端**：
+```bash
+sudo yum install -y nfs-utils
+echo "10.10.14.12:/shared/raspa2-calc /home/zjp/raspa2-calc nfs4 rw,hard,intr 0 0" | sudo tee -a /etc/fstab
+sudo mount -a
+```
+
+**脚本方式（推荐）**：
+```bash
+# 单节点客户端配置（在客户端执行）
+bash .raspa_tools/nfs/nfs_client_setup.sh
+
+# 批量把客户端脚本拷贝到各节点（在 NFS 服务器上执行）
+bash .raspa_tools/nfs/nfs_setup_all_nodes.sh
+```
+
+#### 使用方法
+
+**重要**：多节点任务调度必须在NFS挂载目录下提交任务：
+
+```bash
+cd /home/zjp/raspa2-calc
+raspa-calc
+```
+
+### 环境变量设置
+
+```bash
+# RASPA 通用
+export RASPA_WORK_DIR=/path/to/work
+
+# RASPA2 专用
+export RASPA_DIR=/path/to/raspa2
+
+# RASPA3 conda 初始化
+source ~/anaconda3/etc/profile.d/conda.sh
+
+# 防止线程冲突
+export OPENBLAS_NUM_THREADS=1
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
 ```
 
 ## 常见问题
