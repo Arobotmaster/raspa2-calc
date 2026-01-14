@@ -96,6 +96,9 @@ Welcome to RASPA Calculation System
 === CSV/CIF 筛选模式 ===
 该功能按条件/refcode筛选CSV并可选择复制对应的CIF文件
 
+# 支持表达式输入 (AND/OR、区间、多值 in 列表)
+# 例：PLD (脜)>5 AND (LCD (脜)>=4 OR Metal Types in [Co,Ni])
+
 ... 选择工作模式、加载 CSV ...
 请输入CSV文件路径（支持相对路径或绝对路径）: /home/zjp/raspa2-calc/filter/All-property.csv
 ✅ 文件读取成功（编码: gbk）
@@ -238,6 +241,11 @@ calculation:
     max_iter: 20          # 最多追加次数
     uncertainty: "uSD"    # SD/SE/uSD/uSE
     conda_env: "pymser"   # 含 pymser+raspa3 的 conda 环境，R2/R3 共享
+    llm: true             # 使用 MSER-LLM 截断（更靠前、平滑）
+    batch_size: 5         # MSER 批大小（默认 5，平滑序列）
+    tail_rel_std: 0.0     # 尾部相对波动阈值（<=0 不检查；>0 时超阈续跑）
+    tail_window: 2000     # 尾部波动检测窗口（实际取 min(window, 产线样本数)）
+    min_t0_frac: 0.0      # 最小 t0 占比（<=0 不限制；>0 时强制跳过前置占比）
 
 logging:
   level: "INFO"
@@ -254,7 +262,7 @@ performance:
 
 - RASPA2：在 `config.yaml` 里设 `environment.raspa_version: "raspa2"` 与 `calculation.mser.enable: true`，准备好 `RASPA_DIR` 指向 raspa2 安装；运行 `raspa-calc`，提交的任务会在模拟结束后自动用 `pymser` 环境做平衡判定、按 `add_cycles` 续跑直至达标或达到 `max_iter`。输出包含 `mser_timeseries.csv` 和 `stats_<T>_<P>.json`。
 - RASPA3：在 `config.yaml` 里设 `environment.raspa_version: "raspa3"`，并指定 `raspa3_conda_env`（运行 raspa3 的环境，如上创建的 raspa3）以及 `calculation.mser.conda_env`（运行 pyMSER 的环境，默认 pymser）。运行 `raspa-calc` 后的 RASPA3 任务由 `runjobs_raspa3.sh` 调度：模拟阶段用 `raspa3_conda_env` 执行 `raspa3`，平衡判定与续跑用 `pymser` 环境解析输出并追加 `add_cycles`，多组分以 mol/kg 总和作为判据。
-- 参数筛选：共用 `calculation.mser`，也可在 `parameter_screening.mser` 覆盖；生成的参数筛选作业会在模拟完成后自动运行 pyMSER，且会补齐 `WriteBinaryRestartEvery`/`RestartFile` 以支持续跑。
+- 参数筛选：共用 `calculation.mser`，也可在 `parameter_screening.mser` 覆盖；生成的参数筛选作业会在模拟完成后自动运行 pyMSER，并基于 JSON 重启（`RestartFileName`）续跑，不再使用二进制重启。
 
 ## 集群部署
 
@@ -263,6 +271,8 @@ performance:
 v2.5.0 支持在SLURM/PBS集群上进行多节点高通量计算。详见 [CLUSTER_DEPLOYMENT_GUIDE.md](CLUSTER_DEPLOYMENT_GUIDE.md)。
 
 #### NFS共享存储配置
+
+> v2.5.0+ 推荐使用 `/.raspa_tools/nfs/` 目录下的脚本来配置 NFS（已整合并重命名）。
 
 **服务器端**：
 ```bash
@@ -280,6 +290,15 @@ echo "10.10.14.12:/shared/raspa2-calc /home/zjp/raspa2-calc nfs4 rw,hard,intr 0 
 sudo mount -a
 ```
 
+**脚本方式（推荐）**：
+```bash
+# 单节点客户端配置（在客户端执行）
+bash .raspa_tools/nfs/nfs_client_setup.sh
+
+# 批量把客户端脚本拷贝到各节点（在 NFS 服务器上执行）
+bash .raspa_tools/nfs/nfs_setup_all_nodes.sh
+```
+
 #### 使用方法
 
 **重要**：多节点任务调度必须在NFS挂载目录下提交任务：
@@ -291,7 +310,7 @@ raspa-calc
 
 #### 节点优先级配置
 
-在 `config.yaml` 的 `environment.node_priorities` 设置节点权重，数字越大优先级越高。例如：
+在 `config.yaml` 设置节点权重，数字越大优先级越高。支持 `environment.node_priorities` 与 `calculation.node_priorities` 两处配置。例如：
 
 ```yaml
 environment:
@@ -304,6 +323,7 @@ environment:
 
 - `raspa-calc` 高通量模式：会按优先级和实时空闲核数生成 `.raspa_node_plan`，日志显示“节点任务分配总览”。每个 sbatch 显式带 `--nodelist`。
 - `raspa-scale` 扩缩容：自动读取优先级（即使无 PyYAML 也能解析），重建 `.raspa_node_plan` 后补交缺口，sbatch 同样带 `--nodelist`。
+- 负载感知：当节点 CPU 负载或已分配比例 ≥85% 时跳过，≥70% 时仅按可用核的一半分配，优先把任务洒向空闲且高权重的节点。
 
 ### 环境变量设置
 

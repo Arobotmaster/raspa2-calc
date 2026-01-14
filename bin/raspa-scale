@@ -15,6 +15,8 @@ usage() {
   echo "  -i, --interactive, interactive  进入交互模式，先展示集群资源与可用任务，再输入并发上限"
   echo "  -h, --help                      显示此帮助信息"
   echo "  -y, --accept                    非交互自动采用建议值（无标准输入或CI中很有用）"
+  echo "  -a, --apply                     写入并发上限并执行自动扩/缩容（必须显式指定）"
+  echo "      --limit-only                仅写入并发上限，不提交/取消作业"
 }
 
 insert_exports_after_sbatch() {
@@ -57,6 +59,8 @@ PY
 
 INTERACTIVE=0
 ACCEPT_AUTO=0
+APPLY_ACTIONS=0
+LIMIT_ONLY=0
 RAW_LIMIT=""
 RAW_SUBDIR=""
 
@@ -68,6 +72,10 @@ while [ $# -ge 1 ]; do
       usage; exit 0 ;;
     -y|--accept)
       ACCEPT_AUTO=1; shift || true ;;
+    -a|--apply|--autoscale)
+      APPLY_ACTIONS=1; shift || true ;;
+    --limit-only)
+      LIMIT_ONLY=1; shift || true ;;
     *) break ;;
   esac
 done
@@ -136,7 +144,8 @@ def parse_yaml(path: str):
         with open(path, "r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}
         env = data.get("environment") or {}
-        np = env.get("node_priorities") or {}
+        calc = data.get("calculation") or {}
+        np = env.get("node_priorities") or calc.get("node_priorities") or {}
         if isinstance(np, dict):
             return {str(k): int(v) for k, v in np.items() if str(k)}
     except Exception:
@@ -216,10 +225,21 @@ fi
 echo "工作根目录: $BASE_DIR"
 echo "目标子目录: $SUBDIR"
 
+# 若任务目录下不存在配置快照，尝试复制当前可用的 config.yaml，确保补交作业继承配置
+CONFIG_SNAPSHOT="$TARGET_DIR/.raspa_config.yaml"
+if [ ! -f "$CONFIG_SNAPSHOT" ]; then
+  for candidate in "$TARGET_DIR/config.yaml" "$BASE_DIR/config.yaml" "$ROOT_DIR/.raspa_tools/config.yaml"; do
+    if [ -f "$candidate" ]; then
+      cp -f "$candidate" "$CONFIG_SNAPSHOT" 2>/dev/null && echo "已生成配置快照: $CONFIG_SNAPSHOT"
+      break
+    fi
+  done
+fi
+
 # 自动检测 RASPA 版本（若环境变量未设置）
 if [ -z "${RASPA_VERSION:-}" ]; then
-  # 检测第一个存在的任务目录
-  SAMPLE_DIR=$(find "$TARGET_DIR" -maxdepth 1 -type d \( -name 'mc[0-9]*' -o -name 'mc[0-9]*__running' \) 2>/dev/null | head -1)
+  # 检测第一个存在的任务目录（避免管道SIGPIPE，使用 -print -quit）
+  SAMPLE_DIR=$(find "$TARGET_DIR" -maxdepth 1 -type d \( -name 'mc[0-9]*' -o -name 'mc[0-9]*__running' \) -print -quit 2>/dev/null)
   if [ -n "$SAMPLE_DIR" ]; then
     if [ -f "$SAMPLE_DIR/simulation.json" ]; then
       RASPA_VERSION="raspa3"
@@ -230,7 +250,7 @@ if [ -z "${RASPA_VERSION:-}" ]; then
     fi
   fi
   # 默认 RASPA2
-  [ -z "$RASPA_VERSION" ] && RASPA_VERSION="raspa2"
+  [ -z "${RASPA_VERSION:-}" ] && RASPA_VERSION="raspa2"
 fi
 export RASPA_VERSION
 
@@ -298,14 +318,26 @@ if [ "$CL_METHOD" = "none" ] && command -v sinfo >/dev/null 2>&1; then
         [ -z "$nm" ] && continue
         IFS='/' read -r c_alloc c_idle c_other c_total <<< "$Csum"
         c_alloc=${c_alloc:-0}; c_idle=${c_idle:-0}; c_other=${c_other:-0}; c_total=${c_total:-${cCpt:-0}}
+        # 物理容量/分配折算
         free=$(( c_total - c_alloc - c_other ))
+        load_disp="$load"; [ -z "$load_disp" ] && load_disp="未知"
+        load_clean=${load%"*"}
+        case "${load_clean,,}" in
+          ""|"unknown"|"(null)"|"n/a"|"-") load_int=0 ;;
+          *) load_int=$(printf "%.0f" "$load_clean" 2>/dev/null || printf "0") ;;
+        esac
+        capacity=$c_total
+        alloc_eff=$c_alloc
+        load_eff=$load_int
+        free=$(( capacity - alloc_eff - c_other ))
+        by_load=$(( capacity - load_eff ))
+        [ "$by_load" -lt "$free" ] && free=$by_load
         [ "$free" -lt 0 ] && free=0
-        CL_TOTAL=$((CL_TOTAL + c_total))
-        CL_ALLOC=$((CL_ALLOC + c_alloc))
+        CL_TOTAL=$((CL_TOTAL + capacity))
+        CL_ALLOC=$((CL_ALLOC + alloc_eff))
         CL_OTHER=$((CL_OTHER + c_other))
         CL_IDLE=$((CL_IDLE + free))
-        load_disp="$load"; [ -z "$load_disp" ] && load_disp="未知"
-        CL_NODE_LINES+=("  ${nm}: 总${c_total}线程 (拓扑${topo:-?}), 已分配${c_alloc}, CPULoad=${load_disp}, 估计可用=${free}")
+        CL_NODE_LINES+=("  ${nm}: 总${capacity}核 (拓扑${topo:-?}), 已分配${alloc_eff}, CPULoad=${load_disp}, 估计可用=${free}")
       done <<< "$out"
       CL_METHOD="sinfo_per_node"
     fi
@@ -384,13 +416,50 @@ if ! [[ "$NEW_LIMIT" =~ ^[0-9]+$ ]] || [ "${NEW_LIMIT}" -lt 1 ]; then
   exit 1
 fi
 
+ACTION_MODE="dry"
+if [ "$APPLY_ACTIONS" -eq 1 ]; then
+  ACTION_MODE="apply"
+elif [ "$LIMIT_ONLY" -eq 1 ]; then
+  ACTION_MODE="limit"
+# -y/--accept 视为“无需交互直接执行”，默认走自动扩缩容
+elif [ "$ACCEPT_AUTO" -eq 1 ]; then
+  ACTION_MODE="apply"
+elif [ "$NON_TTY" -eq 0 ]; then
+  echo
+  echo "请选择操作（默认仅查看，不改动任何作业）："
+  echo "  [d] 仅查看/不修改"
+  echo "  [l] 写入并发上限，不提交/取消作业"
+  echo "  [a] 写入并发上限并自动扩/缩容"
+  read -r -p "请输入选择 [d/l/a] (默认d): " mode_choice || mode_choice=""
+  case "${mode_choice,,}" in
+    l) ACTION_MODE="limit" ;;
+    a) ACTION_MODE="apply" ;;
+    *) ACTION_MODE="dry" ;;
+  esac
+fi
+
+if [ "$ACTION_MODE" = "dry" ]; then
+  echo "安全模式：未指定 --apply/--limit-only，保持只读，不修改并发或作业。"
+  exit 0
+fi
+
 echo "$NEW_LIMIT" > "$LIMIT_FILE"
 echo "已设置 .raspa_worker_limit = $NEW_LIMIT ($TARGET_DIR)"
 
-# 若有优先级与集群信息，重建节点分配计划（覆盖旧计划）
-if [ -n "$RASPA_NODE_PRIORITIES" ] && [ -n "$PY_RES_JSON" ]; then
+DO_AUTOSCALE=0
+if [ "$ACTION_MODE" = "apply" ]; then
+  DO_AUTOSCALE=1
+fi
+
+PLAN_FILE="$TARGET_DIR/.raspa_node_plan"
+NODE_PLAN="${RASPA_NODE_PLAN:-}"
+# 若用户未显式指定 NODE_PLAN，优先刷新集群信息并基于最新负载生成计划
+if [ "$DO_AUTOSCALE" -eq 1 ]; then
+  PY_RES_JSON=$(python "$ROOT_DIR/.raspa_tools/scripts/python/cluster_info.py" 2>/dev/null || true)
+fi
+if [ "$DO_AUTOSCALE" -eq 1 ] && [ -z "$NODE_PLAN" ] && [ -n "$PY_RES_JSON" ]; then
   PLAN_REBUILT=$(NODE_PLAN_LIMIT="$NEW_LIMIT" PRIORITIES="$RASPA_NODE_PRIORITIES" PY_JSON="$PY_RES_JSON" python - <<'PY' 2>/dev/null || true
-import os, json
+import os, json, math
 
 def parse_prio(raw):
     pr = {}
@@ -420,10 +489,37 @@ if not nodes:
 def node_priority(n):
     return prio.get(n.get("node"), 0)
 
+ordered_nodes = []
+for n in nodes:
+    total = int(n.get("total_cpus", 0) or 0)
+    free = max(0, int(n.get("free_cpus", 0) or 0))
+    alloc = max(0, int(n.get("allocated_cpus", 0) or 0))
+    load_val_raw = n.get("load")
+    try:
+        load_val = float(str(load_val_raw).rstrip("*"))
+    except Exception:
+        load_val = None
+    busy = max(alloc, load_val if load_val is not None else 0)
+    headroom = max(0, total - math.ceil(busy))
+    effective = max(0, min(free, headroom))
+    load_ratio = 0.0
+    if total > 0 and load_val is not None:
+        load_ratio = max(0.0, float(load_val) / float(total))
+    alloc_ratio = float(alloc) / float(total) if total > 0 else 0.0
+    if load_ratio >= 0.85 or alloc_ratio >= 0.95:
+        effective = 0
+    elif load_ratio >= 0.70 or alloc_ratio >= 0.85:
+        effective = int(effective * 0.5)
+    n["_effective_free"] = effective
+    n["_load_ratio"] = load_ratio
+    n["_total_cpus"] = total
+    ordered_nodes.append(n)
+
 ordered_nodes = sorted(
-    nodes,
+    ordered_nodes,
     key=lambda n: (
         -node_priority(n),
+        -(n.get("_effective_free", 0) or 0),
         -(n.get("free_cpus", 0) or 0),
         n.get("load") if n.get("load") is not None else 0,
     ),
@@ -434,7 +530,7 @@ remaining = limit
 for n in ordered_nodes:
     if remaining <= 0:
         break
-    cap = int(n.get("free_cpus", 0) or 0)
+    cap = int(n.get("_effective_free", 0) or 0)
     if cap < 0:
         cap = 0
     if cap <= 0:
@@ -442,6 +538,26 @@ for n in ordered_nodes:
     take = cap if cap < remaining else remaining
     queue.extend([n["node"]] * take)
     remaining -= take
+
+if remaining > 0:
+    for n in ordered_nodes:
+        if remaining <= 0:
+            break
+        cap = int(n.get("free_cpus", 0) or 0)
+        total = int(n.get("_total_cpus", 0) or 0)
+        load_ratio = float(n.get("_load_ratio", 0.0) or 0.0)
+        alloc_ratio = float(n.get("allocated_cpus", 0) or 0.0) / float(total) if total > 0 else 0.0
+        if load_ratio >= 0.85 or alloc_ratio >= 0.95:
+            cap = 0
+        elif load_ratio >= 0.70 or alloc_ratio >= 0.85:
+            cap = int(cap * 0.5)
+        if cap < 0:
+            cap = 0
+        take = cap if cap < remaining else remaining
+        if take <= 0:
+            continue
+        queue.extend([n["node"]] * take)
+        remaining -= take
 
 counts = {}
 for n in queue:
@@ -453,10 +569,17 @@ PY
   )
   if [ -n "$PLAN_REBUILT" ]; then
     NODE_PLAN="$PLAN_REBUILT"
-    PLAN_FILE="$TARGET_DIR/.raspa_node_plan"
     echo "$NODE_PLAN" > "$PLAN_FILE"
     echo "$(ts) - INFO - 重建节点分配计划: $NODE_PLAN"
   fi
+fi
+if [ -z "$NODE_PLAN" ] && [ -f "$PLAN_FILE" ]; then
+  NODE_PLAN="$(tr -d ' \t\r\n' < "$PLAN_FILE")"
+fi
+
+if [ "${DO_AUTOSCALE:-0}" -ne 1 ]; then
+  echo "提示：未启用自动扩缩容 (--apply)。仅写入了并发上限${NODE_PLAN:+/节点计划}，未提交或取消任何作业。"
+  exit 0
 fi
 
 # 依据集群类型执行自动扩缩容
@@ -467,12 +590,6 @@ if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1; then
   JOBS_FILE="$TARGET_DIR/.raspa_jobs.list"
   WORKERS_DIR="$TARGET_DIR/.workers"
   mkdir -p "$WORKERS_DIR"
-
-  NODE_PLAN="${RASPA_NODE_PLAN:-}"
-  PLAN_FILE="$TARGET_DIR/.raspa_node_plan"
-  if [ -z "$NODE_PLAN" ] && [ -f "$PLAN_FILE" ]; then
-    NODE_PLAN="$(tr -d ' \t\r\n' < "$PLAN_FILE")"
-  fi
 
   submit_missing() {
     # 参数：逗号分隔的缺口编号列表，例如 "3,5,7"
@@ -513,7 +630,7 @@ if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1; then
     # 若不存在节点计划，尝试基于集群信息和优先级生成
     if [ -z "$NODE_PLAN" ] && [ -n "$PY_RES_JSON" ] && [ "$NEW_LIMIT" -gt 0 ]; then
       NODE_PLAN=$(NODE_PLAN_LIMIT="$NEW_LIMIT" PRIORITIES="$RASPA_NODE_PRIORITIES" PY_JSON="$PY_RES_JSON" python - <<'PY' 2>/dev/null || true
-import os, json
+import os, json, math
 
 def parse_prio(raw):
     pr = {}
@@ -543,10 +660,37 @@ if not nodes:
 def node_priority(n):
     return prio.get(n.get("node"), 0)
 
+ordered_nodes = []
+for n in nodes:
+    total = int(n.get("total_cpus", 0) or 0)
+    free = max(0, int(n.get("free_cpus", 0) or 0))
+    alloc = max(0, int(n.get("allocated_cpus", 0) or 0))
+    load_val_raw = n.get("load")
+    try:
+        load_val = float(str(load_val_raw).rstrip("*"))
+    except Exception:
+        load_val = None
+    busy = max(alloc, load_val if load_val is not None else 0)
+    headroom = max(0, total - math.ceil(busy))
+    effective = max(0, min(free, headroom))
+    load_ratio = 0.0
+    if total > 0 and load_val is not None:
+        load_ratio = max(0.0, float(load_val) / float(total))
+    alloc_ratio = float(alloc) / float(total) if total > 0 else 0.0
+    if load_ratio >= 0.85 or alloc_ratio >= 0.95:
+        effective = 0
+    elif load_ratio >= 0.70 or alloc_ratio >= 0.85:
+        effective = int(effective * 0.5)
+    n["_effective_free"] = effective
+    n["_load_ratio"] = load_ratio
+    n["_total_cpus"] = total
+    ordered_nodes.append(n)
+
 ordered_nodes = sorted(
-    nodes,
+    ordered_nodes,
     key=lambda n: (
         -node_priority(n),
+        -(n.get("_effective_free", 0) or 0),
         -(n.get("free_cpus", 0) or 0),
         n.get("load") if n.get("load") is not None else 0,
     ),
@@ -557,7 +701,7 @@ remaining = limit
 for n in ordered_nodes:
     if remaining <= 0:
         break
-    cap = int(n.get("free_cpus", 0) or 0)
+    cap = int(n.get("_effective_free", 0) or 0)
     if cap < 0:
         cap = 0
     if cap <= 0:
@@ -565,6 +709,26 @@ for n in ordered_nodes:
     take = cap if cap < remaining else remaining
     queue.extend([n["node"]] * take)
     remaining -= take
+
+if remaining > 0:
+    for n in ordered_nodes:
+        if remaining <= 0:
+            break
+        cap = int(n.get("free_cpus", 0) or 0)
+        total = int(n.get("_total_cpus", 0) or 0)
+        load_ratio = float(n.get("_load_ratio", 0.0) or 0.0)
+        alloc_ratio = float(n.get("allocated_cpus", 0) or 0.0) / float(total) if total > 0 else 0.0
+        if load_ratio >= 0.85 or alloc_ratio >= 0.95:
+            cap = 0
+        elif load_ratio >= 0.70 or alloc_ratio >= 0.85:
+            cap = int(cap * 0.5)
+        if cap < 0:
+            cap = 0
+        take = cap if cap < remaining else remaining
+        if take <= 0:
+            continue
+        queue.extend([n["node"]] * take)
+        remaining -= take
 
 counts = {}
 for n in queue:
@@ -613,8 +777,17 @@ if priority:
 
 plan_str = ",".join(f"{n}:{c}" for n, c in entries)
 queue = []
-for n, c in entries:
-    queue.extend([n] * c)
+# 轮询展开，避免前段任务集中到单节点
+entries_rr = [[n, c] for n, c in entries]
+while True:
+    added = False
+    for item in entries_rr:
+        if item[1] > 0:
+            queue.append(item[0])
+            item[1] -= 1
+            added = True
+    if not added:
+        break
 
 print(plan_str)
 print(" ".join(queue))
@@ -623,18 +796,31 @@ PY
       plan_str_sorted=$(printf "%s\n" "$py_out" | sed -n '1p')
       plan_queue_str=$(printf "%s\n" "$py_out" | sed -n '2p')
       if [ -z "$plan_queue_str" ]; then
-        # 回退：按原始顺序展开
+        # 回退：按原始顺序展开并轮询分配，避免长串集中到单节点
         local -a plan_entries
+        local -a plan_nodes
+        declare -A plan_counts
         IFS=',' read -r -a plan_entries <<< "$NODE_PLAN"
         local entry node count
         for entry in "${plan_entries[@]}"; do
           node="${entry%%:*}"
           count="${entry#*:}"
           if [ -n "$node" ] && [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt 0 ]; then
-            for ((i=0; i<count; i++)); do
-              plan_queue+=("$node")
-            done
+            plan_nodes+=("$node")
+            plan_counts["$node"]=$count
           fi
+        done
+        while :; do
+          local added=0
+          for node in "${plan_nodes[@]}"; do
+            count=${plan_counts["$node"]:-0}
+            if [ "$count" -gt 0 ]; then
+              plan_queue+=("$node")
+              plan_counts["$node"]=$((count-1))
+              added=1
+            fi
+          done
+          [ "$added" -eq 0 ] && break
         done
       else
         NODE_PLAN="${plan_str_sorted:-$NODE_PLAN}"
@@ -655,10 +841,11 @@ PY
         job_base_dir="$(cd "$TARGET_DIR/.." && pwd -P)"
       fi
       if [ -n "$NODE_PLAN" ] && [ "$plan_len" -gt 0 ]; then
-        TARGET_NODE="${plan_queue[$plan_index]}"
-        plan_index=$((plan_index + 1))
-        if [ $plan_index -ge $plan_len ]; then
-          plan_index=0
+        if [ $plan_index -lt $plan_len ]; then
+          TARGET_NODE="${plan_queue[$plan_index]}"
+          plan_index=$((plan_index + 1))
+        else
+          TARGET_NODE=""
         fi
         if [ -n "$TARGET_NODE" ]; then
           sed -i -e "s|^#SBATCH --nodelist=.*|#SBATCH --nodelist=${TARGET_NODE}|" \
@@ -698,6 +885,7 @@ PY
 
   # 读取当前活跃作业列表（仅统计属于本批次的 JobId）
   LIVE=0
+  INITIAL_RUNNING=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}')
   if [ -f "$JOBS_FILE" ]; then
     # 从 squeue 取当前我的作业 JobId 列表
     mapfile -t ALL_MY_JOBS < <(squeue -u "$USER" -h -o "%i" 2>/dev/null | sort -u)
@@ -707,6 +895,11 @@ PY
     if [ ${#ALL_MY_JOBS[@]} -gt 0 ] && [ ${#TRACKED[@]} -gt 0 ]; then
       LIVE=$(comm -12 <(printf "%s\n" "${ALL_MY_JOBS[@]}") <(printf "%s\n" "${TRACKED[@]}" ) | wc -l)
     fi
+  fi
+
+  # 若追踪文件缺失或低估，使用运行中目录数兜底，提高 LIVE 估计精度
+  if [ "$INITIAL_RUNNING" -gt "$LIVE" ]; then
+    LIVE=$INITIAL_RUNNING
   fi
 
   # 如未启用作业追踪文件，则仅写入上限，不做自动提交/缩容（避免错误扩容）
@@ -802,7 +995,12 @@ if false; then
   fi
 fi
   # 扩容：提交缺口（需要追踪文件）
-  if [ -s "$JOBS_FILE" ] && [ "$LIVE" -lt "$NEW_LIMIT" ]; then
+  SKIP_EXPAND=0
+  if [ "$INITIAL_RUNNING" -ge "$NEW_LIMIT" ]; then
+    SKIP_EXPAND=1
+  fi
+
+  if [ "$SKIP_EXPAND" -eq 0 ] && [ -s "$JOBS_FILE" ] && [ "$LIVE" -lt "$NEW_LIMIT" ]; then
     # 统计当前可并发的“有意义”上限：已在跑的任务数(__running) + 待处理的任务数(mc*)
     RUNNING_COUNT=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}')
     # 仅统计存在 simulation.input 或 simulation.json 的待处理目录
@@ -884,14 +1082,16 @@ fi
       # 从 .workers 里选“最短运行时间”的非保留作业（编号未映射或 <=NEW_LIMIT 的不选）
       while IFS= read -r f; do
         [ -f "$f" ] || continue
-        jobid=$(awk -F'=| ' '/^jobid=/{print $2}' "$f" | head -1)
+        worker_id=$(awk -F'=| ' '/^jobid=/{print $2}' "$f" | head -1)
         start=$(awk -F'=| ' '/^start=/{print $2}' "$f" | head -1)
-        [ -z "$jobid" ] && continue
-        name=$(awk -v J="$jobid" '$1==J{print $2; exit}' "$JOBS_FILE")
-        # 仅当未映射编号 或 编号>NEW_LIMIT 时才纳入备选
-        if [ -z "$name" ] || { [ "$name" -gt "$NEW_LIMIT" ] 2>/dev/null; }; then
+        [ -z "$worker_id" ] && continue
+        # 通过 JOBS_FILE 将 worker 编号映射回 SLURM JobId
+        slurm_jid=$(awk -v N="$worker_id" '$2==N{print $1; exit}' "$JOBS_FILE")
+        [ -z "$slurm_jid" ] && continue
+        # 仅当 worker 编号未被保留（> NEW_LIMIT）时才纳入备选
+        if [ "$worker_id" -gt "$NEW_LIMIT" ] 2>/dev/null; then
           [ -z "$start" ] && start=0
-          printf "%010d %s\n" "$start" "$jobid"
+          printf "%010d %s\n" "$start" "$slurm_jid"
         fi
       done < <(find "$WORKERS_DIR" -type f -maxdepth 1 -mindepth 1 2>/dev/null) | sort -n | awk '{print $2}' | grep -vxF -f "$WORKERS_DIR/.kill_jobs" | head -n "$NEED" >> "$WORKERS_DIR/.kill_jobs"
     fi
@@ -907,6 +1107,11 @@ fi
   fi
 
   # 缩容完成后如活跃数仍小于“有意义”的目标，按缺口补交
+  if [ "$SKIP_EXPAND" -eq 1 ]; then
+    # 本轮主要是缩容请求，跳过补交，等待调度器实际杀掉作业后再人工扩容
+    echo "跳过补交：初始运行数(${INITIAL_RUNNING}) 已不少于目标(${NEW_LIMIT})，本轮仅执行缩容。"
+    exit 0
+  fi
   mapfile -t LIVE_IDS < <(comm -12 <(awk '{print $1}' "$JOBS_FILE" | sort -u) <(squeue -u "$USER" -h -o "%i" | sort -u))
   present=""
   for jid in "${LIVE_IDS[@]}"; do

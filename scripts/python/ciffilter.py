@@ -5,10 +5,12 @@ MOF数据库筛选工具 - 改进版
 功能：根据CSV条件筛选数据，并可选复制对应的CIF文件
 """
 
-import pandas as pd
 import os
+import re
 import shutil
 from pathlib import Path
+
+import pandas as pd
 
 class MOFFilterTool:
     """MOF数据筛选工具类"""
@@ -145,9 +147,22 @@ class MOFFilterTool:
         """设置筛选条件"""
         self.print_section("第三步：设置筛选条件")
         print("说明：可以设置多个条件，数据必须同时满足所有条件才会被保留")
+        print("      支持两种输入：逐条条件 / 表达式 (AND/OR、区间、多值 in 列表)")
         print("      直接按回车可以结束条件设置")
 
         self.filtered_df = self.df.copy()  # 创建副本避免警告
+
+        # 优先表达式输入
+        use_expr = input("\n是否使用表达式输入? (y=表达式 / 回车=逐条添加): ").strip().lower()
+        if use_expr in ['y', 'yes', 'exp', 'expr']:
+            success = self.apply_expression_filters()
+            if success:
+                print(f"\n✅ 筛选完成")
+                print(f"   原始数据: {self.original_count} 行")
+                print(f"   筛选后: {len(self.filtered_df)} 行")
+                print(f"   保留比例: {len(self.filtered_df)/self.original_count*100:.1f}%")
+                return
+
         filter_count = 0
 
         while True:
@@ -189,6 +204,225 @@ class MOFFilterTool:
             self.apply_numeric_filter(column)
         else:
             self.apply_text_filter(column)
+
+    def apply_expression_filters(self):
+        """使用表达式一次性输入筛选条件"""
+        self.print_section("表达式输入模式")
+        print("支持语法示例:")
+        print("  • 比较: PLD (脜) > 5, Density (g/cm3) <= 1.2, Metal Types = Co")
+        print("  • 区间: 4 <= LCD (脜) <= 8")
+        print("  • 多值: Metal Types in [Co,Ni,Zn]  或  KH_Classes in [weak,none]")
+        print("  • 逻辑: 用 AND / OR 连接，支持括号。例：PLD (脜)>5 AND (LCD (脜)>=4 OR Metal Types in [Co,Ni])")
+
+        while True:
+            expr = input("\n请输入筛选表达式 (回车取消): ").strip()
+            if not expr:
+                print("ℹ️  未输入表达式，切换回逐条添加模式")
+                return False
+
+            try:
+                mask = self.parse_expression(expr)
+                self.filtered_df = self.filtered_df[mask].copy()
+                print(f"✅ 表达式已应用，当前数据行数: {len(self.filtered_df)}")
+                return True
+            except Exception as e:
+                print(f"❌ 表达式解析失败: {e}")
+                retry = input("是否重新输入表达式? (y/n): ").strip().lower()
+                if retry not in ['y', 'yes']:
+                    return False
+
+    def parse_expression(self, expr):
+        """解析表达式为布尔掩码"""
+        tokens = self._tokenize_expression(expr)
+        if not tokens:
+            raise ValueError("表达式为空")
+        return self._evaluate_tokens(tokens)
+
+    def _tokenize_expression(self, expr):
+        """将表达式拆分为条件/逻辑/括号"""
+        tokens = []
+        pattern = re.compile(r'\s*(\(|\)|AND|OR)\s*', flags=re.IGNORECASE)
+        pos = 0
+
+        while pos < len(expr):
+            m = pattern.match(expr, pos)
+            if m:
+                tok = m.group(1).upper()
+                tokens.append(tok)
+                pos = m.end()
+            else:
+                next_m = pattern.search(expr, pos)
+                if next_m:
+                    tokens.append(expr[pos:next_m.start()].strip())
+                    pos = next_m.start()
+                else:
+                    tokens.append(expr[pos:].strip())
+                    break
+
+        return [t for t in tokens if t]
+
+    def _evaluate_tokens(self, tokens):
+        """用栈计算表达式 (AND 优先于 OR)"""
+        def precedence(op):
+            return 2 if op == 'AND' else 1
+
+        def apply_op(op, b, a):
+            if op == 'AND':
+                return a & b
+            elif op == 'OR':
+                return a | b
+            else:
+                raise ValueError(f"未知逻辑运算符: {op}")
+
+        values = []
+        ops = []
+
+        for tok in tokens:
+            if tok == '(':
+                ops.append(tok)
+            elif tok == ')':
+                while ops and ops[-1] != '(':
+                    op = ops.pop()
+                    b = values.pop()
+                    a = values.pop()
+                    values.append(apply_op(op, b, a))
+                if not ops:
+                    raise ValueError("括号不匹配")
+                ops.pop()  # 弹出 '('
+            elif tok in ('AND', 'OR'):
+                while ops and ops[-1] in ('AND', 'OR') and precedence(ops[-1]) >= precedence(tok):
+                    op = ops.pop()
+                    b = values.pop()
+                    a = values.pop()
+                    values.append(apply_op(op, b, a))
+                ops.append(tok)
+            else:
+                values.append(self._condition_to_mask(tok))
+
+        while ops:
+            op = ops.pop()
+            if op == '(':
+                raise ValueError("括号不匹配")
+            b = values.pop()
+            a = values.pop()
+            values.append(apply_op(op, b, a))
+
+        if len(values) != 1:
+            raise ValueError("表达式解析异常，请检查语法")
+        return values[0]
+
+    def _condition_to_mask(self, cond):
+        """将单个条件字符串转换为布尔掩码"""
+        df = self.filtered_df
+        if df is None or df.empty:
+            raise ValueError("数据为空，无法应用条件")
+
+        # 区间：min <= col <= max
+        range_pat = re.compile(
+            r'^([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*<=\s*(.+?)\s*<=\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)$'
+        )
+        in_pat = re.compile(r'^(.*?)\s+in\s+\[(.+)\]$', flags=re.IGNORECASE)
+        in_paren_pat = re.compile(r'^(.*?)\s+in\s+\((.+)\)$', flags=re.IGNORECASE)
+        compare_pat = re.compile(r'^(.*?)\s*(>=|<=|!=|=|==|>|<)\s*(.+)$')
+
+        cond = cond.strip()
+
+        range_match = range_pat.match(cond)
+        if range_match:
+            min_val = float(range_match.group(1))
+            col = range_match.group(2).strip()
+            max_val = float(range_match.group(3))
+            if col not in df.columns:
+                raise ValueError(f"列不存在: {col}")
+            series = pd.to_numeric(df[col], errors='coerce')
+            return (series >= min_val) & (series <= max_val)
+
+        in_match = in_pat.match(cond) or in_paren_pat.match(cond)
+        if in_match:
+            col = in_match.group(1).strip()
+            raw_values = [v.strip() for v in in_match.group(2).split(',')]
+            values = [self._parse_value(v) for v in raw_values if v != '']
+            if col not in df.columns:
+                raise ValueError(f"列不存在: {col}")
+            series = df[col]
+            if pd.api.types.is_numeric_dtype(series):
+                numeric_values = []
+                for v in values:
+                    if isinstance(v, (int, float)):
+                        numeric_values.append(float(v))
+                    else:
+                        raise ValueError(f"列 {col} 是数值型，列表中包含非数值: {v}")
+                series_num = pd.to_numeric(series, errors='coerce')
+                return series_num.isin(numeric_values)
+            else:
+                values_lower = [str(v).lower() for v in values]
+                return series.astype(str).str.lower().isin(values_lower)
+
+        compare_match = compare_pat.match(cond)
+        if compare_match:
+            col = compare_match.group(1).strip()
+            op = compare_match.group(2)
+            value_raw = compare_match.group(3).strip()
+            if col not in df.columns:
+                raise ValueError(f"列不存在: {col}")
+            value = self._parse_value(value_raw)
+            series = df[col]
+
+            if pd.api.types.is_numeric_dtype(series):
+                series_num = pd.to_numeric(series, errors='coerce')
+                if not isinstance(value, (int, float)):
+                    raise ValueError(f"列 {col} 是数值型，比较值不是数值: {value_raw}")
+                return self._compare_numeric(series_num, op, float(value))
+            else:
+                series_str = series.astype(str)
+                value_str = str(value)
+                return self._compare_text(series_str, op, value_str)
+
+        raise ValueError(f"无法解析的条件: {cond}")
+
+    def _compare_numeric(self, series, op, value):
+        """数值比较"""
+        if op == '>':
+            return series > value
+        elif op == '<':
+            return series < value
+        elif op in ('=', '=='):
+            return series == value
+        elif op == '>=':
+            return series >= value
+        elif op == '<=':
+            return series <= value
+        elif op == '!=':
+            return series != value
+        else:
+            raise ValueError(f"未知比较符: {op}")
+
+    def _compare_text(self, series, op, value):
+        """文本比较（不区分大小写）"""
+        series_lower = series.str.lower()
+        value_lower = value.lower()
+        if op == '>':
+            return series_lower > value_lower
+        elif op == '<':
+            return series_lower < value_lower
+        elif op in ('=', '=='):
+            return series_lower == value_lower
+        elif op == '>=':
+            return series_lower >= value_lower
+        elif op == '<=':
+            return series_lower <= value_lower
+        elif op == '!=':
+            return series_lower != value_lower
+        else:
+            raise ValueError(f"未知比较符: {op}")
+
+    def _parse_value(self, raw):
+        """将字符串解析为数字或原样字符串"""
+        cleaned = raw.strip().strip('"').strip("'")
+        try:
+            return float(cleaned)
+        except ValueError:
+            return cleaned
 
     def apply_numeric_filter(self, column):
         """应用数值筛选"""

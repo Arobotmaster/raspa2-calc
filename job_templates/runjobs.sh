@@ -1,5 +1,59 @@
 #!/bin/bash
 
+# 优先加载任务目录下的配置快照，补交作业继承原始配置
+CWD="$(pwd -P)"
+eval "$(
+  python3 - <<'PY'
+import os, sys, json
+
+candidates = [
+    os.path.join(os.getcwd(), ".raspa_config.yaml"),
+    os.path.join(os.getcwd(), "config.yaml"),
+    os.path.expanduser("~/raspa2-calc/.raspa_tools/config.yaml"),
+]
+cfg_path = next((p for p in candidates if os.path.exists(p)), None)
+if not cfg_path:
+    sys.exit(0)
+
+def load_cfg(path: str):
+    try:
+        import yaml  # type: ignore
+        with open(path, "r", encoding="utf-8") as fh:
+            return yaml.safe_load(fh) or {}
+    except Exception:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+
+cfg = load_cfg(cfg_path)
+
+def emit(key, val):
+    if val in (None, ""):
+        return
+    if os.environ.get(key):
+        return
+    print(f'export {key}="{val}"')
+
+env = cfg.get("environment") or {}
+calc = cfg.get("calculation") or {}
+
+emit("RASPA_DIR", env.get("raspa_dir"))
+emit("RASPA_CIF_DIR", env.get("raspa2_cif_dir"))
+emit("RASPA_TEMPLATE_PATH", env.get("template_path"))
+
+mser = calc.get("mser") if isinstance(calc, dict) else {}
+if isinstance(mser, dict):
+    emit("RASPA_MSER_ENABLE", str(mser.get("enable", False)).lower())
+    emit("RASPA_MSER_TARGET_CYCLES", mser.get("target_cycles"))
+    emit("RASPA_MSER_ADD_CYCLES", mser.get("add_cycles"))
+    emit("RASPA_MSER_MAX_ITER", mser.get("max_iter"))
+    emit("RASPA_MSER_UNCERTAINTY", mser.get("uncertainty"))
+    emit("RASPA_MSER_CONDA_ENV", mser.get("conda_env"))
+PY
+)"
+
 # 检查环境
 if [ -z "$RASPA_DIR" ]; then
   echo "错误：RASPA_DIR环境变量未设置"; exit 1
@@ -29,7 +83,6 @@ detect_subdir() {
 }
 
 # 使用当前真实工作目录（避免 $PWD 在目录被重命名后失效）
-CWD="$(pwd -P)"
 topdir="$CWD"
 subdir=$(detect_subdir)
 CPU=${1:-1}
@@ -57,32 +110,7 @@ SIMULATE_CMD="$RASPA_DIR/bin/simulate"
 [ -x "$SIMULATE_CMD" ] || SIMULATE_CMD="echo '模拟执行RASPA计算...'; sleep 2"
 MSER_SCRIPT="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}/scripts/python/auto_mser_raspa2.py"
 
-# 若未显式设置 MSER 环境变量，则从默认 config.yaml 读取
-if [ -z "$RASPA_MSER_ENABLE" ]; then
-  eval "$(
-    python - <<'PY'
-import os, sys, yaml
-cfg_path = os.path.expanduser('~/raspa2-calc/.raspa_tools/config.yaml')
-if not os.path.exists(cfg_path):
-    sys.exit(0)
-try:
-    cfg = yaml.safe_load(open(cfg_path, 'r', encoding='utf-8'))
-    mser = cfg.get('calculation', {}).get('mser', {})
-    if not mser:
-        sys.exit(0)
-    def emit(k, v):
-        print(f'export {k}=\"{v}\"')
-    emit('RASPA_MSER_ENABLE', str(mser.get('enable', False)).lower())
-    emit('RASPA_MSER_TARGET_CYCLES', mser.get('target_cycles', 1000))
-    emit('RASPA_MSER_ADD_CYCLES', mser.get('add_cycles', 500))
-    emit('RASPA_MSER_MAX_ITER', mser.get('max_iter', 20))
-    emit('RASPA_MSER_UNCERTAINTY', mser.get('uncertainty', 'uSD'))
-    emit('RASPA_MSER_CONDA_ENV', mser.get('conda_env', 'pymser'))
-except Exception:
-    sys.exit(0)
-PY
-  )"
-fi
+# MSER 环境变量已在配置加载阶段尽可能设置；若仍未设置，则沿用已有环境或默认值
 WORKERS_DIR="${topdir}/${subdir}/.workers"
 mkdir -p "$WORKERS_DIR"
 if [ -n "$RASPA_WORKER_ID" ]; then

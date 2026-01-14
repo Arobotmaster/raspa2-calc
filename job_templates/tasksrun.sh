@@ -143,29 +143,131 @@ if [[ "$LOG_SUBDIR" = /* ]]; then LOG_DIR="$LOG_SUBDIR"; else LOG_DIR="$WORK_DIR
 if [ "$LOG_ENABLE" = true ]; then mkdir -p "$LOG_DIR"; fi
 
 # 解析节点分配计划（若存在）
-NODE_PLAN="${RASPA_NODE_PLAN:-}"
-PLAN_MESSAGE=""
+# 注意：本集群 SLURM 为 SelectTypeParameters=CR_CORE（按“物理核”作为可消耗资源），
+# 在超线程节点上单个 sbatch 作业会占用 1 个 core = 2 个 CPU(thread)。
+# 为了让 RASPA 单线程任务用满这些 thread，需要在同一个作业内启动多个 worker。
+
+SCHED_CR_CORE=false
+if [ "$JOB_SYSTEM" = "SLURM" ] && command -v scontrol >/dev/null 2>&1; then
+    sel=$(scontrol show config 2>/dev/null | awk -F= '/SelectTypeParameters/ {gsub(/ /,"",$2); print $2; exit}')
+    case "${sel^^}" in *CR_CORE*) SCHED_CR_CORE=true ;; esac
+fi
+
+# 探测每个节点的 ThreadsPerCore（来自 sinfo 拓扑 %z = S:C:T）
+declare -A NODE_TPC=()
+if [ "$JOB_SYSTEM" = "SLURM" ] && command -v sinfo >/dev/null 2>&1; then
+    while IFS='|' read -r nm topo; do
+        [ -z "$nm" ] && continue
+        tpc=1
+        if [[ "$topo" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]]; then
+            tpc="${topo##*:}"
+            [[ "$tpc" =~ ^[0-9]+$ ]] || tpc=1
+        fi
+        NODE_TPC["$nm"]=$tpc
+    done < <(sinfo -N -h -o '%N|%z' 2>/dev/null)
+fi
+
+clean_plan() { printf "%s" "$1" | tr -d ' \t\r\n\"' ; }
+
+NODE_PLAN="$(clean_plan "${RASPA_NODE_PLAN:-}")"
 PLAN_FILE="$WORK_DIR/$SUBDIR/.raspa_node_plan"
 if [ -z "$NODE_PLAN" ] && [ -f "$PLAN_FILE" ]; then
-    NODE_PLAN="$(tr -d ' \t\r\n' < "$PLAN_FILE")"
+    NODE_PLAN="$(clean_plan "$(cat "$PLAN_FILE")")"
 fi
+
+PLAN_MESSAGE=""
 declare -a PLAN_QUEUE=()
+declare -A NODE_REMAIN=()
 PLAN_INDEX=0
+
 if [ -n "$NODE_PLAN" ]; then
     IFS=',' read -ra PLAN_ENTRIES <<< "$NODE_PLAN"
     for entry in "${PLAN_ENTRIES[@]}"; do
         node="${entry%%:*}"
         count="${entry#*:}"
-        if [ -n "$node" ] && [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt 0 ]; then
-            for ((i=0; i<count; i++)); do
-                PLAN_QUEUE+=("$node")
-            done
+        if [ -z "$node" ] || ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -le 0 ]; then
+            continue
         fi
+        NODE_REMAIN["$node"]=$(( ${NODE_REMAIN["$node"]:-0} + count ))
+
+        tpc="${NODE_TPC["$node"]:-1}"
+        jobs="$count"
+        if [ "$SCHED_CR_CORE" = true ] && [ "$tpc" -gt 1 ]; then
+            jobs=$(( (count + tpc - 1) / tpc ))
+        fi
+        for ((i=0; i<jobs; i++)); do
+            PLAN_QUEUE+=("$node")
+        done
     done
+
     if [ ${#PLAN_QUEUE[@]} -gt 0 ]; then
-        PLAN_MESSAGE="节点分配计划: $NODE_PLAN"
+        if [ "$SCHED_CR_CORE" = true ]; then
+            declare -A JOB_COUNTS=()
+            for n in "${PLAN_QUEUE[@]}"; do
+                JOB_COUNTS["$n"]=$(( ${JOB_COUNTS["$n"]:-0} + 1 ))
+            done
+            JOB_PLAN=""
+            for n in "${!JOB_COUNTS[@]}"; do
+                JOB_PLAN+="${n}:${JOB_COUNTS[$n]},"
+            done
+            JOB_PLAN="${JOB_PLAN%,}"
+            PLAN_MESSAGE="节点分配计划(线程->作业): ${NODE_PLAN} -> ${JOB_PLAN}"
+        else
+            PLAN_MESSAGE="节点分配计划: ${NODE_PLAN}"
+        fi
     else
         NODE_PLAN=""
+    fi
+fi
+
+# 若有节点计划，结合当前 sinfo 动态裁剪不可用节点/超额数量，避免卡在 ReqNodeNotAvail
+if [ -n "$NODE_PLAN" ] && [ "$JOB_SYSTEM" = "SLURM" ] && command -v sinfo >/dev/null 2>&1; then
+    declare -A NODE_FREE_JOBS=()
+    while IFS='|' read -r nm cc; do
+        [ -z "$nm" ] && continue
+        IFS='/' read -r alloc idle other total <<< "$cc"
+        alloc=${alloc:-0}; other=${other:-0}; total=${total:-0}
+        free_threads=$(( total - alloc - other ))
+        [ "$free_threads" -lt 0 ] && free_threads=0
+        tpc="${NODE_TPC["$nm"]:-1}"
+        free_jobs=$free_threads
+        if [ "$SCHED_CR_CORE" = true ] && [ "$tpc" -gt 1 ]; then
+            free_jobs=$(( free_threads / tpc ))
+        fi
+        NODE_FREE_JOBS["$nm"]=$free_jobs
+    done < <(sinfo -N -h -o '%N|%C' 2>/dev/null)
+
+    if [ ${#NODE_FREE_JOBS[@]} -gt 0 ]; then
+        filtered=()
+        for n in "${PLAN_QUEUE[@]}"; do
+            free=${NODE_FREE_JOBS["$n"]:-0}
+            if [ "$free" -le 0 ]; then
+                continue
+            fi
+            filtered+=("$n")
+            NODE_FREE_JOBS["$n"]=$(( free - 1 ))
+        done
+        PLAN_QUEUE=("${filtered[@]}")
+        if [ ${#PLAN_QUEUE[@]} -eq 0 ]; then
+            echo "⚠️  当前节点分配计划的节点均无空闲 core，已清空节点计划以避免 PD。"
+            NODE_PLAN=""
+            PLAN_MESSAGE=""
+        else
+            if [ "$SCHED_CR_CORE" = true ]; then
+                declare -A JOB_COUNTS=()
+                for n in "${PLAN_QUEUE[@]}"; do
+                    JOB_COUNTS["$n"]=$(( ${JOB_COUNTS["$n"]:-0} + 1 ))
+                done
+                JOB_PLAN=""
+                for n in "${!JOB_COUNTS[@]}"; do
+                    JOB_PLAN+="${n}:${JOB_COUNTS[$n]},"
+                done
+                JOB_PLAN="${JOB_PLAN%,}"
+                PLAN_MESSAGE="节点分配计划(按空闲裁剪, 线程->作业): ${NODE_PLAN} -> ${JOB_PLAN}"
+            else
+                PLAN_MESSAGE="节点分配计划(按空闲裁剪): ${NODE_PLAN}"
+            fi
+        fi
     fi
 fi
 
@@ -200,6 +302,12 @@ fi
 LIMIT_FILE="$WORK_DIR/$SUBDIR/.raspa_worker_limit"
 if [ ! -f "$LIMIT_FILE" ]; then
   echo "$CPU_CORES" > "$LIMIT_FILE"
+else
+  cur_lim=$(awk 'NR==1&&$1~/^[0-9]+$/{print $1; exit}' "$LIMIT_FILE" 2>/dev/null)
+  if [ -n "$cur_lim" ] && [ "$cur_lim" -lt "$CPU_CORES" ] 2>/dev/null; then
+    echo "$CPU_CORES" > "$LIMIT_FILE"
+    echo "提示：检测到旧的并发上限($cur_lim) < 本次提交($CPU_CORES)，已自动更新为 $CPU_CORES"
+  fi
 fi
 
 # 初始化指针队列（仅首次创建时进行一次快速扫描）
@@ -308,8 +416,42 @@ fi
 chmod 755 "$WORK_DIR/job_templates/runjobs.sh"
 while [ $COUNTER -le $CPU_CORES ]
 do
-    NAMENEW=$COUNTER
-    COUNTER=$((COUNTER + 1))
+    TARGET_NODE=""
+    WORKERS_PER_JOB=1
+
+    # 若指定了节点计划，则按计划选择目标节点；在 CR_CORE 的超线程节点上，每个作业会占用 1 core(=T 个 thread)
+    if [ "$JOB_SYSTEM" = "SLURM" ] && [ -n "$NODE_PLAN" ] && [ ${#PLAN_QUEUE[@]} -gt 0 ] && [ $PLAN_INDEX -lt ${#PLAN_QUEUE[@]} ]; then
+        TARGET_NODE="${PLAN_QUEUE[$PLAN_INDEX]}"
+        PLAN_INDEX=$((PLAN_INDEX + 1))
+        if [ "$SCHED_CR_CORE" = true ]; then
+            tpc="${NODE_TPC["$TARGET_NODE"]:-1}"
+            if [ -n "$tpc" ] && [ "$tpc" -gt 1 ] 2>/dev/null; then
+                WORKERS_PER_JOB="$tpc"
+                rem="${NODE_REMAIN["$TARGET_NODE"]:-0}"
+                if [ -n "$rem" ] && [ "$rem" -gt 0 ] 2>/dev/null; then
+                    if [ "$rem" -lt "$WORKERS_PER_JOB" ] 2>/dev/null; then
+                        WORKERS_PER_JOB="$rem"
+                    fi
+                    NODE_REMAIN["$TARGET_NODE"]=$(( rem - WORKERS_PER_JOB ))
+                fi
+            fi
+        fi
+    fi
+
+    # 为本次作业分配一个或多个 worker 编号（用于 runjobs.sh 的 CPU 参数与 .workers 文件名）
+    WORKER_IDS=()
+    for ((i=0; i<WORKERS_PER_JOB; i++)); do
+        wid=$((COUNTER + i))
+        if [ "$wid" -le "$CPU_CORES" ]; then
+            WORKER_IDS+=("$wid")
+        fi
+    done
+    if [ ${#WORKER_IDS[@]} -eq 0 ]; then
+        break
+    fi
+    NAMENEW="${WORKER_IDS[0]}"
+    WORKER_IDS_CSV=$(IFS=,; echo "${WORKER_IDS[*]}")
+    COUNTER=$((COUNTER + ${#WORKER_IDS[@]}))
     cd "$WORK_DIR" || exit 1
     cp -rf "$JOB_TEMPLATE" "$SCRIPT_DIR/job_submit_ht.sh"
     insert_exports_after_sbatch "$SCRIPT_DIR/job_submit_ht.sh" \
@@ -318,17 +460,14 @@ do
         "export RASPA_OUTPUT_DIR=\"${SUBDIR}\"" \
         "export RASPA_SUBDIR=\"${SUBDIR}\"" \
         "export RASPA_WORKER_ID=\"${NAMENEW}\"" \
+        "export RASPA_WORKER_IDS=\"${WORKER_IDS_CSV}\"" \
         "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
     sed -i -e "s|cd \$RASPA_WORK_DIR|cd $WORK_DIR|g" "$SCRIPT_DIR/job_submit_ht.sh"
     if [ "$JOB_SYSTEM" = "SLURM" ]; then
         sed -i -e "s|^#SBATCH --job-name=.*|#SBATCH --job-name=${NAMENEW}|" "$SCRIPT_DIR/job_submit_ht.sh"
-        if [ -n "$NODE_PLAN" ] && [ ${#PLAN_QUEUE[@]} -gt 0 ] && [ $PLAN_INDEX -lt ${#PLAN_QUEUE[@]} ]; then
-            TARGET_NODE="${PLAN_QUEUE[$PLAN_INDEX]}"
-            PLAN_INDEX=$((PLAN_INDEX + 1))
-            if [ -n "$TARGET_NODE" ]; then
-                sed -i -e "s|^#SBATCH --nodelist=.*|#SBATCH --nodelist=${TARGET_NODE}|" \
-                       -e "s|^# #SBATCH --nodelist=.*|#SBATCH --nodelist=${TARGET_NODE}|" "$SCRIPT_DIR/job_submit_ht.sh"
-            fi
+        if [ -n "$TARGET_NODE" ]; then
+            sed -i -e "s|^#SBATCH --nodelist=.*|#SBATCH --nodelist=${TARGET_NODE}|" \
+                   -e "s|^# #SBATCH --nodelist=.*|#SBATCH --nodelist=${TARGET_NODE}|" "$SCRIPT_DIR/job_submit_ht.sh"
         fi
         if [ "$LOG_ENABLE" = true ]; then
             sed -i -e "s|^#SBATCH --output=.*|#SBATCH --output=$LOG_DIR/${NAMENEW}.out|" \
@@ -350,7 +489,8 @@ do
             sed -i '3i #SBATCH --nodelist='"${TARGET_NODE}" "$SCRIPT_DIR/job_submit_ht.sh"
         fi
     fi
-    echo "正在提交作业 $NAMENEW..."
+    last_wid="${WORKER_IDS[$(( ${#WORKER_IDS[@]} - 1 ))]}"
+    echo "正在提交第${last_wid}个任务…"
     if [ "$JOB_SYSTEM" = "SLURM" ]; then
         if [ "$LOG_ENABLE" = true ]; then
             JOB_OUT="$LOG_DIR/${NAMENEW}.out"
@@ -377,7 +517,7 @@ do
     # 记录 JobId 与 worker 编号，便于后续缩放
     if [[ "$submit_result" =~ Submitted\ batch\ job\ ([0-9]+) ]]; then
         jobid="${BASH_REMATCH[1]}"
-        echo "$jobid $NAMENEW $(date +%s)" >> "$WORK_DIR/$SUBDIR/.raspa_jobs.list"
+        echo "$jobid $NAMENEW $(date +%s) $WORKER_IDS_CSV" >> "$WORK_DIR/$SUBDIR/.raspa_jobs.list"
     fi
     echo "✅ 作业 $NAMENEW 提交完成"
     if [ "$JOB_SYSTEM" = "LOCAL" ]; then

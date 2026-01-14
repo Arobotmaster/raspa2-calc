@@ -337,11 +337,11 @@ def main():
             print(f"[auto-mser] simulate 失败，返回码 {ret}，详见 {os.path.join(workdir, 'auto_mser_raspa.log')}")
             sys.exit(ret)
 
-    msg = "[auto-mser] 达到最大迭代次数，仍未满足生产步数要求。"
+    msg = "[auto-mser] 达到最大迭代次数，仍未满足生产步数要求，标记失败。"
     print(msg)
     with open(log_path, "a", encoding="utf-8") as lf:
         lf.write(msg + "\n")
-    sys.exit(0)
+    sys.exit(2)
 
 
 if __name__ == "__main__":

@@ -130,7 +130,68 @@ def parse_node_priorities(raw=None):
     text = raw if raw is not None else os.environ.get('RASPA_NODE_PRIORITIES', '')
     priorities = {}
     if not text:
-        return priorities
+        # 尝试从配置文件读取（兼容未显式导出环境变量）
+        search_paths = [
+            os.path.join(os.getcwd(), "config.yaml"),
+            os.path.join(os.getcwd(), ".raspa_tools", "config.yaml"),
+            os.path.expanduser("~/raspa2-calc/.raspa_tools/config.yaml"),
+        ]
+        def parse_simple(path: str):
+            pr = {}
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    lines = fh.readlines()
+            except Exception:
+                return pr
+            inside = False
+            indent = None
+            for line in lines:
+                if "node_priorities:" in line and not line.lstrip().startswith("#"):
+                    inside = True
+                    indent = len(line) - len(line.lstrip())
+                    continue
+                if not inside:
+                    continue
+                cur_indent = len(line) - len(line.lstrip())
+                if indent is not None and cur_indent <= indent:
+                    break
+                if ":" not in line:
+                    continue
+                try:
+                    key, val = line.split(":", 1)
+                    key = key.strip()
+                    val = val.strip()
+                    if key and val:
+                        pr[key] = int(val)
+                except Exception:
+                    continue
+            return pr
+
+        def parse_yaml(path: str):
+            try:
+                import yaml  # type: ignore
+            except Exception:
+                return {}
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = yaml.safe_load(fh) or {}
+                env = data.get("environment") or {}
+                calc = data.get("calculation") or {}
+                np = env.get("node_priorities") or calc.get("node_priorities") or {}
+                if isinstance(np, dict):
+                    return {str(k): int(v) for k, v in np.items() if str(k)}
+            except Exception:
+                return {}
+            return {}
+
+        for p in search_paths:
+            if not os.path.exists(p):
+                continue
+            priorities = parse_yaml(p) or parse_simple(p) or {}
+            if priorities:
+                break
+        if not priorities:
+            return priorities
 
     parts = [p for p in text.split(',') if p.strip()]
     for part in parts:
@@ -183,6 +244,28 @@ def _get_slurm_summary():
 
 def get_slurm_cluster_resources():
     """获取SLURM集群的CPU资源信息（考虑节点负载与超线程）"""
+    use_ssh_load = os.environ.get("RASPA_NODE_LOAD_SSH", "false").lower() in ("1", "true", "yes", "y", "on")
+
+    def _load_from_ssh(node: str):
+        """Optional: read 1-min loadavg via SSH to capture非SLURM负载"""
+        if not use_ssh_load:
+            return None
+        try:
+            out = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", node, "cat /proc/loadavg"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if out.returncode != 0:
+                return None
+            first = out.stdout.strip().split()
+            if not first:
+                return None
+            return float(first[0])
+        except Exception:
+            return None
+
     format_spec = '%N|%c|%C|%O|%z'
     try:
         result = subprocess.run(['sinfo', '-N', '-h', '-o', format_spec],
@@ -224,9 +307,12 @@ def get_slurm_cluster_resources():
             load_value = None
             if load_str and load_str.lower() not in ('unknown', '(null)', 'n/a', '-'):
                 try:
-                    load_value = float(load_str)
+                    load_value = float(str(load_str).rstrip("*"))
                 except ValueError:
                     load_value = None
+            load_from_ssh = _load_from_ssh(node_name)
+            if load_from_ssh is not None:
+                load_value = load_from_ssh
 
             topology = parts[4] if len(parts) > 4 else ''
             sockets = cores_per_socket = threads_per_core = None
@@ -243,7 +329,11 @@ def get_slurm_cluster_resources():
                     except ValueError:
                         threads_per_core = None
 
-            node_free = max(0, node_total - node_alloc - node_other)
+            load_effective = int(math.ceil(load_value)) if load_value is not None else 0
+
+            free_by_alloc = max(0, node_total - node_alloc - node_other)
+            free_by_load = max(0, node_total - load_effective)
+            node_free = min(free_by_alloc, free_by_load)
 
             nodes.append({
                 'node': node_name,
@@ -256,7 +346,8 @@ def get_slurm_cluster_resources():
                 'cores_per_socket': cores_per_socket,
                 'threads_per_core': threads_per_core,
                 'physical_cpus': physical_cpus,
-                'free_cpus': node_free
+                'free_cpus': node_free,
+                'usable_cpus': node_total,
             })
 
             total_cpus += node_total
@@ -318,15 +409,49 @@ def build_node_plan(cluster_info, cpu_cores):
             )
         )
 
-    ordered_nodes = sort_group(nodes)
+    # 计算有效可用核：考虑 CPULoad，避免高负载节点被误判为空闲
+    for n in nodes:
+        total = int(n.get('total_cpus', 0) or 0)
+        free = max(0, int(n.get('free_cpus', 0) or 0))
+        alloc = max(0, int(n.get('allocated_cpus', 0) or 0))
+        load_val_raw = n.get('load')
+        try:
+            load_val = float(str(load_val_raw).rstrip("*"))
+        except Exception:
+            load_val = None
+        busy = max(alloc, load_val if load_val is not None else 0)
+        headroom = max(0, total - math.ceil(busy))
+        effective = max(0, min(free, headroom))
+        load_ratio = 0.0
+        if total > 0 and load_val is not None:
+            load_ratio = max(0.0, float(load_val) / float(total))
+        alloc_ratio = float(alloc) / float(total) if total > 0 else 0.0
+        if load_ratio >= 0.85 or alloc_ratio >= 0.95:
+            effective = 0
+        elif load_ratio >= 0.70 or alloc_ratio >= 0.85:
+            effective = int(effective * 0.5)
+        n['_effective_free'] = effective
+        n['_load_ratio'] = load_ratio
+        n['_total_cpus'] = total
+
+    ordered_nodes = sorted(
+        nodes,
+        key=lambda n: (
+            -node_priority(n),
+            -(n.get('_effective_free', 0) or 0),
+            -(n.get('free_cpus', 0) or 0),
+            n.get('load') if n.get('load') is not None else 0
+        )
+    )
     plan_counts = OrderedDict()
     plan_queue = []
     remaining = cpu_cores
 
+    # 第一轮：按有效可用核分配（考虑负载）
     for node in ordered_nodes:
         if remaining <= 0:
             break
-        cap = int(node.get('free_cpus', 0) or 0)
+        cap = int(node.get('_effective_free', 0) or 0)
         if cap < 0:
             cap = 0
         if cap <= 0:
@@ -334,6 +459,27 @@ def build_node_plan(cluster_info, cpu_cores):
         take = min(cap, remaining)
         plan_queue.extend([node['node']] * take)
         remaining -= take
+
+    # 第二轮：若仍有余量，按剩余 free_cpus 继续分配，确保低优先级空闲节点也被使用
+    if remaining > 0:
+        for node in ordered_nodes:
+            if remaining <= 0:
+                break
+            cap = int(node.get('free_cpus', 0) or 0)
+            total = int(node.get('_total_cpus', 0) or 0)
+            load_ratio = float(node.get('_load_ratio', 0.0) or 0.0)
+            alloc_ratio = float(node.get('allocated_cpus', 0) or 0.0) / float(total) if total > 0 else 0.0
+            if load_ratio >= 0.85 or alloc_ratio >= 0.95:
+                cap = 0
+            elif load_ratio >= 0.70 or alloc_ratio >= 0.85:
+                cap = int(cap * 0.5)
+            if cap < 0:
+                cap = 0
+            take = min(cap, remaining)
+            if take <= 0:
+                continue
+            plan_queue.extend([node['node']] * take)
+            remaining -= take
 
     for node_name in plan_queue:
         plan_counts[node_name] = plan_counts.get(node_name, 0) + 1
@@ -1122,8 +1268,10 @@ def process_framework_raspa3(topdir, subdir, counter, framework_name, cutoff, vo
             sim_config["NumberOfInitializationCycles"] = 0
             sim_config["NumberOfEquilibrationCycles"] = 0
             sim_config["PrintEvery"] = 1
-            sim_config["WriteBinaryRestartEvery"] = max(1, mser_add_cycles)
-            sim_config["RestartFromBinaryFile"] = False
+
+        # 移除二进制重启相关字段，统一走 JSON RestartFileName
+        sim_config.pop("WriteBinaryRestartEvery", None)
+        sim_config.pop("RestartFromBinaryFile", None)
 
         # 保存 simulation.json
         sim_path = os.path.join(md_dir, "simulation.json")
@@ -1331,6 +1479,9 @@ def main():
                 cif_path = framework_cif_paths.get(framework)
                 if not cif_path:
                     continue
+                if "cleaned_cif" in os.path.normpath(cif_path).split(os.sep):
+                    logger.info(f"检测到已清理版本，跳过编号检查: {cif_path}")
+                    continue
                 issue_count = count_numbered_labels(cif_path)
                 if issue_count > 0:
                     label_issues.append((framework, cif_path, issue_count))
@@ -1350,45 +1501,20 @@ def main():
                     sys.exit(1)
 
                 script_path = os.path.join(os.path.dirname(__file__), "clean_cif_labels.py")
-                logger.info(f"运行标签清理脚本: {script_path} {cif_dir}")
-                result = subprocess.run([sys.executable, script_path, cif_dir])
+                target_files = [os.path.basename(path) for _, path, _ in label_issues]
+                logger.info(f"运行标签清理脚本（就地处理有编号的文件）: {script_path} {cif_dir} --in-place --files {', '.join(target_files)}")
+                cmd = [sys.executable, script_path, cif_dir, "--in-place", "--files", *target_files]
+                result = subprocess.run(cmd)
                 if result.returncode != 0:
                     logger.error("标签清理脚本执行失败，程序终止。")
                     sys.exit(1)
 
-                cleaned_dir = os.path.join(cif_dir, "cleaned_cif")
-                if not os.path.exists(cleaned_dir):
-                    logger.error(f"未找到清理后的目录: {cleaned_dir}")
+                missing_cleaned = [f for f in target_files if not os.path.exists(os.path.join(cif_dir, f))]
+                if missing_cleaned:
+                    logger.error(f"以下文件未成功完成就地清理: {', '.join(missing_cleaned)}")
                     sys.exit(1)
 
-                cif_dir = cleaned_dir
-                logger.info(f"已切换到清理后的 CIF 目录: {cif_dir}")
-
-                # 重新检查清理后的 CIF 文件是否存在
-                new_found = []
-                new_missing = []
-                new_framework_cif_paths = {}
-                for framework in framework_names:
-                    cif_file = locate_cif_file(framework, cif_dir)
-                    if cif_file:
-                        new_found.append(framework)
-                        new_framework_cif_paths[framework] = cif_file
-                    else:
-                        new_missing.append(framework)
-
-                if new_missing:
-                    logger.warning(f"清理后仍缺少以下框架的CIF文件，将跳过：{', '.join(map(str, new_missing[:10]))}"
-                                   + (f"，以及其他 {len(new_missing) - 10} 个" if len(new_missing) > 10 else ""))
-
-                framework_names = new_found
-                framework_cif_paths = new_framework_cif_paths
-                total_tasks = len(framework_names)
-
-                if total_tasks == 0:
-                    logger.error("清理后所有框架均缺少CIF文件，无法继续计算。")
-                    sys.exit(1)
-
-                logger.info(f"清理后保留 {total_tasks} 个框架用于计算")
+                logger.info(f"已完成 {len(target_files)} 个 CIF 的就地清理。")
 
         except Exception as e:
             logger.error(f"处理CSV文件时出错: {e}")
@@ -1475,8 +1601,10 @@ def main():
                                     sim_config["NumberOfInitializationCycles"] = 0
                                     sim_config["NumberOfEquilibrationCycles"] = 0
                                     sim_config["PrintEvery"] = 1
-                                    sim_config["WriteBinaryRestartEvery"] = max(1, mser_add_cycles)
-                                    sim_config["RestartFromBinaryFile"] = False
+
+                                # 移除二进制重启相关字段，统一走 JSON RestartFileName
+                                sim_config.pop("WriteBinaryRestartEvery", None)
+                                sim_config.pop("RestartFromBinaryFile", None)
 
                                 # 显示 JSON 内容
                                 print(json.dumps(sim_config, indent=2))

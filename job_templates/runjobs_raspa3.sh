@@ -4,6 +4,66 @@
 # 基于 runjobs.sh 修改，支持 RASPA3 的 JSON 格式输入
 #
 
+# 优先加载任务目录下的配置快照，补交作业继承原始配置
+CWD="$(pwd -P)"
+eval "$(
+  python3 - <<'PY'
+import os, sys, json
+
+candidates = [
+    os.path.join(os.getcwd(), ".raspa_config.yaml"),
+    os.path.join(os.getcwd(), "config.yaml"),
+    os.path.expanduser("~/raspa2-calc/.raspa_tools/config.yaml"),
+]
+cfg_path = next((p for p in candidates if os.path.exists(p)), None)
+if not cfg_path:
+    sys.exit(0)
+
+def load_cfg(path: str):
+    try:
+        import yaml  # type: ignore
+        with open(path, "r", encoding="utf-8") as fh:
+            return yaml.safe_load(fh) or {}
+    except Exception:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+
+cfg = load_cfg(cfg_path)
+
+def emit(key, val):
+    if val in (None, ""):
+        return
+    if os.environ.get(key):
+        return
+    print(f'export {key}="{val}"')
+
+env = cfg.get("environment") or {}
+calc = cfg.get("calculation") or {}
+
+emit("RASPA3_CONDA_ENV", env.get("raspa3_conda_env"))
+emit("RASPA3_JSON_DIR", env.get("raspa3_json_dir"))
+emit("RASPA3_CIF_BASE_PATH", env.get("raspa3_cif_base_path"))
+emit("RASPA3_TEMPLATE_PATH", env.get("raspa3_template_path"))
+
+mser = calc.get("mser") if isinstance(calc, dict) else {}
+if isinstance(mser, dict):
+    emit("RASPA_MSER_ENABLE", str(mser.get("enable", False)).lower())
+    emit("RASPA_MSER_TARGET_CYCLES", mser.get("target_cycles"))
+    emit("RASPA_MSER_ADD_CYCLES", mser.get("add_cycles"))
+    emit("RASPA_MSER_MAX_ITER", mser.get("max_iter"))
+    emit("RASPA_MSER_UNCERTAINTY", mser.get("uncertainty"))
+    emit("RASPA_MSER_CONDA_ENV", mser.get("conda_env"))
+    emit("RASPA_MSER_LLM", str(mser.get("llm", True)).lower())
+    emit("RASPA_MSER_BATCH_SIZE", mser.get("batch_size"))
+    emit("RASPA_MSER_TAIL_REL_STD", mser.get("tail_rel_std"))
+    emit("RASPA_MSER_TAIL_WINDOW", mser.get("tail_window"))
+    emit("RASPA_MSER_MIN_T0_FRAC", mser.get("min_t0_frac"))
+PY
+)"
+
 # ============ RASPA3 环境设置 ============
 # 初始化 conda
 if [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
@@ -26,33 +86,6 @@ if ! command -v raspa3 &> /dev/null; then
 fi
 
 MSER_SCRIPT="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}/scripts/python/auto_mser_raspa3.py"
-
-# 若未显式设置 MSER 环境变量，则从默认 config.yaml 读取
-if [ -z "$RASPA_MSER_ENABLE" ]; then
-    eval "$(
-      python - <<'PY'
-import os, sys, yaml
-cfg_path = os.path.expanduser('~/raspa2-calc/.raspa_tools/config.yaml')
-if not os.path.exists(cfg_path):
-    sys.exit(0)
-try:
-    cfg = yaml.safe_load(open(cfg_path, 'r', encoding='utf-8'))
-    mser = cfg.get('calculation', {}).get('mser', {})
-    if not mser:
-        sys.exit(0)
-    def emit(k, v):
-        print(f'export {k}=\"{v}\"')
-    emit('RASPA_MSER_ENABLE', str(mser.get('enable', False)).lower())
-    emit('RASPA_MSER_TARGET_CYCLES', mser.get('target_cycles', 1000))
-    emit('RASPA_MSER_ADD_CYCLES', mser.get('add_cycles', 500))
-    emit('RASPA_MSER_MAX_ITER', mser.get('max_iter', 20))
-    emit('RASPA_MSER_UNCERTAINTY', mser.get('uncertainty', 'uSD'))
-    emit('RASPA_MSER_CONDA_ENV', mser.get('conda_env', 'pymser'))
-except Exception:
-    sys.exit(0)
-PY
-    )"
-fi
 
 # ============ 目录检测 ============
 detect_subdir() {
@@ -397,6 +430,17 @@ while :; do
         mser_status=0
         if [ "${RASPA_MSER_ENABLE}" = "true" ] && [ -f "$MSER_SCRIPT" ]; then
             echo " ==> 运行 pyMSER 自动平衡: mc${mid}"
+            MSER_ARGS=()
+            if [ -n "${RASPA_MSER_LLM:-}" ]; then
+                case "${RASPA_MSER_LLM}" in
+                    false|0|no|n) MSER_ARGS+=("--no-llm");;
+                    *) MSER_ARGS+=("--llm");;
+                esac
+            fi
+            [ -n "${RASPA_MSER_BATCH_SIZE:-}" ] && MSER_ARGS+=("--batch-size" "${RASPA_MSER_BATCH_SIZE}")
+            [ -n "${RASPA_MSER_TAIL_REL_STD:-}" ] && MSER_ARGS+=("--tail-rel-std" "${RASPA_MSER_TAIL_REL_STD}")
+            [ -n "${RASPA_MSER_TAIL_WINDOW:-}" ] && MSER_ARGS+=("--tail-window" "${RASPA_MSER_TAIL_WINDOW}")
+            [ -n "${RASPA_MSER_MIN_T0_FRAC:-}" ] && MSER_ARGS+=("--min-t0-frac" "${RASPA_MSER_MIN_T0_FRAC}")
             if command -v conda >/dev/null 2>&1; then
                 conda run -n "${RASPA_MSER_CONDA_ENV:-pymser}" python "$MSER_SCRIPT" \
                   --workdir "$(pwd)" \
@@ -405,16 +449,18 @@ while :; do
                   --max-iter "${RASPA_MSER_MAX_ITER:-20}" \
                   --uncertainty "${RASPA_MSER_UNCERTAINTY:-uSD}" \
                   --conda-env "${RASPA_MSER_CONDA_ENV:-pymser}" \
-                  --raspa3-conda-env "${RASPA3_CONDA_ENV:-raspa3}"
+                  --raspa3-conda-env "${RASPA3_CONDA_ENV:-raspa3}" \
+                  "${MSER_ARGS[@]}"
             else
-                python "$MSER_SCRIPT" \
+                python3 "$MSER_SCRIPT" \
                   --workdir "$(pwd)" \
                   --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \
                   --add-cycles "${RASPA_MSER_ADD_CYCLES:-500}" \
                   --max-iter "${RASPA_MSER_MAX_ITER:-20}" \
                   --uncertainty "${RASPA_MSER_UNCERTAINTY:-uSD}" \
                   --conda-env "${RASPA_MSER_CONDA_ENV:-pymser}" \
-                  --raspa3-conda-env "${RASPA3_CONDA_ENV:-raspa3}"
+                  --raspa3-conda-env "${RASPA3_CONDA_ENV:-raspa3}" \
+                  "${MSER_ARGS[@]}"
             fi
             mser_status=$?
             if [ $mser_status -ne 0 ]; then

@@ -300,7 +300,19 @@ def copy_raspa3_json_files(json_dir, output_dir, component_names=None, cif_path=
         bool: 成功返回 True
     """
     try:
-        # 复制 force_field.json
+        if not os.path.isdir(json_dir):
+            logger.warning(f"raspa3_json_dir 不存在: {json_dir}")
+            return False
+
+        os.makedirs(output_dir, exist_ok=True)
+        copied = set()
+
+        def copy_file(src, dest):
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy2(src, dest)
+            copied.add(os.path.relpath(dest, output_dir))
+
+        # 复制 force_field.json（按 CIF/气体筛选）
         ff_src = os.path.join(json_dir, "force_field.json")
         if os.path.exists(ff_src):
             dest = os.path.join(output_dir, "force_field.json")
@@ -312,23 +324,39 @@ def copy_raspa3_json_files(json_dir, output_dir, component_names=None, cif_path=
                 component_names=component_names,
                 log=logger,
             )
+            copied.add("force_field.json")
             logger.debug(f"复制 force_field.json 到 {dest}（已按 CIF/气体筛选）")
         else:
             logger.warning(f"force_field.json 不存在: {ff_src}")
 
-        # 复制分子定义文件
+        # 复制组件 JSON（如指定）
         if component_names:
             for name in component_names:
                 mol_src = os.path.join(json_dir, f"{name}.json")
                 if os.path.exists(mol_src):
-                    shutil.copy(mol_src, output_dir)
+                    copy_file(mol_src, os.path.join(output_dir, f"{name}.json"))
                     logger.debug(f"复制 {name}.json 到 {output_dir}")
-        else:
-            # 如果未指定组件，复制所有 .json 文件（除了 simulation.json）
-            for f in os.listdir(json_dir):
-                if f.endswith('.json') and f != 'simulation.json':
-                    shutil.copy(os.path.join(json_dir, f), output_dir)
 
+        # 复制剩余资源（包含子目录，排除 simulation.json，已复制的 force_field.json）
+        for root, _, files in os.walk(json_dir):
+            rel_root = os.path.relpath(root, json_dir)
+            for f in files:
+                rel_path = os.path.join(rel_root, f) if rel_root != '.' else f
+                if f == "simulation.json":
+                    continue  # 由生成器创建
+                if rel_path == "force_field.json":
+                    continue  # 已处理过滤版
+                if component_names and f.endswith(".json") and os.path.splitext(f)[0] in component_names:
+                    continue  # 已复制组件 JSON
+                if rel_path in copied:
+                    continue
+
+                src = os.path.join(root, f)
+                dest = os.path.join(output_dir, rel_path)
+                copy_file(src, dest)
+                logger.debug(f"复制 {rel_path} 到 {dest}")
+
+        logger.info(f"已复制 RASPA3 JSON 资源 {len(copied)} 个到 {output_dir}")
         return True
     except Exception as e:
         logger.error(f"复制 RASPA3 JSON 文件失败: {e}")
@@ -368,19 +396,17 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
         # 获取框架名称和 CIF 路径
         framework_name = params.get('framework', '')
 
-        # 设置 CIF 文件路径
+        # 确保 Systems[0] 存在
+        if not sim_config.get('Systems'):
+            sim_config['Systems'] = [{}]
+        system_cfg = sim_config['Systems'][0]
+
+        # 设置 Systems[0].Name 为 CIF 绝对路径（RASPA3 需要绝对路径）
         if cif_path and os.path.exists(cif_path):
-            # 使用绝对路径或相对路径
-            if config:
-                cif_base = config.get('environment', {}).get('raspa3_cif_base_path', '')
-                if cif_base and cif_path.startswith(cif_base):
-                    # 可以使用相对路径或绝对路径
-                    sim_config['Systems'][0]['Name'] = cif_path
-                else:
-                    sim_config['Systems'][0]['Name'] = cif_path
-            else:
-                sim_config['Systems'][0]['Name'] = cif_path
-            logger.info(f"设置 CIF 路径: {cif_path}")
+            system_cfg['Name'] = os.path.abspath(cif_path)
+            logger.info(f"设置 CIF 路径: {system_cfg['Name']}")
+        else:
+            logger.warning("未找到有效的 CIF 路径，保留模板中的 Name 字段")
 
         # 计算 UnitCells（如果启用）
         auto_unit_cells = config.get('parameter_screening', {}).get('auto_unit_cells', True) if config else True
@@ -392,12 +418,12 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
                     cif_path, cutoff_value
                 )
                 if success and unit_cells_tuple:
-                    sim_config['Systems'][0]['NumberOfUnitCells'] = list(unit_cells_tuple)
+                    system_cfg['NumberOfUnitCells'] = list(unit_cells_tuple)
                     logger.info(f"计算 NumberOfUnitCells: {unit_cells_tuple}")
 
                     # 设置空隙率
                     if void_fraction is not None:
-                        sim_config['Systems'][0]['HeliumVoidFraction'] = void_fraction
+                        system_cfg['HeliumVoidFraction'] = void_fraction
                         logger.info(f"设置 HeliumVoidFraction: {void_fraction}")
             except Exception as e:
                 logger.warning(f"计算 UnitCells 失败: {e}")
@@ -406,7 +432,7 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
         if void_fraction_csv and framework_name:
             vf = void_fraction_csv.get(framework_name)
             if vf is not None:
-                sim_config['Systems'][0]['HeliumVoidFraction'] = vf
+                system_cfg['HeliumVoidFraction'] = vf
                 logger.info(f"从 CSV 设置 HeliumVoidFraction: {vf}")
 
         # 替换顶层参数
@@ -432,8 +458,23 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
 
         for param_key, json_key in system_params_map.items():
             if param_key in params:
-                sim_config['Systems'][0][json_key] = params[param_key]
+                system_cfg[json_key] = params[param_key]
                 logger.debug(f"设置 Systems[0].{json_key}: {params[param_key]}")
+
+        # 覆盖 Components 中的分子名称（若参数提供 Name）
+        component_override = params.get('Name') or params.get('name')
+        component_names_override = None
+        if component_override is not None:
+            if isinstance(component_override, (list, tuple)):
+                component_names_override = list(component_override)
+            elif isinstance(component_override, str):
+                component_names_override = parse_molecule_names(component_override)
+
+        if component_names_override and "Components" in sim_config:
+            for i, component in enumerate(sim_config["Components"]):
+                chosen = component_names_override[min(i, len(component_names_override) - 1)]
+                component["Name"] = chosen
+                logger.info(f"设置 Components[{i}].Name: {chosen}")
 
         # pyMSER 续跑需要重启文件；若启用则补足配置并按追加步数启动（与高通量模式一致）
         if mser_enable:
@@ -442,9 +483,10 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
             sim_config['NumberOfInitializationCycles'] = 0
             sim_config['NumberOfEquilibrationCycles'] = 0
             sim_config['PrintEvery'] = 1
-            sim_config['WriteBinaryRestartEvery'] = write_every
-            # RASPA3 读取重启文件的键是 RestartFromBinaryFile；初始运行禁用读取
-            sim_config['RestartFromBinaryFile'] = False
+
+        # 统一移除二进制重启相关字段，使用 JSON RestartFileName 续跑
+        sim_config.pop('WriteBinaryRestartEvery', None)
+        sim_config.pop('RestartFromBinaryFile', None)
 
         # 写入输出文件
         with open(output_path, 'w', encoding='utf-8') as f:
@@ -744,13 +786,13 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
     if config:
         conda_env = config.get('environment', {}).get('raspa3_conda_env', 'raspa3')
 
-    # 获取组件名称（用于复制分子文件）
-    component_names = None
+    # 获取模板中的组件名称（用于复制分子文件的默认值）
+    template_component_names = None
     try:
         with open(template_path, 'r', encoding='utf-8') as f:
             template_data = json.load(f)
             components = template_data.get('Components', [])
-            component_names = list(set(c.get('Name', '') for c in components if c.get('Name')))
+            template_component_names = list(set(c.get('Name', '') for c in components if c.get('Name')))
     except Exception:
         pass
 
@@ -768,6 +810,15 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
             parent_dir = os.path.dirname(param_dir)
         except Exception:
             pass
+
+        # 组件名称覆盖：优先组合中的 Name，其次模板中的组件
+        component_names = template_component_names
+        if 'Name' in combo:
+            val = combo['Name']
+            if isinstance(val, (list, tuple)):
+                component_names = list(val)
+            elif isinstance(val, str):
+                component_names = parse_molecule_names(val)
 
         # 复制 RASPA3 JSON 文件（按框架/组分筛选力场）
         if json_dir:

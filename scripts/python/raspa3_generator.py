@@ -120,6 +120,19 @@ def find_cif_file(framework_name, cif_base_path):
         if os.path.exists(path):
             return path
 
+    # 兜底：若传入包含路径（如 cleaned_cif/foo），尝试仅取文件名重试
+    base_name = os.path.basename(clean_name)
+    if base_name != clean_name:
+        candidates_base = [
+            os.path.join(cif_base_path, f"{base_name}.cif"),
+            os.path.join(cif_base_path, base_name),
+            os.path.join(cif_base_path, f"{base_name.upper()}.cif"),
+            os.path.join(cif_base_path, f"{base_name.lower()}.cif"),
+        ]
+        for path in candidates_base:
+            if os.path.exists(path):
+                return path
+
     return None
 
 

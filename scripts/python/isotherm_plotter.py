@@ -52,23 +52,76 @@ except Exception as e:
     print("请确保 scripts/python/data_extractor.py 可用并在同一目录下运行。")
     sys.exit(1)
 
+try:
+    # Optional: RASPA3 parser (txt output)
+    from data_extractor_raspa3 import (
+        RASPA3_Output_Data,
+        extract_framework_name_from_simulation_json as extract_framework_name_from_simulation_json_raspa3,
+        find_output_file_in_mc_dir as find_output_file_in_mc_dir_raspa3,
+    )
+except Exception:
+    RASPA3_Output_Data = None
+    extract_framework_name_from_simulation_json_raspa3 = None
+    find_output_file_in_mc_dir_raspa3 = None
+
+
+def _infer_context_dir(output_file: str) -> str | None:
+    """
+    Infer the simulation directory (where simulation.json/input usually lives)
+    from an output file path.
+
+    - RASPA3: <sim_dir>/output/output_*.txt  -> context = <sim_dir>
+    - RASPA2: <mc_dir>/Output/System_0/output_*.data -> context = <mc_dir>
+    - Fallback: parent directory of output_file
+    """
+    try:
+        parent = os.path.dirname(output_file)
+        base = os.path.basename(parent).lower()
+        if base in {'output', 'outputs', 'output_files'}:
+            return os.path.dirname(parent)
+        if base == 'system_0':
+            up1 = os.path.dirname(parent)  # Output/
+            if os.path.basename(up1).lower() == 'output':
+                return os.path.dirname(up1)
+            return os.path.dirname(parent)
+        return parent
+    except Exception:
+        return None
+
 
 def _iter_output_files(base_dir: str):
-    """Yield (mc_dir, output_file) pairs or (None, output_file) for general layout."""
-    # Prefer mc* layout if present
+    """
+    Yield (context_dir, output_file) pairs.
+
+    - If mc* layout exists, prefer mc* ordering and pick the most likely output per mc dir.
+    - Otherwise, recursively find output files:
+      - RASPA2: output*.data
+      - RASPA3: output_*.txt (under output/)
+    """
     mc_dirs = find_all_mc_directories(base_dir)
+    yielded = False
     if mc_dirs:
         for mc_dir in sorted(mc_dirs, key=lambda p: _extract_mc_number_safe(p)):
             output = find_output_file_in_mc_dir(mc_dir)
+            if (not output) and find_output_file_in_mc_dir_raspa3:
+                output = find_output_file_in_mc_dir_raspa3(mc_dir)
             if output and os.path.exists(output):
+                yielded = True
                 yield (mc_dir, output)
-        return
+        if yielded:
+            return
 
-    # General recursive search for RASPA output*.data files
+    # General recursive search for RASPA output files
     for root, _, files in os.walk(base_dir):
         for fn in files:
-            if fn.endswith('.data') and 'output' in fn.lower():
-                yield (None, os.path.join(root, fn))
+            lower = fn.lower()
+            full = os.path.join(root, fn)
+            if fn.endswith('.data') and 'output' in lower:
+                yield (_infer_context_dir(full), full)
+            elif fn.endswith('.txt') and lower.startswith('output_'):
+                yield (_infer_context_dir(full), full)
+            elif lower == 'output' and os.path.isfile(full):
+                yield (_infer_context_dir(full), full)
 
 
 def _extract_mc_number_safe(mc_dir: str) -> int:
@@ -79,11 +132,11 @@ def _extract_mc_number_safe(mc_dir: str) -> int:
         return 0
 
 
-def _to_float(s: str | None) -> float | None:
-    if s is None:
+def _to_float(value) -> float | None:
+    if value is None:
         return None
     try:
-        v = float(s)
+        v = float(value)
         if math.isfinite(v):
             return v
         return None
@@ -99,17 +152,27 @@ def _convert_pressure(value_pa: float, unit: str) -> float:
     raise ValueError(f"Unsupported pressure unit: {unit}")
 
 
-def _safe_framework_name(file_path: str, content: str) -> str:
+def _safe_framework_name(context_dir: str | None, file_path: str, content: str) -> str:
+    if context_dir and extract_framework_name_from_simulation_json_raspa3:
+        try:
+            name = extract_framework_name_from_simulation_json_raspa3(context_dir) or ''
+            if name:
+                return name
+        except Exception:
+            pass
+
     name = extract_framework_name_from_filepath(file_path) or ''
     if name:
-        return name
+        # RASPA3 txt outputs often look like output_<T>_<P>.s0.txt; avoid treating temperature as framework name.
+        if not (name.isdigit() and os.path.basename(file_path).lower().startswith('output_')):
+            return name
     # Fallback: attempt very rough parse from path parts
     base = os.path.basename(file_path)
     m = re.search(r'output_([^._]+)', base)
     return m.group(1) if m else 'UnknownFramework'
 
 
-def _get_adsorption(raspa: RASPA_Output_Data, ads_type: str, unit: str) -> dict[str, str]:
+def _get_adsorption(raspa, ads_type: str, unit: str):
     if ads_type == 'absolute':
         return raspa.get_absolute_adsorption(unit)
     elif ads_type == 'excess':
@@ -130,11 +193,18 @@ def collect_isotherm_points(base_dir: str,
     """
     data = defaultdict(lambda: defaultdict(list))
 
-    for mc_dir, output_file in _iter_output_files(base_dir):
+    for context_dir, output_file in _iter_output_files(base_dir):
         try:
             with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            raspa = RASPA_Output_Data(content)
+
+            use_raspa3 = False
+            if RASPA3_Output_Data and (output_file.lower().endswith('.txt')):
+                # Heuristic detection: RASPA3 text output usually contains these markers.
+                if ('RASPA 3' in content) or ('Abs. loading average' in content) or ('Loadings' in content):
+                    use_raspa3 = True
+
+            raspa = RASPA3_Output_Data(content) if use_raspa3 else RASPA_Output_Data(content)
 
             if not include_unfinished and not raspa.is_finished():
                 continue
@@ -149,7 +219,7 @@ def collect_isotherm_points(base_dir: str,
             if not ads_map:
                 continue
 
-            fw = _safe_framework_name(output_file, content)
+            fw = _safe_framework_name(context_dir, output_file, content)
 
             # If a specific component is requested, filter to it; else add all
             if component:
@@ -374,3 +444,7 @@ def main(argv=None):
     print('='*60)
 
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

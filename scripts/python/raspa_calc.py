@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import sys
 import subprocess
 import importlib
@@ -457,6 +458,26 @@ def run_task_runner():
             if 'output_directory' in calc_config:
                 os.environ['RASPA_OUTPUT_DIR'] = calc_config['output_directory']
 
+            # 将本次使用的配置快照保存到输出目录，便于补交作业复用原配置
+            try:
+                out_dir_name = calc_config.get('output_directory')
+                base_dir = os.environ.get('RASPA_WORK_DIR', os.getcwd())
+                if out_dir_name and base_dir:
+                    snap_dir = os.path.join(base_dir, out_dir_name)
+                    os.makedirs(snap_dir, exist_ok=True)
+                    snap_path = os.path.join(snap_dir, ".raspa_config.yaml")
+                    try:
+                        import yaml  # type: ignore
+                        with open(snap_path, "w", encoding="utf-8") as fh:
+                            yaml.safe_dump(config or {}, fh, allow_unicode=True)
+                    except Exception:
+                        import json
+                        with open(snap_path, "w", encoding="utf-8") as fh:
+                            fh.write(json.dumps(config or {}, ensure_ascii=False, indent=2))
+                    print(f"ℹ️  当前配置已保存: {snap_path}")
+            except Exception as save_err:
+                print(f"⚠️  保存配置快照失败: {save_err}")
+
             # 设置 pyMSER 自动平衡参数（仅 RASPA2）
             mser_config = calc_config.get('mser', {})
             if mser_config:
@@ -472,6 +493,16 @@ def run_task_runner():
                     os.environ['RASPA_MSER_UNCERTAINTY'] = mser_config.get('uncertainty', 'uSD')
                 if 'conda_env' in mser_config:
                     os.environ['RASPA_MSER_CONDA_ENV'] = mser_config.get('conda_env', 'pymser')
+                if 'llm' in mser_config:
+                    os.environ['RASPA_MSER_LLM'] = str(mser_config.get('llm', True)).lower()
+                if 'batch_size' in mser_config:
+                    os.environ['RASPA_MSER_BATCH_SIZE'] = str(mser_config.get('batch_size', 5))
+                if 'tail_rel_std' in mser_config:
+                    os.environ['RASPA_MSER_TAIL_REL_STD'] = str(mser_config.get('tail_rel_std', 0.05))
+                if 'tail_window' in mser_config:
+                    os.environ['RASPA_MSER_TAIL_WINDOW'] = str(mser_config.get('tail_window', 2000))
+                if 'min_t0_frac' in mser_config:
+                    os.environ['RASPA_MSER_MIN_T0_FRAC'] = str(mser_config.get('min_t0_frac', 0.05))
 
             # 设置模板相关参数 (根据 RASPA 版本选择正确的模板)
             raspa_version = env_config.get('raspa_version', 'raspa2').lower()
@@ -622,24 +653,92 @@ def run_isotherm_plotter():
         work_dir = os.getcwd()
         print(f"📁 当前工作目录: {work_dir}")
 
+        def _detect_result_signals(dir_path: str) -> tuple[int, int]:
+            """
+            粗略检测目录是否包含可绘图的RASPA结果。
+
+            Returns:
+                (mc_count, raspa3_txt_count)
+            """
+            mc_count = 0
+            raspa3_txt_count = 0
+
+            # 1) mc* 目录（RASPA2/高通量结构）
+            try:
+                for entry in os.scandir(dir_path):
+                    if not entry.is_dir():
+                        continue
+                    if re.match(r'^mc\\d+', entry.name):
+                        mc_count += 1
+            except Exception:
+                pass
+
+            # 2) RASPA3: */output/output_*.txt（参数筛选/JSON模板常见结构）
+            def _count_txt_in_output(output_dir: str) -> int:
+                n = 0
+                try:
+                    for f in os.scandir(output_dir):
+                        if f.is_file():
+                            name = f.name.lower()
+                            if name.startswith('output_') and name.endswith('.txt'):
+                                n += 1
+                except Exception:
+                    return 0
+                return n
+
+            # 当前目录自身可能就是一个任务目录
+            raspa3_txt_count += _count_txt_in_output(os.path.join(dir_path, 'output'))
+
+            # 或者当前目录下一级是任务目录
+            try:
+                for entry in os.scandir(dir_path):
+                    if not entry.is_dir():
+                        continue
+                    raspa3_txt_count += _count_txt_in_output(os.path.join(entry.path, 'output'))
+            except Exception:
+                pass
+
+            return mc_count, raspa3_txt_count
+
         # 获取配置中的输出目录名
         param_screening_config = config.get('parameter_screening', {}) if config else {}
         default_output_dir = param_screening_config.get('output_directory', '等温线')
 
         # 检测可能的输出目录
         possible_dirs = []
-        for d in [default_output_dir, '等温线', 'output', 'calc_output', 'isotherms']:
-            full_path = os.path.join(work_dir, d)
+
+        # 优先检查几个常见目录名 + 当前目录本身
+        for d in [default_output_dir, '等温线', 'output', 'calc_output', 'isotherms', '.']:
+            full_path = work_dir if d == '.' else os.path.join(work_dir, d)
             if os.path.isdir(full_path):
-                # 检查是否包含mc*目录
-                mc_count = len([x for x in os.listdir(full_path) if x.startswith('mc') and os.path.isdir(os.path.join(full_path, x))])
-                if mc_count > 0:
-                    possible_dirs.append((d, mc_count, full_path))
+                mc_count, raspa3_txt_count = _detect_result_signals(full_path)
+                if mc_count > 0 or raspa3_txt_count > 0:
+                    label = d
+                    possible_dirs.append((label, full_path, mc_count, raspa3_txt_count))
+
+        # 如果仍未命中，再扫描当前目录下的一级子目录（如: 单个MOF名目录）
+        if not possible_dirs:
+            try:
+                for entry in os.scandir(work_dir):
+                    if not entry.is_dir():
+                        continue
+                    mc_count, raspa3_txt_count = _detect_result_signals(entry.path)
+                    if mc_count > 0 or raspa3_txt_count > 0:
+                        possible_dirs.append((entry.name, entry.path, mc_count, raspa3_txt_count))
+            except Exception:
+                pass
 
         if possible_dirs:
             print(f"\n✓ 检测到 {len(possible_dirs)} 个包含计算结果的目录:")
-            for i, (dirname, mc_count, _) in enumerate(possible_dirs, 1):
-                print(f"  {i}. {dirname}/ ({mc_count} 个mc任务目录)")
+            for i, (dirname, _, mc_count, raspa3_txt_count) in enumerate(possible_dirs, 1):
+                parts = []
+                if mc_count > 0:
+                    parts.append(f"{mc_count} 个mc任务目录")
+                if raspa3_txt_count > 0:
+                    parts.append(f"{raspa3_txt_count} 个RASPA3输出文件")
+                detail = "，".join(parts) if parts else "包含结果文件"
+                suffix = "/" if dirname != "." else ""
+                print(f"  {i}. {dirname}{suffix} ({detail})")
             print(f"  {len(possible_dirs) + 1}. 手动输入目录路径")
         else:
             print("\n⚠️  未检测到标准的计算结果目录")
@@ -654,7 +753,7 @@ def run_isotherm_plotter():
 
                 choice_idx = int(choice) - 1
                 if 0 <= choice_idx < len(possible_dirs):
-                    base_dir = possible_dirs[choice_idx][2]
+                    base_dir = possible_dirs[choice_idx][1]
                 elif choice_idx == len(possible_dirs):
                     base_dir = input("请输入目录路径: ").strip()
                     if not os.path.isdir(base_dir):
