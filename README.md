@@ -46,53 +46,30 @@
 - 检测到 `simulation.input` → RASPA2
 - 可在运行时手动选择版本覆盖配置
 
-### RASPA3 配置
-
-```yaml
-environment:
-  raspa_version: "raspa3"
-  raspa3_conda_env: "raspa3"
-  raspa3_json_dir: "/path/to/raspa3json"
-  raspa3_cif_base_path: "/path/to/cif/files"
-  raspa3_template_path: "/path/to/simulation.json"
-```
-
-### RASPA3 JSON 文件结构
-
-```
-raspa3_json_dir/
-├── force_field.json    # 力场定义 (必须)
-├── simulation.json     # 模拟配置模板
-├── CO2.json            # CO2 分子定义
-├── CH4.json            # CH4 分子定义
-├── o-xylene.json       # 邻二甲苯分子定义
-└── ...                 # 其他分子定义
-```
-
 ## 核心功能
 
 ### 六大计算模式
-- **参数筛选** (`parameter_screening.py`)：快速测试参数组合，生成等温线
-- **高通量计算** (`calculate_params.py`)：批量处理框架结构，支持960+核心并行
-- **数据提取** (`data_extractor.py`)：解析RASPA输出，生成Excel/CSV报表，自动检测版本
-- **警告处理** (`warning_processor.py`)：提取失败任务、CSV数据替换
-- **等温线绘制** (`isotherm_plotter.py`)：可视化吸附数据
-- **CSV/CIF 筛选** (`ciffilter.py`)：交互式按条件/refcode筛选CSV，可复制匹配的CIF
+- *参数筛选* (`parameter_screening.py`)：快速测试参数组合，生成等温线
+- **高通量计算* (`calculate_params.py`)：批量处理框架结构，支持960+核心并行
+- **数据提取* (`data_extractor.py`)：解析RASPA输出，生成Excel/CSV报表，自动检测版本
+- **警告处理* (`warning_processor.py`)：提取失败任务、CSV数据替换
+- **等温线绘制* (`isotherm_plotter.py`)：可视化吸附数据
+- **CSV/CIF 筛选* (`ciffilter.py`)：交互式按条件/refcode筛选CSV，可复制匹配的CIF
 
 ### 执行优化
-- **SLURM作业数组**：`sbatch --array=1-N` 一次提交N个子任务，提交速度快50倍
-- **共享任务队列**：`.raspa_task_queue` 原子弹出机制，减少90% NFS扫描
-- **动态并发缩放**：`raspa-scale` 支持交互(-i)与自动(-y)选择并发
-- **并发安全**：原子文件锁 + 三级任务队列，支持NFS和高并发
+- **SLURM作业数组*：`sbatch --array=1-N` 一次提交N个子任务，提交速度快50倍
+- **共享任务队列*：`.raspa_task_queue` 原子弹出机制，减少90% NFS扫描
+- **动态并发缩放*：`raspa-scale` 支持交互(-i)与自动(-y)选择并发
+- **并发安全*：原子文件锁 + 三级任务队列，支持NFS和高并发
 
 ### 系统特性
-- **多节点集群**：SLURM + NFS 共享存储，支持异构节点和960+ CPU核心
-- **零配置检测**：自动识别SLURM/PBS/LOCAL，环境适配即插即用
-- **实时监控**：`raspa-status` 精确统计任务状态，支持按子目录查看
-- **配置灵活**：YAML配置 + 交互式参数设置，支持多种气体分子
-- **完整诊断**：`raspa-diagnose` 检查环境、依赖、工具链
-- **智能恢复**：失败任务自动检查、标记和重试
-- 详细指南移至 `docs/` 目录（集群部署、RASPA3 示例、警告处理等）
+- **多节点集群*：SLURM + NFS 共享存储，支持异构节点和960+ CPU核心
+- **零配置检测*: /PBS/LOCAL，环境适配即插即用
+- **实时监控*：`raspa-status` 精确统计任务状态，支持按子目录查看
+- **配置灵活*：YAML配置 + 交互式参数设置，支持多种气体分子
+- **完整诊断*：`raspa-diagnose` 检查环境、依赖、工具链
+- **智能恢复*：失败任务自动检查、标记和重试
+- **详细指南移至** `docs/` 目录（集群部署、RASPA3 示例、警告处理等）
 
 ## 5分钟快速开始
 
