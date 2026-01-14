@@ -19,6 +19,7 @@ usage() {
   NFS_SERVER   默认 10.10.14.12
   NFS_EXPORT   默认 /shared/raspa2-calc
   MOUNTPOINT   默认 /home/zjp/raspa2-calc
+  WORK_DIR     默认 ${MOUNTPOINT}/work（RASPA_WORK_DIR 写入该路径）
 EOF
 }
 
@@ -42,6 +43,7 @@ echo "=== 配置/修复 NFS 客户端 ==="
 NFS_SERVER="${NFS_SERVER:-10.10.14.12}"
 NFS_EXPORT="${NFS_EXPORT:-/shared/raspa2-calc}"
 MOUNTPOINT="${MOUNTPOINT:-/home/zjp/raspa2-calc}"
+WORK_DIR="${WORK_DIR:-${MOUNTPOINT}/work}"
 
 is_mounted() {
   grep -qsE "^[^ ]+ ${MOUNTPOINT} " /proc/mounts
@@ -84,6 +86,9 @@ if ! is_healthy; then
   exit 1
 fi
 
+# 创建默认工作目录（位于 NFS 共享内）
+mkdir -p "${WORK_DIR}" || true
+
 if [[ "${NO_FSTAB}" != "1" ]]; then
   # 添加到 /etc/fstab（避免重复写入）
   if ! grep -qsE "^${NFS_SERVER}:${NFS_EXPORT}[[:space:]]+${MOUNTPOINT}[[:space:]]" /etc/fstab; then
@@ -92,13 +97,24 @@ if [[ "${NO_FSTAB}" != "1" ]]; then
   fi
 fi
 
-# 设置环境变量（只追加一次）
-if ! grep -qF "export RASPA_WORK_DIR=${MOUNTPOINT}" ~/.bashrc 2>/dev/null; then
+# 设置环境变量（写入/更新 ~/.bashrc）
+if [[ -f ~/.bashrc ]] && grep -qE '^[[:space:]]*export[[:space:]]+RASPA_WORK_DIR=' ~/.bashrc 2>/dev/null; then
+  if ! grep -qF "export RASPA_WORK_DIR=${WORK_DIR}" ~/.bashrc 2>/dev/null; then
+    echo "更新 ~/.bashrc: RASPA_WORK_DIR -> ${WORK_DIR}"
+    sed -i -E "s|^[[:space:]]*export[[:space:]]+RASPA_WORK_DIR=.*$|export RASPA_WORK_DIR=${WORK_DIR}|g" ~/.bashrc
+  fi
+else
   echo "写入 ~/.bashrc 环境变量..."
-  {
-    echo "export RASPA_WORK_DIR=${MOUNTPOINT}"
-    echo 'export RASPA_DIR=/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0'
-  } >> ~/.bashrc
+  echo "export RASPA_WORK_DIR=${WORK_DIR}" >> ~/.bashrc
+fi
+
+if [[ -f ~/.bashrc ]] && grep -qE '^[[:space:]]*export[[:space:]]+RASPA_DIR=' ~/.bashrc 2>/dev/null; then
+  if ! grep -qF 'export RASPA_DIR=/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0' ~/.bashrc 2>/dev/null; then
+    echo "更新 ~/.bashrc: RASPA_DIR"
+    sed -i -E "s|^[[:space:]]*export[[:space:]]+RASPA_DIR=.*$|export RASPA_DIR=/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0|g" ~/.bashrc
+  fi
+else
+  echo 'export RASPA_DIR=/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0' >> ~/.bashrc
 fi
 
 if [[ "${RESTART_SLURMD}" = "1" ]]; then

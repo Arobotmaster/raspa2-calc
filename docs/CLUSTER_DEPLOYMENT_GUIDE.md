@@ -3,6 +3,7 @@
 ## 目录
 - [1. 部署概述](#1-部署概述)
 - [2. 环境准备](#2-环境准备)
+- [2.3 UID/GID 一致性（强制）](#23-uidgid-一致性强制)
 - [3. NFS共享存储配置](#3-nfs共享存储配置)
 - [4. RASPA 版本配置](#4-raspa-版本配置)
 - [5. 作业脚本优化](#5-作业脚本优化)
@@ -10,6 +11,7 @@
 - [7. 部署验证](#7-部署验证)
 - [8. 使用指南](#8-使用指南)
 - [9. 故障排除](#9-故障排除)
+- [10. 部署检查清单](#10-部署检查清单)
 
 ---
 
@@ -88,7 +90,46 @@ pip install raspa3
 
 ---
 
+## 2.3 UID/GID 一致性（强制）
+
+在 **Slurm + NFS（共享工作目录）** 的集群里，同一用户名必须在 **所有可能运行作业的节点** 上存在，并且 **UID/GID 完全一致**。否则常见问题包括：
+
+- `scontrol show job <id>` 里作业 **0 秒失败**（例如 `RaisedSignal:53`），且工作目录下没有 `.out/.err` 或输出文件。
+- 节点上 `ls -la` 显示目录/文件的 group 变成数字（例如 `1004`），或登录提示 `id: cannot find name for group ID ...`。
+- Slurm 在启动作业时无法正确 setuid/setgid，作业会 `requeue` 或直接失败。
+
+**快速检查（示例以 zjp 为例）：**
+
+```bash
+for n in master-node worker-node-01 worker-node-02 worker-node-03; do
+  ssh "$n" 'hostname; id zjp; getent passwd zjp; getent group zjp'
+done
+```
+
+**推荐做法：**
+
+- 使用 LDAP/SSSD 统一账号；或
+- 使用 Ansible 同步本地用户/组（本项目提供模板与说明：`/home/zjp/docs/ansible-user-sync/README.md`）。
+
+---
+
 ## 3. NFS共享存储配置
+
+### 3.0 推荐：用脚本自动配置/修复（更省心）
+
+本项目提供 NFS 配置/修复脚本（支持修复 `Stale file handle`）：
+
+```bash
+# 单节点（在需要挂载的客户端节点执行）
+bash /home/zjp/raspa2-calc/.raspa_tools/nfs/nfs_client_setup.sh
+
+# 单节点修复（出现 Stale file handle / Slurm 作业 0 秒失败时）
+bash /home/zjp/raspa2-calc/.raspa_tools/nfs/nfs_client_setup.sh --recover
+
+# 批量分发/批量修复（在 NFS 服务器 10.10.14.12 上执行）
+bash /home/zjp/raspa2-calc/.raspa_tools/nfs/nfs_setup_all_nodes.sh setup
+bash /home/zjp/raspa2-calc/.raspa_tools/nfs/nfs_setup_all_nodes.sh recover --run
+```
 
 ### 3.1 NFS服务器配置 (worker-node-03)
 
@@ -96,9 +137,23 @@ pip install raspa3
 ```bash
 # 在worker-node-03上执行
 sudo mkdir -p /shared/raspa2-calc
+sudo mkdir -p /shared/raspa2-calc/{work,.raspa_tools}
+
+# 重要：共享目录建议用固定的用户/组（UID/GID 必须在所有节点一致）
 sudo chown -R zjp:zjp /shared/raspa2-calc
-sudo chmod 755 /shared/raspa2-calc
+
+# 推荐开启 setgid：让新文件继承目录 group（避免跨节点出现 “数字 gid”/权限混乱）
+sudo chmod 2775 /shared/raspa2-calc /shared/raspa2-calc/work /shared/raspa2-calc/.raspa_tools
 ```
+
+> 💡 建议：避免把 `/shared` 的真实数据放在根分区（容易写满）。可以把真实数据放到大盘（如 `/home/shared/raspa2-calc`），再 bind-mount 回 `/shared/raspa2-calc`。
+>
+> ```bash
+> sudo mkdir -p /home/shared/raspa2-calc
+> sudo mount --bind /home/shared/raspa2-calc /shared/raspa2-calc
+> echo "/home/shared/raspa2-calc /shared/raspa2-calc none bind 0 0" | sudo tee -a /etc/fstab
+> sudo mount -a
+> ```
 
 #### 3.1.2 配置NFS导出
 ```bash
@@ -148,7 +203,7 @@ ls -la /home/zjp/raspa2-calc
 sudo vim /etc/fstab
 
 # 添加以下行：
-10.10.14.12:/shared/raspa2-calc /home/zjp/raspa2-calc nfs4 rw,hard,intr,timeo=600,retrans=2 0 0
+10.10.14.12:/shared/raspa2-calc /home/zjp/raspa2-calc nfs4 defaults,_netdev,hard,timeo=600,retrans=2 0 0
 
 # 测试fstab配置
 sudo umount /home/zjp/raspa2-calc
@@ -283,7 +338,7 @@ cd $PBS_O_WORKDIR
 
 ```bash
 # RASPA 通用环境变量
-export RASPA_WORK_DIR="/home/zjp/raspa2-calc"
+export RASPA_WORK_DIR="/home/zjp/raspa2-calc/work"
 
 # RASPA2 专用环境变量
 export RASPA_DIR="/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0"
@@ -335,6 +390,10 @@ mount | grep raspa
 
 # 验证文件访问
 ls -la /home/zjp/raspa2-calc
+ls -la /home/zjp/raspa2-calc/work | head
+
+# （可选）简单写入测试：所有节点都应能创建/读取文件
+touch /home/zjp/raspa2-calc/work/.nfs_check_"$(hostname)"
 ```
 
 ### 7.3 RASPA 版本验证
@@ -488,6 +547,26 @@ sudo umount /home/zjp/raspa2-calc
 sudo mount -a
 ```
 
+#### 9.2.2 Stale file handle（最常见）/ Slurm 作业 0 秒失败
+
+**典型症状**（任意满足即可高度怀疑）：
+
+- `ls` 报 `Stale file handle`
+- `scontrol show job <id>`：`RunTime=00:00:00`、`JobState=FAILED`，`Reason=RaisedSignal:53`，且 `.out/.err` 没生成
+- 作业被分配到某节点，但该节点上的 NFS 挂载已“失效”
+
+**解决方案（在出问题的节点执行）：**
+
+```bash
+sudo umount -fl /home/zjp/raspa2-calc || sudo umount -l /home/zjp/raspa2-calc || true
+sudo mount -a
+
+# 也可以使用脚本（推荐）：
+bash /home/zjp/raspa2-calc/.raspa_tools/nfs/nfs_client_setup.sh --recover
+```
+
+> 💡 如果问题发生在控制节点/节点上 slurmd 状态异常：在确认没有关键作业运行的情况下可重启 slurmd。
+
 ### 9.3 日志和调试
 
 ```bash
@@ -508,6 +587,7 @@ cat output/*.txt | head -100
 - [ ] 所有节点网络连通正常
 - [ ] SLURM/PBS 服务运行正常
 - [ ] NFS 共享存储配置正确
+- [ ] 所有可能运行作业的节点 UID/GID 一致（尤其是提交作业的账号）
 - [ ] 用户权限配置正确
 
 ### 10.2 RASPA2 检查
@@ -530,7 +610,7 @@ cat output/*.txt | head -100
 
 ---
 
-**文档版本**: v2.4.0
-**更新日期**: 2025-12-18
+**文档版本**: v2.5.0
+**更新日期**: 2026-01-14
 **维护人员**: zjp
 **状态**: 支持 RASPA2/RASPA3 双版本
