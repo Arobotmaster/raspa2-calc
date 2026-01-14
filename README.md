@@ -111,7 +111,7 @@ raspa-diagnose
 ```bash
 raspa-calc
 ```
-**功能**：主程序入口，支持5种计算模式，自动检测 RASPA 版本
+**功能**：主程序入口，支持6种计算模式，自动检测 RASPA 版本
 
 ### 任务监控：raspa-status
 ```bash
@@ -123,9 +123,8 @@ raspa-status -m        # 实时监控任务进度
 
 ### 动态缩放：raspa-scale
 ```bash
-raspa-scale -i work/output    # 交互式
-raspa-scale -y work/output    # 自动采用建议并发
-raspa-scale 700 work/output   # 直接指定并发
+raspa-scale -i 核心数    # 交互式
+raspa-scale -y 核心数    # 自动采用建议并发
 ```
 
 ### 环境诊断：raspa-diagnose
