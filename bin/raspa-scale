@@ -615,7 +615,7 @@ if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1; then
     : > "$JOBS_BUF"
 
     local submit_sleep
-    submit_sleep="${RASPA_SCALE_SUBMIT_SLEEP:-${RASPA_SUBMIT_SLEEP:-0}}"
+    submit_sleep="${RASPA_SCALE_SUBMIT_SLEEP:-${RASPA_SUBMIT_SLEEP:-0.15}}"
 
     local now
     now=$(date +%s)

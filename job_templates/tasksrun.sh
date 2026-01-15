@@ -347,8 +347,8 @@ fi
 # 不清空重试队列，若不存在则创建
 [ -f "$Q_RETRY" ] || : > "$Q_RETRY"
 
-# 提交间隔控制，默认 0.05 秒，可通过 RASPA_SUBMIT_INTERVAL 调整（设为0即取消等待）
-SUBMIT_INTERVAL_RAW="${RASPA_SUBMIT_INTERVAL:-0.01}"
+# 提交间隔控制，默认 0.1 秒，可通过 RASPA_SUBMIT_INTERVAL 调整（设为0即取消等待）
+SUBMIT_INTERVAL_RAW="${RASPA_SUBMIT_INTERVAL:-0.1}"
 case "$SUBMIT_INTERVAL_RAW" in
     ""|"0"|"0."|"0.0"|"0.00") SUBMIT_INTERVAL="0";;
     *) SUBMIT_INTERVAL="$SUBMIT_INTERVAL_RAW";;
