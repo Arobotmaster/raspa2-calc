@@ -23,8 +23,7 @@ WORK_DIR="$topdir"
 # 获取脚本所在目录的绝对路径
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 给予所有脚本执行权限
-find "$SCRIPT_DIR" -type f -name "*.sh" -exec chmod 755 {} \;
+# 注：脚本在安装/复制阶段已设置为可执行；避免在 NFS 上频繁 chmod 造成额外延迟
 
 # 检查RASPA_DIR是否设置
 if [ -z "$RASPA_DIR" ]; then
@@ -134,6 +133,25 @@ else
 fi
 
 echo "使用调度系统: $JOB_SYSTEM"
+
+# SLURM 提交阶段加速：在本地临时目录缓存提交脚本，避免在 NFS(HDD) 上频繁读写临时脚本导致提交变慢
+JOB_TEMPLATE_LOCAL="$JOB_TEMPLATE"
+SUBMIT_TMP_DIR=""
+if [ "$JOB_SYSTEM" = "SLURM" ]; then
+    SUBMIT_TMP_BASE="${RASPA_SUBMIT_TMP_BASE:-${TMPDIR:-/tmp}}"
+    SUBMIT_TMP_DIR=$(
+      mktemp -d "${SUBMIT_TMP_BASE%/}/raspa2calc_submit_${USER}.XXXXXX" 2>/dev/null \
+      || mktemp -d "/tmp/raspa2calc_submit_${USER}.XXXXXX" 2>/dev/null \
+      || true
+    )
+    if [ -n "$SUBMIT_TMP_DIR" ] && [ -d "$SUBMIT_TMP_DIR" ]; then
+        JOB_TEMPLATE_LOCAL="$SUBMIT_TMP_DIR/job_submit.sh"
+        cp -f "$JOB_TEMPLATE" "$JOB_TEMPLATE_LOCAL" 2>/dev/null || JOB_TEMPLATE_LOCAL="$JOB_TEMPLATE"
+        chmod 755 "$JOB_TEMPLATE_LOCAL" 2>/dev/null || true
+        cleanup_submit_tmp() { rm -rf "$SUBMIT_TMP_DIR" 2>/dev/null || true; }
+        trap cleanup_submit_tmp EXIT
+    fi
+fi
 
 # 日志输出配置（逐个 sbatch 提交）
 LOG_ENABLE_RAW="$(printf '%s' "${RASPA_ENABLE_JOB_LOGS:-true}" | tr '[:upper:]' '[:lower:]')"
@@ -350,10 +368,6 @@ START_ID=${RASPA_START_ID:-1}
 
 if [ "$JOB_SYSTEM" = "SLURM" ] && [ "$SUBMIT_MODE" = "array" ]; then
     ARRAY_END=$((START_ID + CPU_CORES - 1))
-    ARRAY_SCRIPT="$SCRIPT_DIR/job_sub_array.sh"
-    rm -f "$ARRAY_SCRIPT"
-    cp -rf "$JOB_TEMPLATE" "$ARRAY_SCRIPT"
-    chmod 755 "$ARRAY_SCRIPT"
     # 确保 job array 模式下也使用正确的 runjobs 脚本
     mkdir -p "$WORK_DIR/job_templates"
     RASPA_VERSION_LOWER="$(echo "${RASPA_VERSION:-raspa2}" | tr '[:upper:]' '[:lower:]')"
@@ -368,22 +382,16 @@ if [ "$JOB_SYSTEM" = "SLURM" ] && [ "$SUBMIT_MODE" = "array" ]; then
         cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_DIR/job_templates/runjobs.sh"
     fi
     chmod 755 "$WORK_DIR/job_templates/runjobs.sh"
-    insert_exports_after_sbatch "$ARRAY_SCRIPT" \
-        "export RASPA_TOTAL_CPUS=\"${CPU_CORES}\"" \
-        "export RASPA_WORK_DIR=\"${topdir}\"" \
-        "export RASPA_OUTPUT_DIR=\"${SUBDIR}\"" \
-        "export RASPA_SUBDIR=\"${SUBDIR}\"" \
-        "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
-    if [ "$LOG_ENABLE" = true ]; then
-        sed -i -e "s|^#SBATCH --output=.*|#SBATCH --output=$LOG_DIR/%A_%a.out|" \
-               -e "s|^#SBATCH --error=.*|#SBATCH --error=$LOG_DIR/%A_%a.err|" "$ARRAY_SCRIPT"
-    else
-        sed -i -e "s|^#SBATCH --output=.*|#SBATCH --output=/dev/null|" \
-               -e "s|^#SBATCH --error=.*|#SBATCH --error=/dev/null|" "$ARRAY_SCRIPT"
-    fi
-    sed -i -e "s|^#SBATCH --job-name=.*|#SBATCH --job-name=raspa_array|" "$ARRAY_SCRIPT"
     echo "正在以 job array 提交 worker 范围 ${START_ID}-${ARRAY_END}..."
-    submit_result=$($SUBMIT_CMD --array="${START_ID}-${ARRAY_END}" "$ARRAY_SCRIPT" 2>&1)
+    if [ "$LOG_ENABLE" = true ]; then
+        JOB_OUT="$LOG_DIR/%A_%a.out"
+        JOB_ERR="$LOG_DIR/%A_%a.err"
+    else
+        JOB_OUT="/dev/null"
+        JOB_ERR="/dev/null"
+    fi
+    EXPORTS="ALL,RASPA_TOTAL_CPUS=${CPU_CORES},RASPA_WORK_DIR=${topdir},RASPA_OUTPUT_DIR=${SUBDIR},RASPA_SUBDIR=${SUBDIR},RASPA_VERSION=${RASPA_VERSION:-raspa2}"
+    submit_result=$($SUBMIT_CMD --array="${START_ID}-${ARRAY_END}" --job-name="raspa_array" -o "$JOB_OUT" -e "$JOB_ERR" --export="$EXPORTS" "$JOB_TEMPLATE_LOCAL" 2>&1)
     echo "$submit_result"
     if [[ "$submit_result" =~ Submitted\ batch\ job\ ([0-9]+) ]]; then
         jobid="${BASH_REMATCH[1]}"
@@ -451,45 +459,10 @@ do
     fi
     NAMENEW="${WORKER_IDS[0]}"
     WORKER_IDS_CSV=$(IFS=,; echo "${WORKER_IDS[*]}")
-    COUNTER=$((COUNTER + ${#WORKER_IDS[@]}))
-    cd "$WORK_DIR" || exit 1
-    cp -rf "$JOB_TEMPLATE" "$SCRIPT_DIR/job_submit_ht.sh"
-    insert_exports_after_sbatch "$SCRIPT_DIR/job_submit_ht.sh" \
-        "export RASPA_TOTAL_CPUS=\"${CPU_CORES}\"" \
-        "export RASPA_WORK_DIR=\"${topdir}\"" \
-        "export RASPA_OUTPUT_DIR=\"${SUBDIR}\"" \
-        "export RASPA_SUBDIR=\"${SUBDIR}\"" \
-        "export RASPA_WORKER_ID=\"${NAMENEW}\"" \
-        "export RASPA_WORKER_IDS=\"${WORKER_IDS_CSV}\"" \
-        "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
-    sed -i -e "s|cd \$RASPA_WORK_DIR|cd $WORK_DIR|g" "$SCRIPT_DIR/job_submit_ht.sh"
-    if [ "$JOB_SYSTEM" = "SLURM" ]; then
-        sed -i -e "s|^#SBATCH --job-name=.*|#SBATCH --job-name=${NAMENEW}|" "$SCRIPT_DIR/job_submit_ht.sh"
-        if [ -n "$TARGET_NODE" ]; then
-            sed -i -e "s|^#SBATCH --nodelist=.*|#SBATCH --nodelist=${TARGET_NODE}|" \
-                   -e "s|^# #SBATCH --nodelist=.*|#SBATCH --nodelist=${TARGET_NODE}|" "$SCRIPT_DIR/job_submit_ht.sh"
-        fi
-        if [ "$LOG_ENABLE" = true ]; then
-            sed -i -e "s|^#SBATCH --output=.*|#SBATCH --output=$LOG_DIR/${NAMENEW}.out|" \
-                   -e "s|^#SBATCH --error=.*|#SBATCH --error=$LOG_DIR/${NAMENEW}.err|" "$SCRIPT_DIR/job_submit_ht.sh"
-        else
-            sed -i -e "s|^#SBATCH --output=.*|#SBATCH --output=/dev/null|" \
-                   -e "s|^#SBATCH --error=.*|#SBATCH --error=/dev/null|" "$SCRIPT_DIR/job_submit_ht.sh"
-        fi
-    elif [ "$JOB_SYSTEM" = "PBS" ]; then
-        sed -i -e "s|#PBS -N .*|#PBS -N ${NAMENEW}|" "$SCRIPT_DIR/job_submit_ht.sh"
-    fi
-    if [ "$JOB_SYSTEM" = "SLURM" ] && [ -n "$TARGET_NODE" ]; then
-        if grep -q "^#SBATCH --nodelist=" "$SCRIPT_DIR/job_submit_ht.sh"; then
-            sed -i -e "s|^#SBATCH --nodelist=.*|#SBATCH --nodelist=${TARGET_NODE}|" "$SCRIPT_DIR/job_submit_ht.sh"
-        elif grep -q "^# #SBATCH --nodelist=" "$SCRIPT_DIR/job_submit_ht.sh"; then
-            sed -i -e "s|^# #SBATCH --nodelist=.*|#SBATCH --nodelist=${TARGET_NODE}|" "$SCRIPT_DIR/job_submit_ht.sh"
-        else
-            # 将指定节点插入到作业脚本的 #SBATCH 指令区域
-            sed -i '3i #SBATCH --nodelist='"${TARGET_NODE}" "$SCRIPT_DIR/job_submit_ht.sh"
-        fi
-    fi
-    last_wid="${WORKER_IDS[$(( ${#WORKER_IDS[@]} - 1 ))]}"
+    WORKER_COUNT="${#WORKER_IDS[@]}"
+    COUNTER=$((COUNTER + WORKER_COUNT))
+
+    last_wid="${WORKER_IDS[$(( WORKER_COUNT - 1 ))]}"
     echo "正在提交第${last_wid}个任务…"
     if [ "$JOB_SYSTEM" = "SLURM" ]; then
         if [ "$LOG_ENABLE" = true ]; then
@@ -499,18 +472,40 @@ do
             JOB_OUT="/dev/null"
             JOB_ERR="/dev/null"
         fi
+        EXPORTS="ALL,RASPA_TOTAL_CPUS=${CPU_CORES},RASPA_WORK_DIR=${topdir},RASPA_OUTPUT_DIR=${SUBDIR},RASPA_SUBDIR=${SUBDIR},RASPA_WORKER_ID_START=${NAMENEW},RASPA_WORKER_COUNT=${WORKER_COUNT},RASPA_VERSION=${RASPA_VERSION:-raspa2}"
         if [ -n "$TARGET_NODE" ]; then
-            submit_result=$($SUBMIT_CMD --nodelist="$TARGET_NODE" -o "$JOB_OUT" -e "$JOB_ERR" "$SCRIPT_DIR/job_submit_ht.sh" 2>&1)
+            submit_result=$($SUBMIT_CMD --nodelist="$TARGET_NODE" --job-name="$NAMENEW" -o "$JOB_OUT" -e "$JOB_ERR" --export="$EXPORTS" "$JOB_TEMPLATE_LOCAL" 2>&1)
         else
-            submit_result=$($SUBMIT_CMD -o "$JOB_OUT" -e "$JOB_ERR" "$SCRIPT_DIR/job_submit_ht.sh" 2>&1)
+            submit_result=$($SUBMIT_CMD --job-name="$NAMENEW" -o "$JOB_OUT" -e "$JOB_ERR" --export="$EXPORTS" "$JOB_TEMPLATE_LOCAL" 2>&1)
         fi
     elif [ "$JOB_SYSTEM" = "PBS" ]; then
+        cd "$WORK_DIR" || exit 1
+        cp -rf "$JOB_TEMPLATE" "$SCRIPT_DIR/job_submit_ht.sh"
+        insert_exports_after_sbatch "$SCRIPT_DIR/job_submit_ht.sh" \
+            "export RASPA_TOTAL_CPUS=\"${CPU_CORES}\"" \
+            "export RASPA_WORK_DIR=\"${topdir}\"" \
+            "export RASPA_OUTPUT_DIR=\"${SUBDIR}\"" \
+            "export RASPA_SUBDIR=\"${SUBDIR}\"" \
+            "export RASPA_WORKER_ID=\"${NAMENEW}\"" \
+            "export RASPA_WORKER_IDS=\"${WORKER_IDS_CSV}\"" \
+            "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
+        sed -i -e "s|#PBS -N .*|#PBS -N ${NAMENEW}|" "$SCRIPT_DIR/job_submit_ht.sh"
         if [ "$LOG_ENABLE" = true ]; then
             submit_result=$($SUBMIT_CMD -N "$NAMENEW" -o "$LOG_DIR/${NAMENEW}.out" -e "$LOG_DIR/${NAMENEW}.err" "$SCRIPT_DIR/job_submit_ht.sh" 2>&1)
         else
             submit_result=$($SUBMIT_CMD -N "$NAMENEW" "$SCRIPT_DIR/job_submit_ht.sh" 2>&1)
         fi
     else
+        cd "$WORK_DIR" || exit 1
+        cp -rf "$JOB_TEMPLATE" "$SCRIPT_DIR/job_submit_ht.sh"
+        insert_exports_after_sbatch "$SCRIPT_DIR/job_submit_ht.sh" \
+            "export RASPA_TOTAL_CPUS=\"${CPU_CORES}\"" \
+            "export RASPA_WORK_DIR=\"${topdir}\"" \
+            "export RASPA_OUTPUT_DIR=\"${SUBDIR}\"" \
+            "export RASPA_SUBDIR=\"${SUBDIR}\"" \
+            "export RASPA_WORKER_ID=\"${NAMENEW}\"" \
+            "export RASPA_WORKER_IDS=\"${WORKER_IDS_CSV}\"" \
+            "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
         submit_result=$($SUBMIT_CMD 2>&1)
     fi
     echo "$submit_result"

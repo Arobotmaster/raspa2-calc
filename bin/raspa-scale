@@ -19,44 +19,6 @@ usage() {
   echo "      --limit-only                仅写入并发上限，不提交/取消作业"
 }
 
-insert_exports_after_sbatch() {
-  local script_path="$1"
-  shift || true
-  if [ $# -eq 0 ]; then
-    return 0
-  fi
-  python3 - "$script_path" "$@" <<'PY'
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-exports = sys.argv[2:]
-
-if not path.exists():
-    sys.exit(0)
-
-content = path.read_text(encoding="utf-8").splitlines()
-if not content:
-    sys.exit(0)
-
-header = [content[0]]
-idx = 1
-while idx < len(content) and content[idx].startswith("#SBATCH"):
-    header.append(content[idx])
-    idx += 1
-
-rest = content[idx:]
-
-with path.open("w", encoding="utf-8") as fh:
-    for line in header:
-        fh.write(line + "\n")
-    for exp in exports:
-        fh.write(exp + "\n")
-    for line in rest:
-        fh.write(line + "\n")
-PY
-}
-
 INTERACTIVE=0
 ACCEPT_AUTO=0
 APPLY_ACTIONS=0
@@ -273,6 +235,7 @@ USEFUL_TASKS=$((RUNNING_COUNT + PENDING_COUNT))
 CL_TOTAL=0; CL_ALLOC=0; CL_OTHER=0; CL_IDLE=0
 CL_METHOD="none"
 declare -a CL_NODE_LINES=()
+declare -A NODE_TPC=()
 
 # 优先使用统一的 Python 资源探测，保持与 raspa-calc 一致
 PY_RES_JSON=""
@@ -304,6 +267,10 @@ PY
       case "$L" in NODE::*)
         IFS='::' read -r _ tag_nm tag_tot tag_alloc tag_topo tag_load tag_free <<< "$L"
         CL_NODE_LINES+=("  ${tag_nm}: 总${tag_tot}线程 (拓扑${tag_topo}), 已分配${tag_alloc}, CPULoad=${tag_load}, 估计可用=${tag_free}")
+        tpc_raw="${tag_topo##*:}"
+        if [[ "$tpc_raw" =~ ^[0-9]+$ ]] && [ "$tpc_raw" -ge 1 ]; then
+          NODE_TPC["$tag_nm"]="$tpc_raw"
+        fi
       ;; esac
     done < <(printf "%s\n" "$PY_OK")
     CL_METHOD="python_task_runner"
@@ -338,6 +305,10 @@ if [ "$CL_METHOD" = "none" ] && command -v sinfo >/dev/null 2>&1; then
         CL_OTHER=$((CL_OTHER + c_other))
         CL_IDLE=$((CL_IDLE + free))
         CL_NODE_LINES+=("  ${nm}: 总${capacity}核 (拓扑${topo:-?}), 已分配${alloc_eff}, CPULoad=${load_disp}, 估计可用=${free}")
+        tpc_raw="${topo##*:}"
+        if [[ "$tpc_raw" =~ ^[0-9]+$ ]] && [ "$tpc_raw" -ge 1 ]; then
+          NODE_TPC["$nm"]="$tpc_raw"
+        fi
       done <<< "$out"
       CL_METHOD="sinfo_per_node"
     fi
@@ -391,7 +362,7 @@ else
     NEW_LIMIT=${CUR_LIMIT:-1}
   else
     if [ "$INTERACTIVE" -eq 1 ]; then
-      prompt="请输入并发上限 (1-${USEFUL_TASKS}) [建议:${RECOMMENDED}${CUR_LIMIT:+, 当前:${CUR_LIMIT}}]: "
+      prompt="请输入并发上限 (0-${USEFUL_TASKS}) [建议:${RECOMMENDED}${CUR_LIMIT:+, 当前:${CUR_LIMIT}}]: "
       read -r -p "$prompt" input_limit || input_limit=""
       if [ -z "$input_limit" ]; then
         NEW_LIMIT=${RECOMMENDED:-1}
@@ -411,8 +382,8 @@ else
   fi
 fi
 
-if ! [[ "$NEW_LIMIT" =~ ^[0-9]+$ ]] || [ "${NEW_LIMIT}" -lt 1 ]; then
-  echo "错误: 并发上限必须为正整数 (得到: '${NEW_LIMIT}')" >&2
+if ! [[ "$NEW_LIMIT" =~ ^[0-9]+$ ]] || [ "${NEW_LIMIT}" -lt 0 ]; then
+  echo "错误: 并发上限必须为非负整数 (得到: '${NEW_LIMIT}')" >&2
   exit 1
 fi
 
@@ -620,8 +591,32 @@ if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1; then
       cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_JOB_TEMPLATES/runjobs.sh"
     fi
     chmod 755 "$WORK_JOB_TEMPLATES/runjobs.sh"
+
+    # slurmctld 只需要在提交时读取脚本；避免在 NFS 上反复 mktemp/cp/sed 写脚本导致提交变慢
+    local submit_tmp_base
+    submit_tmp_base="${RASPA_SUBMIT_TMP_BASE:-${TMPDIR:-/tmp}}"
+    mkdir -p "$submit_tmp_base" 2>/dev/null || true
+
     local TMP_SCRIPT
-    TMP_SCRIPT=$(mktemp "$TARGET_DIR/.job_submit_ht.XXXXXX.sh")
+    if TMP_SCRIPT=$(mktemp "${submit_tmp_base%/}/raspa2-calc.job_submit.XXXXXX.sh" 2>/dev/null); then
+      :
+    else
+      TMP_SCRIPT=$(mktemp "/tmp/raspa2-calc.job_submit.XXXXXX.sh")
+    fi
+    cp -f "$JOB_TEMPLATE" "$TMP_SCRIPT"
+    chmod 755 "$TMP_SCRIPT"
+
+    local JOBS_BUF
+    if JOBS_BUF=$(mktemp "${submit_tmp_base%/}/raspa2-calc.jobsbuf.XXXXXX" 2>/dev/null); then
+      :
+    else
+      JOBS_BUF=$(mktemp "/tmp/raspa2-calc.jobsbuf.XXXXXX")
+    fi
+    : > "$JOBS_BUF"
+
+    local submit_sleep
+    submit_sleep="${RASPA_SCALE_SUBMIT_SLEEP:-${RASPA_SUBMIT_SLEEP:-0}}"
+
     local now
     now=$(date +%s)
     IFS=',' read -r -a arr <<< "$missing_csv"
@@ -741,12 +736,29 @@ PY
     fi
     if [ -n "$NODE_PLAN" ]; then
       local PRIORITY_RAW="${RASPA_NODE_PRIORITIES:-}"
+      # 构建 TPC_MAP 字符串供 Python 使用
+      local TPC_MAP_STR=""
+      for n in "${!NODE_TPC[@]}"; do
+        TPC_MAP_STR+="${n}:${NODE_TPC[$n]},"
+      done
+      
       local py_out plan_queue_str plan_str_sorted
-      py_out=$(NODE_PLAN_INPUT="$NODE_PLAN" PRIORITIES="$PRIORITY_RAW" python - <<'PY' 2>/dev/null || true
+      py_out=$(NODE_PLAN_INPUT="$NODE_PLAN" PRIORITIES="$PRIORITY_RAW" TPC_MAP="$TPC_MAP_STR" python - <<'PY' 2>/dev/null || true
 import os
 
 plan = os.environ.get("NODE_PLAN_INPUT", "").strip()
 prio_raw = os.environ.get("PRIORITIES", "").strip()
+tpc_raw = os.environ.get("TPC_MAP", "").strip()
+
+tpc_map = {}
+for part in tpc_raw.split(','):
+    if ':' not in part:
+        continue
+    n, v = part.split(':', 1)
+    try:
+        tpc_map[n.strip()] = int(v.strip())
+    except:
+        pass
 
 entries = []
 for part in plan.split(','):
@@ -777,14 +789,19 @@ if priority:
 
 plan_str = ",".join(f"{n}:{c}" for n, c in entries)
 queue = []
-# 轮询展开，避免前段任务集中到单节点
+# 轮询展开，但保留打包亲和性（每次取 TPC 个）
 entries_rr = [[n, c] for n, c in entries]
 while True:
     added = False
     for item in entries_rr:
         if item[1] > 0:
-            queue.append(item[0])
-            item[1] -= 1
+            # 每次取 min(remain, tpc) 个，确保能打包
+            node = item[0]
+            tpc = tpc_map.get(node, 1)
+            if tpc < 1: tpc = 1
+            chunk = tpc if item[1] >= tpc else item[1]
+            queue.extend([node] * chunk)
+            item[1] -= chunk
             added = True
     if not added:
         break
@@ -828,78 +845,270 @@ PY
       fi
       plan_len=${#plan_queue[@]}
     fi
+    # 汇总节点计划（worker -> job），用于日志展示
+    if [ "$plan_len" -gt 0 ]; then
+      declare -A PLAN_WORKERS=() PLAN_JOBS=()
+      for n in "${plan_queue[@]}"; do
+        [ -n "$n" ] || continue
+        PLAN_WORKERS["$n"]=$(( ${PLAN_WORKERS["$n"]:-0} + 1 ))
+      done
+      for n in "${!PLAN_WORKERS[@]}"; do
+        tpc=${NODE_TPC["$n"]:-1}
+        [ -z "$tpc" ] && tpc=1
+        if ! [[ "$tpc" =~ ^[0-9]+$ ]]; then tpc=1; fi
+        [ "$tpc" -lt 1 ] && tpc=1
+        w=${PLAN_WORKERS["$n"]}
+        jobs=$(( (w + tpc - 1) / tpc ))
+        PLAN_JOBS["$n"]=$jobs
+      done
+      if [ ${#PLAN_JOBS[@]} -gt 0 ]; then
+        plan_workers_str=""
+        for n in "${!PLAN_WORKERS[@]}"; do
+          plan_workers_str+="${n}:${PLAN_WORKERS[$n]},"
+        done
+        plan_jobs_str=""
+        for n in "${!PLAN_JOBS[@]}"; do
+          plan_jobs_str+="${n}:${PLAN_JOBS[$n]},"
+        done
+        plan_workers_str=${plan_workers_str%,}
+        plan_jobs_str=${plan_jobs_str%,}
+        echo "节点分配计划(线程->作业): ${plan_workers_str// /} -> ${plan_jobs_str// /}"
+      fi
+    fi
+
     local plan_index=0
     local job_base_dir
-    for name in "${arr[@]}"; do
+    local total_workers=${#arr[@]}
+    local planned_jobs=0
+    local idx=0
+    while [ $idx -lt $total_workers ]; do
+      planned_jobs=$((planned_jobs + 1))
       TARGET_NODE=""
-      # 准备脚本
-      cp -f "$JOB_TEMPLATE" "$TMP_SCRIPT"
-      sed -i -e "s|^#SBATCH --job-name=.*|#SBATCH --job-name=${name}|" "$TMP_SCRIPT"
+      local pack_size=1
       if [ "$SUBDIR" = "." ]; then
         job_base_dir="$TARGET_DIR"
       else
         job_base_dir="$(cd "$TARGET_DIR/.." && pwd -P)"
       fi
       if [ -n "$NODE_PLAN" ] && [ "$plan_len" -gt 0 ]; then
-        if [ $plan_index -lt $plan_len ]; then
-          TARGET_NODE="${plan_queue[$plan_index]}"
-          plan_index=$((plan_index + 1))
-        else
-          TARGET_NODE=""
+        if [ $plan_index -ge $plan_len ]; then
+          plan_index=0
         fi
+        TARGET_NODE="${plan_queue[$plan_index]}"
         if [ -n "$TARGET_NODE" ]; then
-          sed -i -e "s|^#SBATCH --nodelist=.*|#SBATCH --nodelist=${TARGET_NODE}|" \
-                 -e "s|^# #SBATCH --nodelist=.*|#SBATCH --nodelist=${TARGET_NODE}|" "$TMP_SCRIPT"
+          pack_size=${NODE_TPC["$TARGET_NODE"]:-1}
+          if ! [[ "$pack_size" =~ ^[0-9]+$ ]] || [ "$pack_size" -lt 1 ]; then
+            pack_size=1
+          fi
+          # 确保不跨节点打包：仅在队列连续同节点时才使用 pack_size
+          same_count=0
+          while [ $((plan_index + same_count)) -lt $plan_len ] && [ "${plan_queue[$((plan_index + same_count))]}" = "$TARGET_NODE" ] && [ $same_count -lt $pack_size ]; do
+            same_count=$((same_count + 1))
+          done
+          pack_size=$same_count
+          [ "$pack_size" -lt 1 ] && pack_size=1
+          # 跳过已消费的节点槽位
+          plan_index=$((plan_index + pack_size))
+          if [ $plan_index -ge $plan_len ]; then
+            plan_index=0
+          fi
         fi
       fi
-      insert_exports_after_sbatch "$TMP_SCRIPT" \
-        "export RASPA_TOTAL_CPUS=\"${NEW_LIMIT}\"" \
-        "export RASPA_WORK_DIR=\"${job_base_dir}\"" \
-        "export RASPA_OUTPUT_DIR=\"${SUBDIR}\"" \
-        "export RASPA_SUBDIR=\"${SUBDIR}\"" \
-        "export RASPA_WORKER_ID=\"${name}\"" \
-        "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
+      # 剩余 worker 不足时降级 pack_size
+      remaining=$((total_workers - idx))
+      if [ "$pack_size" -gt "$remaining" ]; then
+        pack_size="$remaining"
+      fi
+
+      # 取本作业的 worker ID 列表
+      local -a WORKER_IDS=()
+      for ((j=0; j<pack_size; j++)); do
+        WORKER_IDS+=("${arr[$((idx + j))]}")
+      done
+      local WORKER_IDS_CSV
+      WORKER_IDS_CSV=$(IFS=,; echo "${WORKER_IDS[*]}")
+      local NAMENEW="${WORKER_IDS[0]}"
+      local -a SBATCH_EXTRA_ARGS=()
+      if [ "$pack_size" -gt 1 ]; then
+        SBATCH_EXTRA_ARGS+=(--cpus-per-task="$pack_size")
+      fi
+
       # 提交（强制日志到 1log）
-      out="$LOG_DIR/${name}.out"; err="$LOG_DIR/${name}.err"
+      out="$LOG_DIR/${NAMENEW}.out"; err="$LOG_DIR/${NAMENEW}.err"
       if [ -n "$TARGET_NODE" ]; then
-        submit_result=$(sbatch --nodelist="$TARGET_NODE" -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1)
+        submit_result=$(
+          RASPA_TOTAL_CPUS="${NEW_LIMIT}" \
+          RASPA_WORK_DIR="${job_base_dir}" \
+          RASPA_OUTPUT_DIR="${SUBDIR}" \
+          RASPA_SUBDIR="${SUBDIR}" \
+          RASPA_WORKER_ID="${NAMENEW}" \
+          RASPA_WORKER_IDS="${WORKER_IDS_CSV}" \
+          RASPA_VERSION="${RASPA_VERSION:-raspa2}" \
+          sbatch --export=ALL "${SBATCH_EXTRA_ARGS[@]}" --nodelist="$TARGET_NODE" -J "$NAMENEW" -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1
+        )
       else
-        submit_result=$(sbatch -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1)
+        submit_result=$(
+          RASPA_TOTAL_CPUS="${NEW_LIMIT}" \
+          RASPA_WORK_DIR="${job_base_dir}" \
+          RASPA_OUTPUT_DIR="${SUBDIR}" \
+          RASPA_SUBDIR="${SUBDIR}" \
+          RASPA_WORKER_ID="${NAMENEW}" \
+          RASPA_WORKER_IDS="${WORKER_IDS_CSV}" \
+          RASPA_VERSION="${RASPA_VERSION:-raspa2}" \
+          sbatch --export=ALL "${SBATCH_EXTRA_ARGS[@]}" -J "$NAMENEW" -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1
+        )
       fi
       echo "$submit_result"
       if [[ "$submit_result" =~ Submitted\ batch\ job\ ([0-9]+) ]]; then
         jid="${BASH_REMATCH[1]}"
-        # 附加记录需加锁，避免并发写入交错
-        {
-          exec 9>>"$JOBS_FILE"
-          flock -n 9 || true
-          printf "%s %s %s\n" "$jid" "$name" "$now" >&9
-          flock -u 9
-          exec 9>&-
-        }
+        printf "%s %s %s %s\n" "$jid" "$NAMENEW" "$now" "$WORKER_IDS_CSV" >> "$JOBS_BUF"
       fi
-      sleep 0.2
+      idx=$((idx + pack_size))
+      if [ -n "$submit_sleep" ] && [[ "$submit_sleep" =~ ^[0-9]+([.][0-9]+)?$ ]] && [ "$submit_sleep" != "0" ] && [ "$submit_sleep" != "0.0" ]; then
+        sleep "$submit_sleep"
+      fi
     done
+    local submitted_jobs=0
+    submitted_jobs=$(wc -l < "$JOBS_BUF" 2>/dev/null || echo 0)
+    echo "提交汇总: worker=${total_workers}, 计划SLURM作业=${planned_jobs}, 成功提交作业=${submitted_jobs}"
+
+    # 批量追加 .raspa_jobs.list，减少 NFS 元数据压力
+    if [ -s "$JOBS_BUF" ]; then
+      {
+        exec 9>>"$JOBS_FILE"
+        flock -n 9 || true
+        cat "$JOBS_BUF" >&9
+        flock -u 9 || true
+        exec 9>&-
+      }
+    fi
+    rm -f "$JOBS_BUF" 2>/dev/null || true
     rm -f "$TMP_SCRIPT" 2>/dev/null || true
   }
 
-  # 读取当前活跃作业列表（仅统计属于本批次的 JobId）
+  # 读取当前活跃作业列表，并估算活跃 worker 数
   LIVE=0
   INITIAL_RUNNING=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}')
-  if [ -f "$JOBS_FILE" ]; then
-    # 从 squeue 取当前我的作业 JobId 列表
+  ACTIVE_FILE="$WORKERS_DIR/.active_jobs.tsv"
+  ACTIVE_WORKERS_FILE="$WORKERS_DIR/.active_workers.list"
+  : > "$ACTIVE_FILE"
+  : > "$ACTIVE_WORKERS_FILE"
+  SQUEUE_OK=0
+  if command -v squeue >/dev/null 2>&1; then
+    if squeue -u "$USER" -h -o "%i" >/dev/null 2>&1; then
+      SQUEUE_OK=1
+    fi
+  fi
+  if [ "$SQUEUE_OK" -eq 1 ]; then
+    PY_TARGET="$TARGET_DIR" PY_USER="$USER" python - <<'PY' 2>/dev/null > "$ACTIVE_FILE" || true
+import os, subprocess, sys
+
+target = os.environ.get("PY_TARGET", "").rstrip("/") + "/"
+user = os.environ.get("PY_USER", "")
+if not target or not user:
+    sys.exit(0)
+
+try:
+    out = subprocess.check_output(
+        ["squeue", "-u", user, "-h", "-O", "jobid:20,name:40,stdout:400"],
+        stderr=subprocess.DEVNULL,
+    ).decode(errors="ignore")
+except Exception:
+    sys.exit(0)
+
+for raw in out.splitlines():
+    parts = raw.strip().split(None, 2)
+    if len(parts) < 3:
+        continue
+    jid, name, stdout = parts[0], parts[1], parts[2]
+    if stdout.startswith(target):
+        print(f"{jid} {name} {stdout}")
+PY
+  fi
+  LIVE_WORKERS=0
+  LIVE_JOBS=0
+  EXPANDED_THIS_ROUND=0
+  if [ -s "$ACTIVE_FILE" ]; then
+    LIVE_JOBS=$(wc -l < "$ACTIVE_FILE" 2>/dev/null || echo 0)
+    LIVE=$(wc -l < "$ACTIVE_FILE" 2>/dev/null || echo 0)
+    LIVE_WORKERS=$(ACTIVE_PATH="$ACTIVE_FILE" JOBS_PATH="$JOBS_FILE" DUMP_PATH="$ACTIVE_WORKERS_FILE" python - <<'PY' 2>/dev/null || true
+import os, re
+
+active_path = os.environ.get("ACTIVE_PATH", "")
+jobs_path = os.environ.get("JOBS_PATH", "")
+dump_path = os.environ.get("DUMP_PATH", "")
+csv_re = re.compile(r"^[0-9]+(,[0-9]+)*$")
+
+job_map = {}
+if jobs_path and os.path.exists(jobs_path):
+    with open(jobs_path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            parts = raw.strip().split()
+            if len(parts) < 2:
+                continue
+            jid = parts[0]
+            worker_csv = parts[3] if len(parts) >= 4 else ""
+            job_map[jid] = worker_csv or parts[1]
+
+ids = set()
+if active_path and os.path.exists(active_path):
+    with open(active_path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            parts = raw.strip().split()
+            if len(parts) < 2:
+                continue
+            jid, name = parts[0], parts[1]
+            csv_val = job_map.get(jid, "")
+            if csv_val and csv_re.match(csv_val):
+                ids.update(int(x) for x in csv_val.split(",") if x.isdigit())
+            elif name.isdigit():
+                ids.add(int(name))
+if dump_path:
+    try:
+        with open(dump_path, "w", encoding="utf-8") as fh:
+            for i in sorted(ids):
+                fh.write(f"{i}\n")
+    except Exception:
+        pass
+print(len(ids))
+PY
+    )
+  fi
+  # 若过滤列表为空，则回退到 .raspa_jobs 与 squeue 的交集估计
+  if [ "$LIVE" -le 0 ] && [ -f "$JOBS_FILE" ] && [ "$SQUEUE_OK" -eq 1 ]; then
     mapfile -t ALL_MY_JOBS < <(squeue -u "$USER" -h -o "%i" 2>/dev/null | sort -u)
-    # 从 .raspa_jobs.list 取追踪的 JobId
     mapfile -t TRACKED < <(awk '{print $1}' "$JOBS_FILE" | sort -u)
-    # 交集计数
     if [ ${#ALL_MY_JOBS[@]} -gt 0 ] && [ ${#TRACKED[@]} -gt 0 ]; then
       LIVE=$(comm -12 <(printf "%s\n" "${ALL_MY_JOBS[@]}") <(printf "%s\n" "${TRACKED[@]}" ) | wc -l)
     fi
   fi
-
-  # 若追踪文件缺失或低估，使用运行中目录数兜底，提高 LIVE 估计精度
-  if [ "$INITIAL_RUNNING" -gt "$LIVE" ]; then
+  # 若仍为0，则用 __running 目录兜底；否则优先使用 worker 计数
+  if [ "$LIVE_WORKERS" -gt 0 ]; then
+    LIVE=$LIVE_WORKERS
+  elif [ "$SQUEUE_OK" -eq 0 ] && [ "$INITIAL_RUNNING" -gt "$LIVE" ]; then
     LIVE=$INITIAL_RUNNING
+  fi
+  # 补充 worker 计数，确保后续缩容按“实际 worker 数”计算
+  if [ "$LIVE_WORKERS" -le 0 ] && [ "$LIVE" -gt 0 ]; then
+    LIVE_WORKERS="$LIVE"
+  fi
+  TOTAL_LIVE_WORKERS="$LIVE_WORKERS"
+
+  # 若调度器未发现任何相关作业，但目录中仍有 __running 标记，视为孤儿并恢复为待处理
+  if [ "$SQUEUE_OK" -eq 1 ] && [ "$LIVE_WORKERS" -eq 0 ] && [ "$LIVE_JOBS" -eq 0 ]; then
+    mapfile -t ORPHAN_DIRS < <(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' -mmin +3 2>/dev/null | sort)
+    if [ ${#ORPHAN_DIRS[@]} -gt 0 ]; then
+      echo "提示: 检测到 ${#ORPHAN_DIRS[@]} 个 __running 目录未对应调度作业，自动恢复为待处理以继续补交。"
+      ts=$(date +%s)
+      for d in "${ORPHAN_DIRS[@]}"; do
+        base="${d%__running}"
+        if [ ! -e "$base" ]; then
+          mv "$d" "$base" 2>/dev/null || true
+        else
+          mv "$d" "${base}__orphan_${ts}" 2>/dev/null || true
+        fi
+      done
+    fi
   fi
 
   # 如未启用作业追踪文件，则仅写入上限，不做自动提交/缩容（避免错误扩容）
@@ -996,11 +1205,11 @@ if false; then
 fi
   # 扩容：提交缺口（需要追踪文件）
   SKIP_EXPAND=0
-  if [ "$INITIAL_RUNNING" -ge "$NEW_LIMIT" ]; then
+  if [ "$LIVE_WORKERS" -ge "$NEW_LIMIT" ]; then
     SKIP_EXPAND=1
   fi
 
-  if [ "$SKIP_EXPAND" -eq 0 ] && [ -s "$JOBS_FILE" ] && [ "$LIVE" -lt "$NEW_LIMIT" ]; then
+  if [ "$SKIP_EXPAND" -eq 0 ] && [ -s "$JOBS_FILE" ] && [ "$LIVE_WORKERS" -lt "$NEW_LIMIT" ]; then
     # 统计当前可并发的“有意义”上限：已在跑的任务数(__running) + 待处理的任务数(mc*)
     RUNNING_COUNT=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}')
     # 仅统计存在 simulation.input 或 simulation.json 的待处理目录
@@ -1010,6 +1219,21 @@ fi
     { [ -f "$d/simulation.input" ] || [ -f "$d/simulation.json" ]; } && PENDING_COUNT=$((PENDING_COUNT+1))
     done < <(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%p\n' 2>/dev/null)
 
+    # 指针重置逻辑：如果有待处理任务但指针已耗尽，则删除指针以触发 Worker 重新扫描
+    if [ "$PENDING_COUNT" -gt 0 ]; then
+        q_next="$TARGET_DIR/.raspa_queue/next_id"
+        q_last="$TARGET_DIR/.raspa_queue/last_id"
+        if [ -f "$q_next" ] && [ -f "$q_last" ]; then
+            curr_ptr=$(awk 'NR==1{print $1; exit}' "$q_next" 2>/dev/null)
+            last_ptr=$(awk 'NR==1{print $1; exit}' "$q_last" 2>/dev/null)
+            # 如果 next_id > last_id，说明队列已空。但 PENDING_COUNT > 0 说明有任务回滚了。
+            if [ -n "$curr_ptr" ] && [ -n "$last_ptr" ] && [ "$curr_ptr" -gt "$last_ptr" ]; then
+                echo "提示: 检测到 $PENDING_COUNT 个回滚任务且队列指针已耗尽 ($curr_ptr > $last_ptr)，自动重置指针以加速认领..."
+                rm -f "$q_next"
+            fi
+        fi
+    fi
+
     # “有意义”的目标并发 = min(用户目标, RUNNING + PENDING)
     USEFUL_TARGET=$NEW_LIMIT
     TOTAL_AVAILABLE=$((RUNNING_COUNT + PENDING_COUNT))
@@ -1017,22 +1241,23 @@ fi
       USEFUL_TARGET=$TOTAL_AVAILABLE
     fi
 
-    # 计算现存名集合，并找出 1..NEW_LIMIT 中缺口
-    mapfile -t LIVE_IDS < <(comm -12 <(awk '{print $1}' "$JOBS_FILE" | sort -u) <(squeue -u "$USER" -h -o "%i" | sort -u))
+    # 计算现存 worker 集合，并找出 1..NEW_LIMIT 中缺口
+    mapfile -t PRESENT_WORKERS < "$ACTIVE_WORKERS_FILE" 2>/dev/null
+    if [ ${#PRESENT_WORKERS[@]} -eq 0 ]; then
+      # 兜底：用 StdOut 过滤后的 job name（数字）推断
+      mapfile -t PRESENT_WORKERS < <(awk '{print $2}' "$ACTIVE_FILE" 2>/dev/null | awk '/^[0-9]+$/{print $1}' | sort -n)
+    fi
     present=""
-    for jid in "${LIVE_IDS[@]}"; do
-      [ -n "$jid" ] || continue
-      nm=$(awk -v J="$jid" '$1==J{print $2; exit}' "$JOBS_FILE")
-      [ -n "$nm" ] && present+=" $nm"
+    for wid in "${PRESENT_WORKERS[@]}"; do
+      [ -n "$wid" ] && present+=" $wid"
     done
-    # 缺口列表（按照 1..NEW_LIMIT）
     missing_list=()
     for ((i=1;i<=NEW_LIMIT;i++)); do
       case " $present " in *" $i "*) : ;; *) missing_list+=("$i");; esac
     done
 
     # 本次最多需要补交的数量
-    NEED=$((USEFUL_TARGET - LIVE))
+    NEED=$((USEFUL_TARGET - LIVE_WORKERS))
     [ "$NEED" -lt 0 ] && NEED=0
 
     # 截断缺口到 NEED 个
@@ -1047,80 +1272,255 @@ fi
     if [ ${#to_submit[@]} -gt 0 ]; then
       IFS=',' read -r -a _dump <<< "${to_submit[*]}" # no-op to please shellcheck
       submit_csv=$(IFS=,; echo "${to_submit[*]}")
-      echo "扩容: 当前活跃=$LIVE, 目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}(运行中=${RUNNING_COUNT}, 待处理=${PENDING_COUNT})，计划补交=${#to_submit[@]}: ${submit_csv}"
+      echo "扩容: 当前活跃=${LIVE_WORKERS}, 目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}(运行中=${RUNNING_COUNT}, 待处理=${PENDING_COUNT})，计划补交worker=${#to_submit[@]}: ${submit_csv}"
       submit_missing "$submit_csv"
+      EXPANDED_THIS_ROUND=1
     else
-      echo "扩容: 当前活跃=$LIVE, 目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}，无需补交"
+      echo "扩容: 当前活跃=${LIVE_WORKERS}, 目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}，无需补交"
     fi
   fi
 
-  # 缩容：优先保留编号 <= NEW_LIMIT 的 worker，仅对编号 > NEW_LIMIT 的作业执行 scancel（需要追踪文件）
-  if [ -s "$JOBS_FILE" ] && [ "$LIVE" -gt "$NEW_LIMIT" ]; then
-    TO_KILL=$((LIVE - NEW_LIMIT))
-    echo "缩容: 当前活跃=$LIVE, 目标=$NEW_LIMIT，将终止 $TO_KILL 个作业"
+  # 缩容：按实际 worker 数计算缺口，优先回收 worker_id 大于目标的作业
+  if [ -s "$JOBS_FILE" ] && [ "$LIVE_WORKERS" -gt "$NEW_LIMIT" ]; then
+    EXCESS_WORKERS=$((LIVE_WORKERS - NEW_LIMIT))
+    echo "缩容: 当前活跃=${LIVE_WORKERS} worker(作业=${LIVE_JOBS}), 目标=$NEW_LIMIT，需要释放约 ${EXCESS_WORKERS} worker"
 
-    # 构建当前活跃作业列表（受管的交集）
-    mapfile -t LIVE_IDS < <(comm -12 <(awk '{print $1}' "$JOBS_FILE" | sort -u) <(squeue -u "$USER" -h -o "%i" | sort -u))
-
-    # 选择编号 > NEW_LIMIT 的作业作为主要裁剪对象
     : > "$WORKERS_DIR/.kill_jobs"
-    for jid in "${LIVE_IDS[@]}"; do
-      [ -n "$jid" ] || continue
-      name=$(awk -v J="$jid" '$1==J{print $2; exit}' "$JOBS_FILE")
-      # 若未查到编号，则跳过由后续兜底处理
-      if [ -n "$name" ] && [ "$name" -gt "$NEW_LIMIT" ] 2>/dev/null; then
-        echo "$jid" >> "$WORKERS_DIR/.kill_jobs"
-      fi
-    done
-    # 若候选多于需要，裁剪到 TO_KILL；若不足，按最短运行时间从剩余非保留作业中补齐
-    sort -u "$WORKERS_DIR/.kill_jobs" | head -n "$TO_KILL" > "$WORKERS_DIR/.kill_jobs.crop"
-    mv "$WORKERS_DIR/.kill_jobs.crop" "$WORKERS_DIR/.kill_jobs"
+    LIMIT_ENV="$NEW_LIMIT" EXCESS_ENV="$EXCESS_WORKERS" ACTIVE_PATH="$ACTIVE_FILE" JOBS_PATH="$JOBS_FILE" python - "$WORKERS_DIR/.kill_jobs" <<'PY'
+import os, sys, re
 
-    CURRENT_KILL=$(wc -l < "$WORKERS_DIR/.kill_jobs" 2>/dev/null || echo 0)
-    if [ "$CURRENT_KILL" -lt "$TO_KILL" ]; then
-      NEED=$((TO_KILL - CURRENT_KILL))
-      # 从 .workers 里选“最短运行时间”的非保留作业（编号未映射或 <=NEW_LIMIT 的不选）
-      while IFS= read -r f; do
-        [ -f "$f" ] || continue
-        worker_id=$(awk -F'=| ' '/^jobid=/{print $2}' "$f" | head -1)
-        start=$(awk -F'=| ' '/^start=/{print $2}' "$f" | head -1)
-        [ -z "$worker_id" ] && continue
-        # 通过 JOBS_FILE 将 worker 编号映射回 SLURM JobId
-        slurm_jid=$(awk -v N="$worker_id" '$2==N{print $1; exit}' "$JOBS_FILE")
-        [ -z "$slurm_jid" ] && continue
-        # 仅当 worker 编号未被保留（> NEW_LIMIT）时才纳入备选
-        if [ "$worker_id" -gt "$NEW_LIMIT" ] 2>/dev/null; then
-          [ -z "$start" ] && start=0
-          printf "%010d %s\n" "$start" "$slurm_jid"
-        fi
-      done < <(find "$WORKERS_DIR" -type f -maxdepth 1 -mindepth 1 2>/dev/null) | sort -n | awk '{print $2}' | grep -vxF -f "$WORKERS_DIR/.kill_jobs" | head -n "$NEED" >> "$WORKERS_DIR/.kill_jobs"
-    fi
+limit = int(os.environ.get("LIMIT_ENV", "0") or 0)
+excess = int(os.environ.get("EXCESS_ENV", "0") or 0)
+active_path = os.environ.get("ACTIVE_PATH", "")
+jobs_path = os.environ.get("JOBS_PATH", "")
+out_path = sys.argv[1]
+csv_re = re.compile(r"^[0-9]+(,[0-9]+)*$")
+
+# jobid -> worker ids list
+job_workers = {}
+if jobs_path and os.path.exists(jobs_path):
+    with open(jobs_path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            parts = raw.strip().split()
+            if len(parts) < 2:
+                continue
+            jid, name = parts[0], parts[1]
+            worker_csv = parts[3] if len(parts) >= 4 else ""
+            ids = []
+            if worker_csv and csv_re.match(worker_csv):
+                ids = [int(x) for x in worker_csv.split(",") if x.isdigit()]
+            elif name.isdigit():
+                ids = [int(name)]
+            job_workers[jid] = ids
+
+active_jobs = []
+if active_path and os.path.exists(active_path):
+    with open(active_path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            parts = raw.strip().split()
+            if len(parts) < 2:
+                continue
+            jid, name = parts[0], parts[1]
+            ids = job_workers.get(jid, [])
+            if not ids and name.isdigit():
+                ids = [int(name)]
+            if not ids:
+                ids = [0]
+            count = len(ids)
+            min_id = min([x for x in ids if x > 0] or [10**9])
+            all_gt_limit = all(x > limit for x in ids if x > 0)
+            active_jobs.append(
+                {
+                    "jid": jid,
+                    "ids": ids,
+                    "count": count if count > 0 else 1,
+                    "min_id": min_id,
+                    "all_gt_limit": all_gt_limit,
+                }
+            )
+
+if excess <= 0 or not active_jobs:
+    sys.exit(0)
+
+# 优先选择全部 worker_id 大于 limit 的作业，其次按最小 worker_id 由大到小
+primary = [j for j in active_jobs if j["all_gt_limit"] or j["min_id"] > limit]
+primary = sorted(primary, key=lambda j: j["min_id"], reverse=True)
+rest = [j for j in active_jobs if j not in primary]
+rest = sorted(rest, key=lambda j: j["min_id"], reverse=True)
+
+selected = []
+released = 0
+for bucket in (primary, rest):
+    for job in bucket:
+        if released >= excess:
+            break
+        selected.append(job)
+        released += job["count"]
+    if released >= excess:
+        break
+
+# 若仍不足，以 JobId 倒序兜底
+if released < excess:
+    remaining = [j for j in active_jobs if j not in selected]
+    remaining = sorted(remaining, key=lambda j: int(j["jid"]), reverse=True)
+    for job in remaining:
+        if released >= excess:
+            break
+        selected.append(job)
+        released += job["count"]
+
+with open(out_path, "w", encoding="utf-8") as fh:
+    for job in selected:
+        fh.write(f"{job['jid']}\n")
+PY
 
     # 执行裁剪
     if [ -s "$WORKERS_DIR/.kill_jobs" ]; then
+      KILL_WORKERS=$(ACTIVE_PATH="$ACTIVE_FILE" JOBS_PATH="$JOBS_FILE" KILL_PATH="$WORKERS_DIR/.kill_jobs" python - <<'PY' 2>/dev/null || true
+import os, re
+
+active_path = os.environ.get("ACTIVE_PATH", "")
+jobs_path = os.environ.get("JOBS_PATH", "")
+kill_path = os.environ.get("KILL_PATH", "")
+csv_re = re.compile(r"^[0-9]+(,[0-9]+)*$")
+
+job_workers = {}
+if jobs_path and os.path.exists(jobs_path):
+    with open(jobs_path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            parts = raw.strip().split()
+            if len(parts) < 2:
+                continue
+            jid, name = parts[0], parts[1]
+            worker_csv = parts[3] if len(parts) >= 4 else ""
+            ids = []
+            if worker_csv and csv_re.match(worker_csv):
+                ids = [int(x) for x in worker_csv.split(",") if x.isdigit()]
+            elif name.isdigit():
+                ids = [int(name)]
+            job_workers[jid] = ids
+
+total = 0
+if kill_path and os.path.exists(kill_path):
+    with open(kill_path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            jid = raw.strip().split()[0]
+            ids = job_workers.get(jid, [])
+            total += len(ids) if ids else 1
+print(total)
+PY
+      )
       while IFS= read -r jid; do
         [ -n "$jid" ] || continue
         echo "scancel $jid"
         scancel "$jid" || true
       done < "$WORKERS_DIR/.kill_jobs"
+      KILL_COUNT=$(wc -l < "$WORKERS_DIR/.kill_jobs" 2>/dev/null || echo 0)
+      echo "缩容: 已提交终止 ${KILL_COUNT} 个作业，预计释放 ${KILL_WORKERS:-?} 个 worker"
+
+      # scancel 是异步的：刷新一次当前活跃 worker 统计，避免“过度缩容”后不回补
+      SCANCEL_WAIT="${RASPA_SCALE_SCANCEL_WAIT:-2}"
+      if [ -n "$SCANCEL_WAIT" ] && [[ "$SCANCEL_WAIT" =~ ^[0-9]+([.][0-9]+)?$ ]] && [ "$SCANCEL_WAIT" != "0" ] && [ "$SCANCEL_WAIT" != "0.0" ]; then
+        sleep "$SCANCEL_WAIT"
+      fi
+      : > "$ACTIVE_FILE"
+      : > "$ACTIVE_WORKERS_FILE"
+      if [ "$SQUEUE_OK" -eq 1 ]; then
+        PY_TARGET="$TARGET_DIR" PY_USER="$USER" python - <<'PY' 2>/dev/null > "$ACTIVE_FILE" || true
+import os, subprocess, sys
+
+target = os.environ.get("PY_TARGET", "").rstrip("/") + "/"
+user = os.environ.get("PY_USER", "")
+if not target or not user:
+    sys.exit(0)
+
+try:
+    out = subprocess.check_output(
+        ["squeue", "-u", user, "-h", "-O", "jobid:20,name:40,stdout:400"],
+        stderr=subprocess.DEVNULL,
+    ).decode(errors="ignore")
+except Exception:
+    sys.exit(0)
+
+for raw in out.splitlines():
+    parts = raw.strip().split(None, 2)
+    if len(parts) < 3:
+        continue
+    jid, name, stdout = parts[0], parts[1], parts[2]
+    if stdout.startswith(target):
+        print(f"{jid} {name} {stdout}")
+PY
+      fi
+      if [ -s "$ACTIVE_FILE" ]; then
+        LIVE_JOBS=$(wc -l < "$ACTIVE_FILE" 2>/dev/null || echo 0)
+        LIVE_WORKERS=$(ACTIVE_PATH="$ACTIVE_FILE" JOBS_PATH="$JOBS_FILE" DUMP_PATH="$ACTIVE_WORKERS_FILE" python - <<'PY' 2>/dev/null || true
+import os, re
+
+active_path = os.environ.get("ACTIVE_PATH", "")
+jobs_path = os.environ.get("JOBS_PATH", "")
+dump_path = os.environ.get("DUMP_PATH", "")
+csv_re = re.compile(r"^[0-9]+(,[0-9]+)*$")
+
+job_map = {}
+if jobs_path and os.path.exists(jobs_path):
+    with open(jobs_path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            parts = raw.strip().split()
+            if len(parts) < 2:
+                continue
+            jid = parts[0]
+            worker_csv = parts[3] if len(parts) >= 4 else ""
+            job_map[jid] = worker_csv or parts[1]
+
+ids = set()
+if active_path and os.path.exists(active_path):
+    with open(active_path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            parts = raw.strip().split()
+            if len(parts) < 2:
+                continue
+            jid, name = parts[0], parts[1]
+            csv_val = job_map.get(jid, "")
+            if csv_val and csv_re.match(csv_val):
+                ids.update(int(x) for x in csv_val.split(",") if x.isdigit())
+            elif name.isdigit():
+                ids.add(int(name))
+if dump_path:
+    try:
+        with open(dump_path, "w", encoding="utf-8") as fh:
+            for i in sorted(ids):
+                fh.write(f"{i}\n")
+    except Exception:
+        pass
+print(len(ids))
+PY
+        )
+      fi
+    else
+      echo "缩容: 未找到可终止的作业条目（可能未在调度器中找到 StdOut 位于本目录的作业）。"
     fi
   fi
 
   # 缩容完成后如活跃数仍小于“有意义”的目标，按缺口补交
-  if [ "$SKIP_EXPAND" -eq 1 ]; then
-    # 本轮主要是缩容请求，跳过补交，等待调度器实际杀掉作业后再人工扩容
-    echo "跳过补交：初始运行数(${INITIAL_RUNNING}) 已不少于目标(${NEW_LIMIT})，本轮仅执行缩容。"
+  if [ "${LIVE_WORKERS:-0}" -gt "$NEW_LIMIT" ]; then
+    echo "跳过补交：缩容请求处理中，当前活跃(${LIVE_WORKERS}) 仍高于目标(${NEW_LIMIT})。"
     exit 0
   fi
-  mapfile -t LIVE_IDS < <(comm -12 <(awk '{print $1}' "$JOBS_FILE" | sort -u) <(squeue -u "$USER" -h -o "%i" | sort -u))
+  if [ "$EXPANDED_THIS_ROUND" -eq 1 ]; then
+    echo "补足并发: 本轮已完成扩容提交，等待调度器接管后再检查，无需重复提交。"
+    exit 0
+  fi
+  mapfile -t PRESENT_WORKERS < "$ACTIVE_WORKERS_FILE" 2>/dev/null
+  if [ ${#PRESENT_WORKERS[@]} -eq 0 ]; then
+    mapfile -t PRESENT_WORKERS < <(awk '{print $2}' "$ACTIVE_FILE" 2>/dev/null | awk '/^[0-9]+$/{print $1}' | sort -n)
+  fi
   present=""
-  for jid in "${LIVE_IDS[@]}"; do
-    [ -n "$jid" ] || continue
-    nm=$(awk -v J="$jid" '$1==J{print $2; exit}' "$JOBS_FILE")
-    [ -n "$nm" ] && present+=" $nm"
+  for wid in "${PRESENT_WORKERS[@]}"; do
+    [ -n "$wid" ] && present+=" $wid"
   done
-  # 现存活跃数以“受管的活跃 JobId 数”计算，避免因 JobName 非 1..N 而被低估
-  LIVE_COUNT=${#LIVE_IDS[@]}
+  # 现存活跃 worker 数
+  LIVE_COUNT=${#PRESENT_WORKERS[@]}
+  [ "$LIVE_COUNT" -le 0 ] && LIVE_COUNT="$LIVE_WORKERS"
   # 重新估算“有意义”的目标并发（避免在无任务可跑时强行对齐用户上限）
   RUNNING_COUNT=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}')
   PENDING_COUNT=0
@@ -1151,7 +1551,7 @@ fi
     fi
     if [ ${#to_submit[@]} -gt 0 ]; then
       submit_csv=$(IFS=,; echo "${to_submit[*]}")
-      echo "补足并发: 现存=$LIVE_COUNT, 用户目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}(运行中=${RUNNING_COUNT}, 待处理=${PENDING_COUNT})，实际目标=${USEFUL_TARGET}，补交: ${submit_csv}"
+      echo "补足并发: 现存=$LIVE_COUNT, 用户目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}(运行中=${RUNNING_COUNT}, 待处理=${PENDING_COUNT})，实际目标=${USEFUL_TARGET}，补交worker: ${submit_csv}"
       submit_missing "$submit_csv"
     else
       echo "补足并发: 现存=$LIVE_COUNT, 用户目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}，无需补交"

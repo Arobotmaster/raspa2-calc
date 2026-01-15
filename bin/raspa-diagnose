@@ -108,7 +108,6 @@ echo
 
 # 状态分布
 pending=0; running_cnt=0; done_cnt=0; failed_cnt=0; completed_cnt=0
-missing_input=0
 if [ ${#mc_dirs[@]} -gt 0 ]; then
   echo "🔍 检查任务状态分布..."
   for dir in "${mc_dirs[@]}"; do
@@ -126,7 +125,6 @@ if [ ${#mc_dirs[@]} -gt 0 ]; then
       ((completed_cnt+=1))
     else
       ((pending+=1))
-      [ -f "$dir/simulation.input" ] || ((missing_input+=1))
     fi
   done
   total=$((pending + running_cnt + done_cnt + failed_cnt + completed_cnt))
@@ -136,9 +134,6 @@ if [ ${#mc_dirs[@]} -gt 0 ]; then
   echo "   失败: $failed_cnt"
   echo "   异常完成: $completed_cnt"
   echo "   总计: $total"
-  if [ "$missing_input" -gt 0 ]; then
-    echo "   ⚠️  待处理任务中有 $missing_input 个目录缺少 simulation.input"
-  fi
   if [ $total -gt 0 ]; then
     progress=$((done_cnt * 100 / total))
     echo "   完成率: $progress%"
@@ -264,9 +259,6 @@ if [ $failed_cnt -gt 0 ]; then
 fi
 if [ $completed_cnt -gt 0 ]; then
   echo "- 发现异常完成任务：raspa-status -d '$TARGET_DIR' -c  # 重置异常完成"
-fi
-if [ "$missing_input" -gt 0 ]; then
-  echo "- 有待处理目录缺少 simulation.input，请修复后再提交"
 fi
 echo
 echo "📖 参考命令："

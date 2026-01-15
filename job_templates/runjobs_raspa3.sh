@@ -58,9 +58,6 @@ if isinstance(mser, dict):
     emit("RASPA_MSER_CONDA_ENV", mser.get("conda_env"))
     emit("RASPA_MSER_LLM", str(mser.get("llm", True)).lower())
     emit("RASPA_MSER_BATCH_SIZE", mser.get("batch_size"))
-    emit("RASPA_MSER_TAIL_REL_STD", mser.get("tail_rel_std"))
-    emit("RASPA_MSER_TAIL_WINDOW", mser.get("tail_window"))
-    emit("RASPA_MSER_MIN_T0_FRAC", mser.get("min_t0_frac"))
 PY
 )"
 
@@ -160,6 +157,28 @@ Q_LAST="$QDIR/last_id"
 Q_RETRY="$QDIR/retry.list"
 Q_LOCK="$QDIR/next.lock"
 mkdir -p "$QDIR"
+LOCK_STALE_SECONDS="${RASPA_LOCK_STALE_SECONDS:-30}"
+QUEUE_RESCAN_INTERVAL_SECONDS="${RASPA_QUEUE_RESCAN_INTERVAL_SECONDS:-5}"
+LAST_RESCAN_EPOCH=0
+CURRENT_LOCK_FILE=""
+
+is_lock_stale() {
+    local f="$1"
+    [ -f "$f" ] || return 1
+    local now mtime age
+    now=$(date +%s)
+    mtime=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+    [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
+    age=$((now - mtime))
+    [ "$age" -ge "$LOCK_STALE_SECONDS" ]
+}
+
+cleanup_lock_if_stale() {
+    local f="$1"
+    if is_lock_stale "$f"; then
+        rm -f "$f" 2>/dev/null || true
+    fi
+}
 
 ensure_queue() {
     if [ ! -f "$Q_NEXT" ] || [ ! -f "$Q_LAST" ]; then
@@ -192,11 +211,14 @@ claim_from_retry() {
         fi
         if [ -d "$workdir" ]; then
             local lock_file="${workdir}.lock"
+            cleanup_lock_if_stale "$lock_file"
             if (set -o noclobber; echo "$$" > "$lock_file") 2>/dev/null; then
+                CURRENT_LOCK_FILE="$lock_file"
                 # RASPA3: 检查 simulation.json
                 if [ -f "${workdir}/simulation.json" ]; then
                     if mv "$workdir" "${workdir}__running"; then
                         rm -f "$lock_file"
+                        CURRENT_LOCK_FILE=""
                         echo "${workdir}__running"
                         claimed="yes"
                         # 将剩余未处理的 pending_ids 写回
@@ -206,9 +228,11 @@ claim_from_retry() {
                         break
                     else
                         rm -f "$lock_file"
+                        CURRENT_LOCK_FILE=""
                     fi
                 else
                     rm -f "$lock_file"
+                    CURRENT_LOCK_FILE=""
                 fi
             fi
             # 无法锁定时加入待重试列表（去重）
@@ -262,18 +286,23 @@ claim_from_pointer() {
             continue
         fi
         local lock_file="${workdir}.lock"
+        cleanup_lock_if_stale "$lock_file"
         if (set -o noclobber; echo "$$" > "$lock_file") 2>/dev/null; then
+            CURRENT_LOCK_FILE="$lock_file"
             # RASPA3: 检查 simulation.json
             if [ -f "${workdir}/simulation.json" ]; then
                 if mv "$workdir" "${workdir}__running"; then
                     rm -f "$lock_file"
+                    CURRENT_LOCK_FILE=""
                     echo "${workdir}__running"
                     return 0
                 else
                     rm -f "$lock_file"
+                    CURRENT_LOCK_FILE=""
                 fi
             else
                 rm -f "$lock_file"
+                CURRENT_LOCK_FILE=""
             fi
         fi
     done
@@ -348,6 +377,10 @@ mark_clear() {
 
 cleanup_trap() {
     pkill -TERM -P $$ 2>/dev/null || true
+    if [ -n "$CURRENT_LOCK_FILE" ]; then
+        rm -f "$CURRENT_LOCK_FILE" 2>/dev/null || true
+        CURRENT_LOCK_FILE=""
+    fi
     if [ -n "$CURRENT_TASK_DIR" ] && [ -d "$CURRENT_TASK_DIR" ]; then
         cd "$topdir" 2>/dev/null || true
         local back="${CURRENT_TASK_DIR%__running}"
@@ -400,11 +433,17 @@ while :; do
         last=$(awk 'NR==1{print $1; exit}' "$Q_LAST" 2>/dev/null)
         [ -z "$curr" ] && curr=0
         [ -z "$last" ] && last=0
-        if [ "$curr" -gt "$last" ] && [ ! -s "$Q_RETRY" ]; then
-            if rescan_pending; then
-                continue
+        if [ "$curr" -gt "$last" ]; then
+            now_epoch=$(date +%s)
+            if [ $((now_epoch - LAST_RESCAN_EPOCH)) -ge "$QUEUE_RESCAN_INTERVAL_SECONDS" ] 2>/dev/null; then
+                LAST_RESCAN_EPOCH="$now_epoch"
+                if rescan_pending; then
+                    continue
+                fi
             fi
-            break
+            if [ ! -s "$Q_RETRY" ]; then
+                break
+            fi
         fi
         sleep 0.2
         continue
@@ -438,9 +477,6 @@ while :; do
                 esac
             fi
             [ -n "${RASPA_MSER_BATCH_SIZE:-}" ] && MSER_ARGS+=("--batch-size" "${RASPA_MSER_BATCH_SIZE}")
-            [ -n "${RASPA_MSER_TAIL_REL_STD:-}" ] && MSER_ARGS+=("--tail-rel-std" "${RASPA_MSER_TAIL_REL_STD}")
-            [ -n "${RASPA_MSER_TAIL_WINDOW:-}" ] && MSER_ARGS+=("--tail-window" "${RASPA_MSER_TAIL_WINDOW}")
-            [ -n "${RASPA_MSER_MIN_T0_FRAC:-}" ] && MSER_ARGS+=("--min-t0-frac" "${RASPA_MSER_MIN_T0_FRAC}")
             if command -v conda >/dev/null 2>&1; then
                 conda run -n "${RASPA_MSER_CONDA_ENV:-pymser}" python "$MSER_SCRIPT" \
                   --workdir "$(pwd)" \

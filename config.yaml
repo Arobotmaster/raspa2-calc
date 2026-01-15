@@ -60,13 +60,13 @@ calculation:
   default_molecules: "CO2"
 
   # CSV 文件路径 (用于批量处理，指定框架列表)
-  csv_file_path: "/home/zjp/raspa2-calc/work/UQEFAZ_ASR_pacman.csv"
+  csv_file_path: "/home/zjp/raspa2-calc/filter/CO2-6493test.csv"
 
   # 框架名称列名（必须与 CSV 文件中的列名完全一致）
-  framework_column: "coreid"
+  framework_column: "refcode"
 
   # 输出目录名
-  output_directory: "wxj-3442-test"
+  output_directory: "test"
 
   # 是否从 CSV 文件读取孔隙率
   use_void_csv: false
@@ -87,9 +87,6 @@ calculation:
     conda_env: "pymser"  # 包含 pymser 的 conda 环境
     llm: true            # 是否启用 LLM 变体（减少截断点，默认 true）
     batch_size: 5        # MSER 批大小，平滑数据（默认 5）
-    tail_rel_std: 0.2   # 尾部相对波动阈值，std/mean 超过此值继续续跑
-    tail_window: 4000    # 尾部波动检测窗口大小，实际取 min(窗口, 产线样本数)
-    min_t0_frac: 0.01     # t0 最小占比（强制跳过前置 10% 数据，避免 t0 过小）
 
   # 节点优先级（可选），格式: 节点名: 权重；数字越大优先级越高
   node_priorities:

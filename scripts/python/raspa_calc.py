@@ -396,6 +396,32 @@ def main():
 def run_auto_sh():
     """运行参数筛选模式（小批量运算）"""
     try:
+        # 与高通量模式保持一致：从配置导出关键环境变量（work_dir/cache_dir 等）
+        if config:
+            env_config = config.get('environment', {})
+            calc_config = config.get('calculation', {})
+
+            work_dir_cfg = env_config.get('work_dir') or os.environ.get('RASPA_WORK_DIR')
+            if work_dir_cfg:
+                os.environ['RASPA_WORK_DIR'] = work_dir_cfg
+                try:
+                    os.chdir(work_dir_cfg)
+                except FileNotFoundError:
+                    print(f"❌ 工作目录不存在: {work_dir_cfg}")
+                    sys.exit(1)
+
+            if 'cache_dir' in calc_config and calc_config['cache_dir']:
+                os.environ['RASPA_CACHE_DIR'] = calc_config['cache_dir']
+
+            raspa_ver = env_config.get('raspa_version', 'raspa2').lower()
+            os.environ['RASPA_VERSION'] = raspa_ver
+            if raspa_ver == 'raspa3':
+                cif_path = env_config.get('raspa3_cif_base_path', '')
+            else:
+                cif_path = env_config.get('raspa2_cif_dir', '')
+            if cif_path:
+                os.environ['RASPA_CIF_DIR'] = cif_path
+
         # 获取工具目录
         tool_dir = os.environ.get('HOME', '') + '/raspa2-calc/.raspa_tools'
         auto_sh = os.path.join(tool_dir, "scripts/shell/auto.sh")
@@ -478,7 +504,7 @@ def run_task_runner():
             except Exception as save_err:
                 print(f"⚠️  保存配置快照失败: {save_err}")
 
-            # 设置 pyMSER 自动平衡参数（仅 RASPA2）
+            # 设置 pyMSER 自动平衡参数
             mser_config = calc_config.get('mser', {})
             if mser_config:
                 if 'enable' in mser_config:
@@ -497,12 +523,6 @@ def run_task_runner():
                     os.environ['RASPA_MSER_LLM'] = str(mser_config.get('llm', True)).lower()
                 if 'batch_size' in mser_config:
                     os.environ['RASPA_MSER_BATCH_SIZE'] = str(mser_config.get('batch_size', 5))
-                if 'tail_rel_std' in mser_config:
-                    os.environ['RASPA_MSER_TAIL_REL_STD'] = str(mser_config.get('tail_rel_std', 0.05))
-                if 'tail_window' in mser_config:
-                    os.environ['RASPA_MSER_TAIL_WINDOW'] = str(mser_config.get('tail_window', 2000))
-                if 'min_t0_frac' in mser_config:
-                    os.environ['RASPA_MSER_MIN_T0_FRAC'] = str(mser_config.get('min_t0_frac', 0.05))
 
             # 设置模板相关参数 (根据 RASPA 版本选择正确的模板)
             raspa_version = env_config.get('raspa_version', 'raspa2').lower()
@@ -540,6 +560,9 @@ def run_task_runner():
 
             if 'void_column' in calc_config:
                 os.environ['RASPA_VOID_COLUMN'] = calc_config['void_column']
+
+            if 'cache_dir' in calc_config and calc_config['cache_dir']:
+                os.environ['RASPA_CACHE_DIR'] = calc_config['cache_dir']
 
             # 设置CSV文件路径
             if 'csv_file_path' in calc_config and calc_config['csv_file_path']:

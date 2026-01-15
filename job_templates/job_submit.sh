@@ -57,14 +57,22 @@ export RASPA_WORK_DIR="$BASE_DIR"
 
 echo "准备执行 RASPA 模拟任务..."
 # 解析核心参数
-WORKER_ID=${RASPA_WORKER_ID:-${1:-1}}
 TOTAL_CPUS=${RASPA_TOTAL_CPUS:-${2:-1}}
 WORKER_IDS_RAW="$(printf '%s' "${RASPA_WORKER_IDS:-}" | tr -d ' \t\r\n\"')"
+WORKER_ID_START_RAW="$(printf '%s' "${RASPA_WORKER_ID_START:-}" | tr -d ' \t\r\n\"')"
+WORKER_COUNT_RAW="$(printf '%s' "${RASPA_WORKER_COUNT:-}" | tr -d ' \t\r\n\"')"
 declare -a WORKER_IDS=()
 if [ -n "$WORKER_IDS_RAW" ]; then
   IFS=',' read -r -a WORKER_IDS <<< "$WORKER_IDS_RAW"
+elif [[ "$WORKER_ID_START_RAW" =~ ^[0-9]+$ ]] && [[ "$WORKER_COUNT_RAW" =~ ^[0-9]+$ ]] && [ "$WORKER_COUNT_RAW" -gt 0 ] 2>/dev/null; then
+  for ((i=0; i<WORKER_COUNT_RAW; i++)); do
+    WORKER_IDS+=("$((WORKER_ID_START_RAW + i))")
+  done
 fi
-if [ ${#WORKER_IDS[@]} -eq 0 ]; then
+if [ ${#WORKER_IDS[@]} -gt 0 ]; then
+  WORKER_ID="${WORKER_IDS[0]}"
+else
+  WORKER_ID=${RASPA_WORKER_ID:-${SLURM_ARRAY_TASK_ID:-${1:-1}}}
   WORKER_IDS=("$WORKER_ID")
 fi
 

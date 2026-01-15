@@ -29,7 +29,6 @@ import sys
 from typing import Dict, List
 
 import pandas as pd
-import numpy as np
 import pymser
 
 
@@ -161,9 +160,24 @@ def main():
     ap.add_argument("--llm", action="store_true", default=env_bool("RASPA_MSER_LLM", True), help="使用 MSER-LLM（默认开启）")
     ap.add_argument("--no-llm", dest="llm", action="store_false", help="关闭 MSER-LLM")
     ap.add_argument("--batch-size", type=int, default=env_int("RASPA_MSER_BATCH_SIZE", 5), help="MSER 批大小，默认 5（更平滑）")
-    ap.add_argument("--tail-rel-std", type=float, default=env_float("RASPA_MSER_TAIL_REL_STD", 0.0), help="尾部相对波动阈值(<=0 表示不检查)")
-    ap.add_argument("--tail-window", type=int, default=env_int("RASPA_MSER_TAIL_WINDOW", 2000), help="尾部波动检查窗口大小（默认2000，实际取 min(window, prod)）")
-    ap.add_argument("--min-t0-frac", type=float, default=env_float("RASPA_MSER_MIN_T0_FRAC", 0.0), help="最小 t0 占比（<=0 不限制）")
+    ap.add_argument(
+        "--tail-rel-std",
+        type=float,
+        default=env_float("RASPA_MSER_TAIL_REL_STD", 0.0),
+        help="(已弃用/忽略) 尾部相对波动阈值",
+    )
+    ap.add_argument(
+        "--tail-window",
+        type=int,
+        default=env_int("RASPA_MSER_TAIL_WINDOW", 2000),
+        help="(已弃用/忽略) 尾部波动检查窗口大小",
+    )
+    ap.add_argument(
+        "--min-t0-frac",
+        type=float,
+        default=env_float("RASPA_MSER_MIN_T0_FRAC", 0.0),
+        help="(已弃用/忽略) 最小 t0 占比",
+    )
     ap.add_argument(
         "--conda-env",
         default=os.environ.get("RASPA_MSER_CONDA_ENV", "pymser"),
@@ -180,6 +194,12 @@ def main():
     log_path = os.path.join(workdir, "auto_mser_raspa.log")
     mser_log = os.path.join(workdir, "auto_mser.log")
     combined_csv = os.path.join(workdir, "mser_timeseries.csv")
+
+    if (args.tail_rel_std and args.tail_rel_std > 0) or (args.min_t0_frac and args.min_t0_frac > 0) or os.environ.get("RASPA_MSER_TAIL_WINDOW"):
+        msg = "[auto-mser3] 已忽略 tail_rel_std/tail_window/min_t0_frac（已弃用），仅使用 pyMSER 默认平衡截断点 t0。"
+        print(msg)
+        with open(mser_log, "a", encoding="utf-8") as lf:
+            lf.write(msg + "\n")
 
     for it in range(1, args.max_iter + 1):
         msg = f"[auto-mser3] 迭代 {it}/{args.max_iter}，解析输出并判定平衡..."
@@ -232,14 +252,6 @@ def main():
         # 合法化 t0 范围
         t0 = min(max(t0, 0), max(0, n_samples - 1))
 
-        # 强制最小 t0 占比（可关闭）
-        if args.min_t0_frac > 0:
-            min_t0 = min(max(0, int(n_samples * args.min_t0_frac)), n_samples - 1)
-            if t0 < min_t0:
-                with open(mser_log, "a", encoding="utf-8") as lf:
-                    lf.write(f"[auto-mser3] t0={t0} 低于最小占比阈值，提升至 {min_t0}\n")
-                t0 = min_t0
-
         prod = n_samples - t0
         # 如果产线样本不足，不再强制提前 t0；保留 pyMSER 给出的平衡点，追加循环来补足样本
         if prod < args.target_cycles:
@@ -253,45 +265,24 @@ def main():
             lf.write(msg + "\n")
 
         if prod >= args.target_cycles:
-            # 尾部波动检查（tail_rel_std<=0 时跳过）
-            rel_std_ok = True
-            if args.tail_rel_std > 0:
-                tail_w = min(max(100, int(args.tail_window)), prod)
-                tail_rel_std = 0.0
-                if tail_w > 0:
-                    tail = series.iloc[-tail_w:]
-                    tail_mean = float(tail.mean())
-                    tail_std = float(tail.std())
-                    if abs(tail_mean) > 1e-8:
-                        tail_rel_std = abs(tail_std / tail_mean)
-                    else:
-                        tail_rel_std = 0.0
-                    if tail_rel_std > args.tail_rel_std:
-                        rel_std_ok = False
-                        with open(mser_log, "a", encoding="utf-8") as lf:
-                            lf.write(
-                                f"[auto-mser3] 尾部相对波动过大 std/mean={tail_rel_std:.4f} (阈值 {args.tail_rel_std}), 继续续跑。\n"
-                            )
-
-            if rel_std_ok:
-                stats = {}
-                for col in molkg_cols:
-                    avg, unc = pymser.calc_equilibrated_average(
-                        data=df[col].to_numpy(),
-                        eq_index=t0,
-                        uncertainty=args.uncertainty,
-                        ac_time=ac_time,
-                    )
-                    stats[col] = {"average": float(avg), "uncertainty": float(unc)}
-                stats_path = os.path.join(workdir, "stats.json")
-                with open(stats_path, "w", encoding="utf-8") as f:
-                    json.dump(
-                        {"t0": t0, "ac_time": ac_time, "basis": basis, "stats": stats},
-                        f,
-                        indent=2,
-                    )
-                print(f"[auto-mser3] 达标，已保存统计: {stats_path}")
-                return
+            stats = {}
+            for col in molkg_cols:
+                avg, unc = pymser.calc_equilibrated_average(
+                    data=df[col].to_numpy(),
+                    eq_index=t0,
+                    uncertainty=args.uncertainty,
+                    ac_time=ac_time,
+                )
+                stats[col] = {"average": float(avg), "uncertainty": float(unc)}
+            stats_path = os.path.join(workdir, "stats.json")
+            with open(stats_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {"t0": t0, "ac_time": ac_time, "basis": basis, "stats": stats},
+                    f,
+                    indent=2,
+                )
+            print(f"[auto-mser3] 达标，已保存统计: {stats_path}")
+            return
 
         # 未达标：更新 simulation.json 并续跑
         try:
@@ -311,7 +302,7 @@ def main():
             print(f"[auto-mser3] raspa3 运行失败，返回码 {ret}，详见 {log_path}")
             sys.exit(ret)
 
-    msg = "[auto-mser3] 达到最大迭代次数仍未达标，标记失败（未满足 target_cycles 或尾部波动阈值）。"
+    msg = "[auto-mser3] 达到最大迭代次数仍未达标，标记失败（未满足 target_cycles）。"
     print(msg)
     with open(mser_log, "a", encoding="utf-8") as lf:
         lf.write(msg + "\n")
