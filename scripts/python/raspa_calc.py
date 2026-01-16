@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import subprocess
+import shutil
 import importlib
 
 # 版本信息
@@ -51,6 +52,59 @@ def get_raspa_version():
         return version.lower() if version else 'raspa2'
     return 'raspa2'
 
+def _get_work_dir():
+    env_work_dir = os.environ.get("RASPA_WORK_DIR")
+    if env_work_dir:
+        return env_work_dir
+    if config:
+        env_cfg = config.get("environment", {}) or {}
+        return env_cfg.get("work_dir")
+    return None
+
+def check_disk_space():
+    """检查工作目录剩余空间（默认仅提醒，不阻断）"""
+    work_dir = _get_work_dir()
+    if not work_dir:
+        return True
+
+    min_free_gb = None
+    action = None
+    if config:
+        env_cfg = config.get("environment", {}) or {}
+        min_free_gb = env_cfg.get("work_dir_min_free_gb")
+        action = env_cfg.get("work_dir_min_free_action")
+
+    if os.environ.get("RASPA_MIN_FREE_GB"):
+        min_free_gb = os.environ.get("RASPA_MIN_FREE_GB")
+    if os.environ.get("RASPA_MIN_FREE_ACTION"):
+        action = os.environ.get("RASPA_MIN_FREE_ACTION")
+
+    try:
+        min_free_gb = int(min_free_gb) if min_free_gb is not None else 50
+    except Exception:
+        min_free_gb = 50
+
+    action = (str(action).strip().lower() if action else "warn")
+    if action not in ("warn", "abort"):
+        action = "warn"
+
+    try:
+        usage = shutil.disk_usage(work_dir)
+        free_gb = int(usage.free / (1024 ** 3))
+    except Exception as exc:
+        print(f"⚠️  无法检查工作目录剩余空间: {exc}")
+        return True
+
+    if free_gb < min_free_gb:
+        msg = (
+            f"⚠️  磁盘空间不足警告: {work_dir}\n"
+            f"   当前剩余: {free_gb} GB，安全阈值: {min_free_gb} GB"
+        )
+        print(msg)
+        if action == "abort":
+            print("❌ 空间不足，已阻断执行，请清理或归档后再运行。")
+            return False
+    return True
 
 def check_environment():
     """检测当前环境是否满足运行要求"""
@@ -331,6 +385,10 @@ def main():
 
     # 第一步：加载配置
     load_config()
+
+    # 磁盘空间提醒（默认仅警告）
+    if not check_disk_space():
+        sys.exit(1)
 
     # 第二步：环境检测
     if not skip_check and not check_environment():

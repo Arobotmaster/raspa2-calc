@@ -20,6 +20,10 @@ usage() {
   NFS_EXPORT   默认 /shared/raspa2-calc
   MOUNTPOINT   默认 /home/zjp/raspa2-calc
   WORK_DIR     默认 ${MOUNTPOINT}/work（RASPA_WORK_DIR 写入该路径）
+  NFS_MOUNT_OPTS 自定义挂载参数（默认自动含 nconnect=4 + noatime/nodiratime）
+  NFS_WORK_EXPORT  单独为 work 目录挂载的 NFS 路径（例如 /srv/raspa2-calc-work）
+  NFS_WORK_MOUNT   work 目录挂载点（默认 ${MOUNTPOINT}/work）
+  NFS_WORK_OPTS    work 目录挂载参数（默认与 NFS_MOUNT_OPTS 一致）
 EOF
 }
 
@@ -44,6 +48,11 @@ NFS_SERVER="${NFS_SERVER:-10.10.14.12}"
 NFS_EXPORT="${NFS_EXPORT:-/shared/raspa2-calc}"
 MOUNTPOINT="${MOUNTPOINT:-/home/zjp/raspa2-calc}"
 WORK_DIR="${WORK_DIR:-${MOUNTPOINT}/work}"
+NFS_WORK_EXPORT="${NFS_WORK_EXPORT:-}"
+NFS_WORK_MOUNT="${NFS_WORK_MOUNT:-${MOUNTPOINT}/work}"
+DEFAULT_MOUNT_OPTS="rw,relatime,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,local_lock=none,noatime,nodiratime"
+MOUNT_OPTS_PREFERRED="${DEFAULT_MOUNT_OPTS},nconnect=4"
+MOUNT_OPTS_FINAL=""
 
 is_mounted() {
   grep -qsE "^[^ ]+ ${MOUNTPOINT} " /proc/mounts
@@ -76,7 +85,20 @@ fi
 
 if ! is_mounted; then
   echo "挂载 NFS: ${NFS_SERVER}:${NFS_EXPORT} -> ${MOUNTPOINT}"
-  sudo mount -t nfs4 "${NFS_SERVER}:${NFS_EXPORT}" "${MOUNTPOINT}"
+  if [ -n "${NFS_MOUNT_OPTS:-}" ]; then
+    MOUNT_OPTS_FINAL="${NFS_MOUNT_OPTS}"
+    sudo mount -t nfs4 -o "${MOUNT_OPTS_FINAL}" "${NFS_SERVER}:${NFS_EXPORT}" "${MOUNTPOINT}"
+  else
+    if sudo mount -t nfs4 -o "${MOUNT_OPTS_PREFERRED}" "${NFS_SERVER}:${NFS_EXPORT}" "${MOUNTPOINT}"; then
+      MOUNT_OPTS_FINAL="${MOUNT_OPTS_PREFERRED}"
+    else
+      echo "挂载失败，尝试去掉 nconnect 选项重试..."
+      sudo mount -t nfs4 -o "${DEFAULT_MOUNT_OPTS}" "${NFS_SERVER}:${NFS_EXPORT}" "${MOUNTPOINT}"
+      MOUNT_OPTS_FINAL="${DEFAULT_MOUNT_OPTS}"
+    fi
+  fi
+else
+  MOUNT_OPTS_FINAL="${NFS_MOUNT_OPTS:-${MOUNT_OPTS_PREFERRED}}"
 fi
 
 if ! is_healthy; then
@@ -89,11 +111,113 @@ fi
 # 创建默认工作目录（位于 NFS 共享内）
 mkdir -p "${WORK_DIR}" || true
 
+# 可选：为 work 目录单独挂载到 NVMe NFS（提高高频读写性能）
+if [ -n "$NFS_WORK_EXPORT" ]; then
+  echo "检测到 NFS_WORK_EXPORT=${NFS_WORK_EXPORT}，准备挂载 work 目录..."
+  sudo mkdir -p "${NFS_WORK_MOUNT}"
+  WORK_MOUNT_OPTS="${NFS_WORK_OPTS:-${MOUNT_OPTS_FINAL:-${MOUNT_OPTS_PREFERRED}}}"
+  if grep -qsE "^[^ ]+ ${NFS_WORK_MOUNT} " /proc/mounts; then
+    if ! sudo mount -o remount,"${WORK_MOUNT_OPTS}" "${NFS_WORK_MOUNT}"; then
+      if echo "$WORK_MOUNT_OPTS" | grep -q "nconnect="; then
+        echo "work 目录 remount 失败，尝试去掉 nconnect 重试..."
+        sudo mount -o remount,"${DEFAULT_MOUNT_OPTS}" "${NFS_WORK_MOUNT}" || true
+        WORK_MOUNT_OPTS="${DEFAULT_MOUNT_OPTS}"
+      fi
+    fi
+  else
+    if ! sudo mount -t nfs4 -o "${WORK_MOUNT_OPTS}" "${NFS_SERVER}:${NFS_WORK_EXPORT}" "${NFS_WORK_MOUNT}"; then
+      if echo "$WORK_MOUNT_OPTS" | grep -q "nconnect="; then
+        echo "work 目录挂载失败，尝试去掉 nconnect 重试..."
+        if sudo mount -t nfs4 -o "${DEFAULT_MOUNT_OPTS}" "${NFS_SERVER}:${NFS_WORK_EXPORT}" "${NFS_WORK_MOUNT}"; then
+          WORK_MOUNT_OPTS="${DEFAULT_MOUNT_OPTS}"
+        else
+          echo "❌ work 目录挂载失败: ${NFS_SERVER}:${NFS_WORK_EXPORT} -> ${NFS_WORK_MOUNT}"
+          exit 1
+        fi
+      else
+        echo "❌ work 目录挂载失败: ${NFS_SERVER}:${NFS_WORK_EXPORT} -> ${NFS_WORK_MOUNT}"
+        exit 1
+      fi
+    fi
+  fi
+fi
+
 if [[ "${NO_FSTAB}" != "1" ]]; then
   # 添加到 /etc/fstab（避免重复写入）
-  if ! grep -qsE "^${NFS_SERVER}:${NFS_EXPORT}[[:space:]]+${MOUNTPOINT}[[:space:]]" /etc/fstab; then
+  if [ -z "${MOUNT_OPTS_FINAL}" ]; then
+    MOUNT_OPTS_FINAL="${NFS_MOUNT_OPTS:-${MOUNT_OPTS_PREFERRED}}"
+  fi
+  if grep -qsE "^${NFS_SERVER}:${NFS_EXPORT}[[:space:]]+${MOUNTPOINT}[[:space:]]" /etc/fstab; then
+    echo "更新 /etc/fstab 挂载参数..."
+    TMP_FSTAB=$(mktemp)
+    python3 - "$NFS_SERVER" "$NFS_EXPORT" "$MOUNTPOINT" "$MOUNT_OPTS_FINAL" "$TMP_FSTAB" >/dev/null <<'PY'
+import sys
+
+server = sys.argv[1]
+export = sys.argv[2]
+mnt = sys.argv[3]
+opts = sys.argv[4]
+
+target = f"{server}:{export} {mnt} nfs4 {opts},_netdev 0 0"
+out = []
+with open("/etc/fstab", "r", encoding="utf-8") as fh:
+    for raw in fh:
+        line = raw.rstrip("\n")
+        if line.strip().startswith("#") or not line.strip():
+            out.append(raw)
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == f"{server}:{export}" and parts[1] == mnt:
+            out.append(target + "\n")
+        else:
+            out.append(raw)
+
+with open(sys.argv[5], "w", encoding="utf-8") as fh:
+    fh.writelines(out)
+PY
+    sudo cp -f "$TMP_FSTAB" /etc/fstab
+    rm -f "$TMP_FSTAB" || true
+  else
     echo "写入 /etc/fstab 以便开机自动挂载..."
-    echo "${NFS_SERVER}:${NFS_EXPORT} ${MOUNTPOINT} nfs4 defaults,_netdev,hard,timeo=600,retrans=2 0 0" | sudo tee -a /etc/fstab >/dev/null
+    echo "${NFS_SERVER}:${NFS_EXPORT} ${MOUNTPOINT} nfs4 ${MOUNT_OPTS_FINAL},_netdev 0 0" | sudo tee -a /etc/fstab >/dev/null
+  fi
+  if [ -n "$NFS_WORK_EXPORT" ]; then
+    WORK_MOUNT_OPTS="${NFS_WORK_OPTS:-${MOUNT_OPTS_FINAL}}"
+    if grep -qsE "^[^ ]+ ${NFS_WORK_MOUNT}[[:space:]]" /etc/fstab; then
+      echo "更新 /etc/fstab work 目录挂载参数..."
+      TMP_FSTAB=$(mktemp)
+      python3 - "$NFS_SERVER" "$NFS_WORK_EXPORT" "$NFS_WORK_MOUNT" "$WORK_MOUNT_OPTS" "$TMP_FSTAB" >/dev/null <<'PY'
+import sys
+
+server = sys.argv[1]
+export = sys.argv[2]
+mnt = sys.argv[3]
+opts = sys.argv[4]
+tmp_path = sys.argv[5]
+
+target = f"{server}:{export} {mnt} nfs4 {opts},_netdev 0 0"
+out = []
+with open("/etc/fstab", "r", encoding="utf-8") as fh:
+    for raw in fh:
+        line = raw.rstrip("\n")
+        if line.strip().startswith("#") or not line.strip():
+            out.append(raw)
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == f"{server}:{export}" and parts[1] == mnt:
+            out.append(target + "\n")
+        else:
+            out.append(raw)
+
+with open(tmp_path, "w", encoding="utf-8") as fh:
+    fh.writelines(out)
+PY
+      sudo cp -f "$TMP_FSTAB" /etc/fstab
+      rm -f "$TMP_FSTAB" || true
+    else
+      echo "写入 /etc/fstab work 目录挂载条目..."
+      echo "${NFS_SERVER}:${NFS_WORK_EXPORT} ${NFS_WORK_MOUNT} nfs4 ${WORK_MOUNT_OPTS},_netdev 0 0" | sudo tee -a /etc/fstab >/dev/null
+    fi
   fi
 fi
 

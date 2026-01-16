@@ -29,6 +29,10 @@ except ImportError:
     print("请运行: pip install tqdm pandas")
     sys.exit(1)
 
+_MC_DIR_NAME_RE = re.compile(r'^mc(\d+)(?:__(done|failed|running))?$')
+_MC_NUMBER_RE = re.compile(r'mc(\d+)')
+_UNSET = object()
+
 
 def setup_logging(log_file="raspa3_data_extraction.log"):
     """设置日志系统"""
@@ -118,6 +122,12 @@ class RASPA3_Output_Data:
         self._components = None
         self._component_blocks = None
         self._loadings_section = None
+        self._pressure = _UNSET
+        self._temperature = _UNSET
+        self._framework_density = _UNSET
+        self._he_void_fraction = _UNSET
+        self._henry_by_component = None
+        self._rosenbluth_by_component = None
 
     def _get_loadings_section(self):
         """获取 Loadings 部分的内容 (吸附量数据所在位置)"""
@@ -150,17 +160,63 @@ class RASPA3_Output_Data:
             self._component_blocks = {}
 
         if component not in self._component_blocks:
-            loadings = self._get_loadings_section()
             comp_pattern = re.escape(component)
-            # 匹配 Loadings 部分中的组件块 (格式: Component X (name))
+            # 组件块可能使用 () 或 []，优先在 Loadings 中匹配，失败回退到全文
             block_pattern = (
-                r"Component\s+\d+\s+\(" + comp_pattern +
-                r"\)[\s\S]+?(?=Component\s+\d+\s+\(|$)"
+                r"Component\s+\d+\s+[\(\[]" + comp_pattern +
+                r"[\)\]][\s\S]+?(?=Component\s+\d+\s+[\(\[]|$)"
             )
+            loadings = self._get_loadings_section()
             match = re.search(block_pattern, loadings)
+            if not match and loadings is not self.output_string:
+                match = re.search(block_pattern, self.output_string)
             self._component_blocks[component] = match.group(0) if match else ""
 
         return self._component_blocks[component]
+
+    def _get_component_block_full(self, component):
+        """强制从全文获取组件块（包含 Widom/Henry/Rosenbluth 等）"""
+        comp_pattern = re.escape(component)
+        block_pattern = (
+            r"Component\s+\d+\s+[\(\[]" + comp_pattern +
+            r"[\)\]][\s\S]+?(?=Component\s+\d+\s+[\(\[]|$)"
+        )
+        match = re.search(block_pattern, self.output_string)
+        return match.group(0) if match else ""
+
+    def _map_values_by_component_header(self, value_pattern):
+        """
+        基于就近的 Component 头部匹配值（用于 Widom/Henry/Rosenbluth）
+
+        Args:
+            value_pattern: 编译后的正则，group(1) 为数值
+        Returns:
+            dict: {component_name: value}
+        """
+        headers = [(m.start(), m.group(1)) for m in self._re_components.finditer(self.output_string)]
+        if not headers:
+            return {}
+
+        results = {}
+        header_idx = 0
+        current_comp = headers[0][1]
+
+        for match in value_pattern.finditer(self.output_string):
+            pos = match.start()
+            while header_idx + 1 < len(headers) and headers[header_idx + 1][0] <= pos:
+                header_idx += 1
+                current_comp = headers[header_idx][1]
+
+            value = match.group(1)
+            if value == "-nan":
+                results[current_comp] = None
+                continue
+            try:
+                results[current_comp] = float(value)
+            except ValueError:
+                results[current_comp] = None
+
+        return results
 
     def is_finished(self):
         """检查模拟是否完成"""
@@ -168,50 +224,71 @@ class RASPA3_Output_Data:
 
     def get_pressure(self):
         """获取压力 [Pa]"""
+        if self._pressure is not _UNSET:
+            return self._pressure
         try:
             # 优先使用外部压力
             match = self._re_pressure_external.search(self.output_string)
             if match:
-                return float(match.group(1))
+                self._pressure = float(match.group(1))
+                return self._pressure
 
             # 备选: 平均压力
             match = self._re_pressure_average.search(self.output_string)
             if match and match.group(1) != "-nan":
-                return float(match.group(1))
+                self._pressure = float(match.group(1))
+                return self._pressure
 
-            return None
+            self._pressure = None
+            return self._pressure
         except (ValueError, AttributeError):
-            return None
+            self._pressure = None
+            return self._pressure
 
     def get_temperature(self):
         """获取温度 [K]"""
+        if self._temperature is not _UNSET:
+            return self._temperature
         try:
             match = self._re_temperature.search(self.output_string)
             if match:
-                return float(match.group(1))
-            return None
+                self._temperature = float(match.group(1))
+                return self._temperature
+            self._temperature = None
+            return self._temperature
         except (ValueError, AttributeError):
-            return None
+            self._temperature = None
+            return self._temperature
 
     def get_Framework_density(self):
         """获取框架密度 [kg/m^3]"""
+        if self._framework_density is not _UNSET:
+            return self._framework_density
         try:
             match = self._re_framework_density.search(self.output_string)
             if match:
-                return float(match.group(1))
-            return None
+                self._framework_density = float(match.group(1))
+                return self._framework_density
+            self._framework_density = None
+            return self._framework_density
         except (ValueError, AttributeError):
-            return None
+            self._framework_density = None
+            return self._framework_density
 
     def get_He_void_fraction(self):
         """获取氦空隙率"""
+        if self._he_void_fraction is not _UNSET:
+            return self._he_void_fraction
         try:
             match = self._re_he_void.search(self.output_string)
             if match:
-                return float(match.group(1))
-            return None
+                self._he_void_fraction = float(match.group(1))
+                return self._he_void_fraction
+            self._he_void_fraction = None
+            return self._he_void_fraction
         except (ValueError, AttributeError):
-            return None
+            self._he_void_fraction = None
+            return self._he_void_fraction
 
     def get_absolute_adsorption(self, unit='mol/kg'):
         """
@@ -284,6 +361,7 @@ class RASPA3_Output_Data:
         """
         result = {}
         components = self.get_components()
+        temperature = self.get_temperature()
 
         for component in components:
             block = self._get_component_block(component)
@@ -294,7 +372,21 @@ class RASPA3_Output_Data:
                 except ValueError:
                     result[component] = None
             else:
-                result[component] = None
+                # 无限稀释: 从 Framework-molecule energy/kB 的 Average [K] 计算吸附热
+                comp_pattern = re.escape(component)
+                energy_pattern = (
+                    r'Framework-molecule\s+energy/kB\s+\d+-\d+\s+[\(\[]' + comp_pattern +
+                    r'[\)\]]:[\s\S]+?Average\s+([\d.eE+-]+|\-nan)\s+\+/-\s+[\d.eE+-]+\s+\[K\]'
+                )
+                energy_match = re.search(energy_pattern, self.output_string)
+                if energy_match and energy_match.group(1) != "-nan" and temperature is not None:
+                    try:
+                        energy_value = float(energy_match.group(1))
+                        result[component] = (energy_value - temperature) * 8.314462618 / 1000
+                    except ValueError:
+                        result[component] = None
+                else:
+                    result[component] = None
 
         return result
 
@@ -308,16 +400,12 @@ class RASPA3_Output_Data:
         result = {}
         components = self.get_components()
 
+        if self._henry_by_component is None:
+            self._henry_by_component = self._map_values_by_component_header(self._re_henry)
+        mapped = self._henry_by_component
         for component in components:
-            block = self._get_component_block(component)
-            match = self._re_henry.search(block)
-            if match and match.group(1) != "-nan":
-                try:
-                    result[component] = float(match.group(1))
-                except ValueError:
-                    result[component] = None
-            else:
-                result[component] = None
+            value = mapped.get(component)
+            result[component] = value if value is not None else None
 
         return result
 
@@ -331,16 +419,12 @@ class RASPA3_Output_Data:
         result = {}
         components = self.get_components()
 
+        if self._rosenbluth_by_component is None:
+            self._rosenbluth_by_component = self._map_values_by_component_header(self._re_rosenbluth)
+        mapped = self._rosenbluth_by_component
         for component in components:
-            block = self._get_component_block(component)
-            match = self._re_rosenbluth.search(block)
-            if match and match.group(1) != "-nan":
-                try:
-                    result[component] = float(match.group(1))
-                except ValueError:
-                    result[component] = None
-            else:
-                result[component] = None
+            value = mapped.get(component)
+            result[component] = value if value is not None else None
 
         return result
 
@@ -411,10 +495,23 @@ def find_output_file_in_mc_dir(mc_dir):
 def extract_mc_number(mc_dir_path):
     """从 mc 目录路径中提取编号"""
     dir_name = os.path.basename(mc_dir_path)
-    match = re.search(r'mc(\d+)', dir_name)
+    match = _MC_NUMBER_RE.search(dir_name)
     if match:
         return int(match.group(1))
     return 0
+
+
+def find_mc_dir_from_path(file_path):
+    """从文件路径向上查找 mc 目录，返回 mc 目录路径和目录名"""
+    current = os.path.dirname(file_path)
+    while True:
+        dir_name = os.path.basename(current)
+        if _MC_DIR_NAME_RE.match(dir_name):
+            return current, dir_name
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None, None
+        current = parent
 
 
 def find_all_mc_directories(base_path):
@@ -429,14 +526,103 @@ def find_all_mc_directories(base_path):
     """
     mc_directories = []
 
+    base_name = os.path.basename(base_path)
+    if _MC_DIR_NAME_RE.match(base_name):
+        mc_directories.append(base_path)
+
     for root, dirs, files in os.walk(base_path):
         for dir_name in dirs:
             # 匹配 mc 数字格式的目录（包括各种状态后缀）
-            if re.match(r'mc\d+(__done|__failed|__running)?$', dir_name):
+            if _MC_DIR_NAME_RE.match(dir_name):
                 full_path = os.path.join(root, dir_name)
                 mc_directories.append(full_path)
 
     return mc_directories
+
+
+def _normalize_fw(s):
+    """Normalize framework names coming from CSV (may include NaN/float)."""
+    if s is None:
+        return ''
+    try:
+        if pd.isna(s):
+            return ''
+    except Exception:
+        pass
+    if not isinstance(s, str):
+        s = str(s)
+    return s.strip()
+
+
+def _best_item_for_framework(items):
+    """从候选条目中挑选最合适的一个：优先有 out_file 的 Done > Running > Failed > Unknown，有文件优先。"""
+    if not items:
+        return None
+
+    def score(it):
+        s = 0
+        if it.get('out_file'):
+            s += 10
+        st = it.get('status')
+        if st == 'Done':
+            s += 5
+        elif st == 'Running':
+            s += 3
+        elif st == 'Failed':
+            s += 1
+        return s
+
+    return sorted(items, key=score, reverse=True)[0]
+
+
+def _scan_mc_framework_map(base_path):
+    """
+    扫描 mc 目录并构建 framework -> items 映射
+    item: {mc_dir, status, out_file, framework}
+    """
+    fmap = {}
+    mc_dirs = find_all_mc_directories(base_path)
+    for mc_dir in mc_dirs:
+        dir_name = os.path.basename(mc_dir)
+        if '__done' in dir_name:
+            status = 'Done'
+        elif '__failed' in dir_name:
+            status = 'Failed'
+        elif '__running' in dir_name:
+            status = 'Running'
+        else:
+            status = 'Unknown'
+
+        out_file = find_output_file_in_mc_dir(mc_dir)
+        framework = extract_framework_name_from_simulation_json(mc_dir) or ''
+
+        item = {
+            'mc_dir': mc_dir,
+            'status': status,
+            'out_file': out_file,
+            'framework': framework,
+        }
+        fmap.setdefault(framework, []).append(item)
+
+    return fmap
+
+
+def find_all_output_files(base_path):
+    """
+    遍历 base_path 下所有 output 目录中的 .txt 文件
+
+    Returns:
+        输出文件路径列表
+    """
+    output_files = []
+
+    for root, dirs, files in os.walk(base_path):
+        if os.path.basename(root).lower() == 'output':
+            for file_name in files:
+                if file_name.endswith('.txt'):
+                    output_files.append(os.path.join(root, file_name))
+
+    return output_files
 
 
 def process_output_file(file_path, mc_number, selected_items, selected_units=None):
@@ -522,11 +708,110 @@ def process_output_file(file_path, mc_number, selected_items, selected_units=Non
         return None
 
 
+def find_and_process_files_by_csv_template(base_path, selected_items, selected_units=None, csv_file=None, framework_col=None):
+    """
+    以 CSV 模板顺序进行提取：
+    - 顺序与 csv_file_path 中 framework_column 完全一致
+    - 针对每个框架匹配 mc 目录（按框架名匹配）
+    - 没有/报错的就留空并打标记（not_found / no_output / failed / running）
+    """
+    if not csv_file or not framework_col or not os.path.exists(csv_file):
+        print("按模板对齐模式：未能读取 csv_file_path/framework_column 或 CSV 不存在，回退到目录扫描模式。")
+        return find_and_process_files_high_throughput(base_path, selected_items, selected_units)
+
+    df = pd.read_csv(csv_file, encoding='utf-8-sig')
+    if framework_col not in df.columns:
+        print(f"基线CSV缺少列: {framework_col}，回退到目录扫描模式。")
+        return find_and_process_files_high_throughput(base_path, selected_items, selected_units)
+
+    fw_list = [_normalize_fw(x) for x in df[framework_col].tolist()]
+
+    fmap = _scan_mc_framework_map(base_path)
+
+    def simple_key(s):
+        s = _normalize_fw(s)
+        return s.replace('.cif', '')
+
+    loose_index = {}
+    fmap_items = []
+    for k, items in fmap.items():
+        skey = simple_key(k)
+        loose_index.setdefault(skey, []).extend(items)
+        fmap_items.append((k, skey, items))
+
+    results = []
+
+    # 进度条开关（默认True）
+    show_progress = True
+    pbar = None
+    if show_progress:
+        try:
+            from tqdm import tqdm as _tqdm
+            pbar = _tqdm(total=len(fw_list), desc="Processing", unit="row")
+        except Exception:
+            pbar = None
+
+    for i, fw in enumerate(fw_list, start=1):
+        chosen = None
+        if fw in fmap:
+            chosen = _best_item_for_framework(fmap[fw])
+        if not chosen:
+            skey = simple_key(fw)
+            if skey in loose_index:
+                chosen = _best_item_for_framework(loose_index[skey])
+            if not chosen:
+                for k, kk, items in fmap_items:
+                    if not k:
+                        continue
+                    if kk == skey or kk.startswith(skey) or skey.startswith(kk):
+                        chosen = _best_item_for_framework(items)
+                        if chosen:
+                            break
+
+        if chosen and chosen.get('out_file'):
+            parsed = process_output_file(chosen['out_file'], i, selected_items, selected_units)
+            if parsed:
+                parsed['Framework Name'] = fw
+                parsed['MC_Directory'] = os.path.basename(chosen['mc_dir'])
+                parsed['Status'] = chosen['status']
+                results.append(parsed)
+                if pbar:
+                    pbar.update(1)
+                continue
+
+        row = {
+            'MC_Number': i,
+            'File Path': chosen['mc_dir'] if chosen else '',
+            'Framework Name': fw,
+            'warnings': [],
+            'MC_Directory': os.path.basename(chosen['mc_dir']) if chosen else '',
+        }
+        st = chosen['status'] if chosen else 'Unknown'
+        row['Status'] = st
+        if not chosen:
+            row['warnings'] = ['not_found']
+        else:
+            if st == 'Done':
+                row['warnings'] = ['no_output']
+            elif st == 'Failed':
+                row['warnings'] = ['failed']
+            elif st == 'Running':
+                row['warnings'] = ['running']
+            else:
+                row['warnings'] = ['not_started']
+
+        results.append(row)
+        if pbar:
+            pbar.update(1)
+
+    if pbar:
+        pbar.close()
+    return results
+
+
 def find_and_process_files_high_throughput(base_path, selected_items, selected_units=None):
     """
-    高通量模式数据提取
-
-    按 mc1, mc2, mc3... 顺序处理 RASPA3 输出
+    自动遍历 output 目录数据提取
 
     Args:
         base_path: 基础目录路径
@@ -538,34 +823,35 @@ def find_and_process_files_high_throughput(base_path, selected_items, selected_u
     """
     all_results = []
 
-    print("开始 RASPA3 高通量计算数据提取...")
+    print("开始 RASPA3 数据提取 (遍历 output 目录)...")
 
-    # 查找所有 mc 目录
+    output_files = find_all_output_files(base_path)
     mc_directories = find_all_mc_directories(base_path)
 
-    if not mc_directories:
-        print("未找到 mc 目录结构")
-        return []
+    if not output_files:
+        print("未找到 output 目录下的输出文件")
+        # 仍然记录可能的 mc 目录缺失输出
+        if not mc_directories:
+            return []
 
-    print(f"找到 {len(mc_directories)} 个 mc 目录")
+    output_files.sort()
 
-    # 按 mc 编号排序
-    mc_directories.sort(key=lambda x: extract_mc_number(x))
+    print(f"找到 {len(output_files)} 个 output 输出文件")
+    print("开始处理文件...")
 
-    print("开始处理目录...")
+    mc_with_output = set()
 
-    with tqdm(total=len(mc_directories), desc="Processing", unit="dir") as pbar:
-        for mc_dir in mc_directories:
-            mc_number = extract_mc_number(mc_dir)
-            dir_name = os.path.basename(mc_dir)
-            output_file = find_output_file_in_mc_dir(mc_dir)
+    with tqdm(total=len(output_files), desc="Processing", unit="file") as pbar:
+        for idx, output_file in enumerate(output_files, start=1):
+            mc_dir, dir_name = find_mc_dir_from_path(output_file)
+            mc_number = extract_mc_number(mc_dir) if mc_dir else idx
 
-            if output_file:
-                result = process_output_file(
-                    output_file, mc_number, selected_items, selected_units
-                )
-                if result:
-                    # 添加状态信息
+            result = process_output_file(
+                output_file, mc_number, selected_items, selected_units
+            )
+            if result:
+                if dir_name:
+                    mc_with_output.add(mc_dir)
                     if '__done' in dir_name:
                         result['Status'] = 'Done'
                     elif '__failed' in dir_name:
@@ -576,38 +862,43 @@ def find_and_process_files_high_throughput(base_path, selected_items, selected_u
                         result['warnings'].append('running')
                     else:
                         result['Status'] = 'Unknown'
-
                     result['MC_Directory'] = dir_name
-                    all_results.append(result)
-                    pbar.update(1)
-                    continue
+                else:
+                    result['Status'] = 'Unknown'
+                    result['MC_Directory'] = ''
 
-            # 没有输出文件，创建占位记录
+                all_results.append(result)
+            pbar.update(1)
+
+    # 为存在但无输出的 mc 目录补占位记录
+    if mc_directories:
+        for mc_dir in mc_directories:
+            if mc_dir in mc_with_output:
+                continue
+            dir_name = os.path.basename(mc_dir)
+            mc_number = extract_mc_number(mc_dir)
             framework_name = extract_framework_name_from_simulation_json(mc_dir) or ''
 
             result = {
                 'MC_Number': mc_number,
                 'File Path': mc_dir,
                 'Framework Name': framework_name,
-                'warnings': [],
+                'warnings': ['no_output'],
                 'MC_Directory': dir_name,
             }
 
             if '__done' in dir_name:
                 result['Status'] = 'Done'
-                result['warnings'] = ['no_output']
             elif '__failed' in dir_name:
                 result['Status'] = 'Failed'
-                result['warnings'] = ['failed']
+                result['warnings'].append('failed')
             elif '__running' in dir_name:
                 result['Status'] = 'Running'
-                result['warnings'] = ['running']
+                result['warnings'].append('running')
             else:
                 result['Status'] = 'Unknown'
-                result['warnings'] = ['not_started']
 
             all_results.append(result)
-            pbar.update(1)
 
     # 按 mc 编号排序
     all_results.sort(key=lambda x: x['MC_Number'])
@@ -616,12 +907,14 @@ def find_and_process_files_high_throughput(base_path, selected_items, selected_u
     done_count = len([r for r in all_results if r.get('Status') == 'Done'])
     failed_count = len([r for r in all_results if r.get('Status') == 'Failed'])
     running_count = len([r for r in all_results if r.get('Status') == 'Running'])
+    unknown_count = len([r for r in all_results if r.get('Status') == 'Unknown'])
 
     print(f"\n处理总结:")
-    print(f"总计 mc 目录数: {len(all_results)}")
+    print(f"总计记录数: {len(all_results)}")
     print(f"Done 状态: {done_count}")
     print(f"Failed 状态: {failed_count}")
     print(f"Running 状态: {running_count}")
+    print(f"Unknown 状态: {unknown_count}")
 
     return all_results
 

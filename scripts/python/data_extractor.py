@@ -29,6 +29,17 @@ except ImportError:
     sys.exit(1)
 
 
+# ============ 常用正则（预编译） ============
+_MC_DIR_NAME_RE = re.compile(r'^mc(\d+)(?:__(done|failed|running))?$')
+_MC_NUMBER_RE = re.compile(r'mc(\d+)')
+
+_FRAMEWORK_NAME_PATTERNS = (
+    re.compile(r'output_(.+?)_\d+\.\d+_\d+\.\d+_\d+\.data'),
+    re.compile(r'output_(.+?)_\d+(?:\.\d+)+(?:_\d+(?:\.\d+)*)*(?:\.data)?$'),
+    re.compile(r'output_(.+?)_\d+_\d+(?:\.data)?$'),
+    re.compile(r'output_([^._]+)'),
+)
+
 # ============ RASPA 版本检测 ============
 
 def detect_raspa_version(base_path):
@@ -50,7 +61,7 @@ def detect_raspa_version(base_path):
     mc_dir = None
     for root, dirs, files in os.walk(base_path):
         for dir_name in dirs:
-            if re.match(r'mc\d+(__done|__failed|__running)?$', dir_name):
+            if _MC_DIR_NAME_RE.match(dir_name):
                 mc_dir = os.path.join(root, dir_name)
                 break
         if mc_dir:
@@ -114,6 +125,12 @@ class RASPA_Output_Data():
     _re_framework_density = re.compile(r'Framework density:\s+(.*)\s+\[kg\/m\^3\]')
     _re_inf_dilution_energy = re.compile(
         r'Total energy:\n=============\n(?:.*\n)*?\s*-+\n\s*Average\s+(\-?\d+\.?\d*)\s+\[K\]'
+    )
+    _re_adsorption_heat_component = re.compile(
+        r'Enthalpy of adsorption component \d+ \[(.*)\]\n\s*-*\n.*\n.*\n.*\n.*\n.*\n\s*-*\n.*\n\s+(\-?\d+\.?\d*)\s+'
+    )
+    _re_adsorption_heat_total = re.compile(
+        r'Total enthalpy of adsorption\n.*\n.*\n.*\n.*\n.*\n.*\n.*\n.*\n\s+(\-?\d+\.?\d*)\s+'
     )
 
     # 为吸附量按单位预编译正则
@@ -205,21 +222,15 @@ class RASPA_Output_Data():
         '''
         try:
             result = {}
-            # 定义第一种情况下的正则表达式模式
-            pattern1 = r'Enthalpy of adsorption component \d+ \[(.*)\]\n\s*-*\n.*\n.*\n.*\n.*\n.*\n\s*-*\n.*\n\s+(\-?\d+\.?\d*)\s+'
-
-            # 定义第二种情况下的正则表达式模式
-            pattern2 = r'Total enthalpy of adsorption\n.*\n.*\n.*\n.*\n.*\n.*\n.*\n.*\n\s+(\-?\d+\.?\d*)\s+'
-
-            # 尝试匹配pattern1
-            data1 = re.findall(pattern1, self.output_string)
+            # 优先匹配各组分的吸附热
+            data1 = self._re_adsorption_heat_component.findall(self.output_string)
 
             if data1:
                 for comp, value in data1:
                     result[comp] = value  # 使用匹配到的吸附质名称和对应的吸附热值
             else:
-                # 如果pattern1匹配不成功，则匹配pattern2
-                data2 = re.findall(pattern2, self.output_string)
+                # 如果组分匹配不成功，则匹配总吸附热
+                data2 = self._re_adsorption_heat_total.findall(self.output_string)
                 if data2:
                     result["Total enthalpy of adsorption"] = data2[0]
             return result
@@ -358,40 +369,12 @@ def extract_framework_name_from_filepath(file_path):
     try:
         # 获取文件名
         filename = os.path.basename(file_path)
-        
-        # 新的提取逻辑：从output_到数字参数模式之间的内容
-        
-        # 方法1：查找从output_开始到温度参数（形如_298.000000或_493.000000）之前的内容
-        pattern = r'output_(.+?)_\d+\.\d+_\d+\.\d+_\d+\.data'
-        match = re.search(pattern, filename)
-        
-        if match:
-            return match.group(1)
-        
-        # 方法2：处理形如 output_MOF_5_298.0_101325.data 的情况
-        # 这里我们需要区分框架名称中的数字和参数数字
-        # 对于 MOF_5 这样的名称，5是框架名称的一部分，不是参数
-        pattern2 = r'output_(.+?)_\d+(?:\.\d+)+(?:_\d+(?:\.\d+)*)*(?:\.data)?$'
-        match2 = re.search(pattern2, filename)
-        
-        if match2:
-            framework_part = match2.group(1)
-            return framework_part
-        
-        # 方法3：更宽松的匹配，对于不有小数点的情况
-        pattern3 = r'output_(.+?)_\d+_\d+(?:\.data)?$'
-        match3 = re.search(pattern3, filename)
-        
-        if match3:
-            framework_part = match3.group(1)
-            return framework_part
-        
-        # 方法4：如果以上都不匹配，尝试原来的简单模式
-        pattern4 = r'output_([^._]+)'
-        match4 = re.search(pattern4, filename)
-        if match4:
-            return match4.group(1)
-        
+
+        for pattern in _FRAMEWORK_NAME_PATTERNS:
+            match = pattern.search(filename)
+            if match:
+                return match.group(1)
+
         return None
     except Exception as e:
         print(f"提取框架名称时出错: {str(e)}")
@@ -449,7 +432,7 @@ def process_output_file(file_path, mc_number, selected_items, temperature=None, 
             mc_dir = None
             path_parts = file_path.split(os.sep)
             for i, part in enumerate(path_parts):
-                if re.match(r'mc\d+', part):
+                if _MC_DIR_NAME_RE.match(part):
                     mc_dir = os.sep.join(path_parts[:i+1])
                     break
             
@@ -534,7 +517,7 @@ def find_all_mc_directories(base_path):
     for root, dirs, files in os.walk(base_path):
         for dir_name in dirs:
             # 匹配mc数字格式的目录（包括各种状态）
-            if re.match(r'mc\d+(__done|__failed|__running)?$', dir_name):
+            if _MC_DIR_NAME_RE.match(dir_name):
                 full_path = os.path.join(root, dir_name)
                 mc_directories.append(full_path)
     
@@ -581,7 +564,7 @@ def extract_mc_number(mc_dir_path):
     """从mc目录路径中提取数字"""
     dir_name = os.path.basename(mc_dir_path)
     # 匹配mc后面的数字，忽略__done、__failed等后缀
-    match = re.search(r'mc(\d+)', dir_name)
+    match = _MC_NUMBER_RE.search(dir_name)
     if match:
         return int(match.group(1))
     return 0
@@ -631,21 +614,7 @@ def _process_single_mc_dir(mc_dir, selected_items, temperature, selected_units, 
 
         # 没有输出文件或解析失败，创建占位记录
         # 尝试从 simulation.input 中补全关键信息，便于后续“警告提取/重算”流程使用
-        framework_name_fallback = ''
-        try:
-            sim_input = os.path.join(mc_dir, 'simulation.input')
-            if os.path.exists(sim_input):
-                with open(sim_input, 'r', encoding='utf-8', errors='ignore') as f:
-                    for line in f:
-                        # Example: "FrameworkName QOTLOD01_ASR"
-                        if 'FrameworkName' in line:
-                            parts = line.strip().split()
-                            if len(parts) >= 2:
-                                framework_name_fallback = parts[-1]
-                            break
-        except Exception:
-            # 兜底：保持空值
-            pass
+        framework_name_fallback = _read_framework_from_simulation_input(mc_dir) or ''
 
         # File Path 使用 mc 目录做占位，避免在导出CSV时出现空字段
         result = {
@@ -816,6 +785,38 @@ def _prefer_existing_mc_dir(base_path, index: int) -> str:
             return p
     return candidates[-1]
 
+def _build_mc_dir_index(base_path: str):
+    """扫描 base_path 下一层 mc 目录，构建编号 -> {status: path} 索引与已存在目录集合。
+    返回 (index, existing_dirs)。若扫描失败，existing_dirs 为 None。
+    """
+    index = {}
+    existing_dirs = set()
+    try:
+        with os.scandir(base_path) as it:
+            for entry in it:
+                if not entry.is_dir():
+                    continue
+                match = _MC_DIR_NAME_RE.match(entry.name)
+                if not match:
+                    continue
+                mc_num = int(match.group(1))
+                status = match.group(2) or ''
+                index.setdefault(mc_num, {})[status] = entry.path
+                existing_dirs.add(entry.path)
+    except (FileNotFoundError, PermissionError):
+        return {}, None
+    return index, existing_dirs
+
+def _select_mc_dir_from_index(index, base_path: str, mc_num: int) -> str:
+    """根据索引选择最佳 mc 目录（done > failed > running > 无后缀）。"""
+    slots = index.get(mc_num)
+    if slots:
+        for status in ('done', 'failed', 'running', ''):
+            path = slots.get(status)
+            if path:
+                return path
+    return os.path.join(base_path, f"mc{mc_num}")
+
 def _read_framework_from_simulation_input(mc_dir: str) -> str:
     try:
         sim = os.path.join(mc_dir, 'simulation.input')
@@ -895,9 +896,22 @@ def find_and_process_files_aligned_to_csv(base_path, selected_items, output_form
         except Exception:
             pbar = None
 
+    mc_dir_index, existing_mc_dirs = _build_mc_dir_index(base_path)
+    output_file_cache = {}
+
     for i, fw in enumerate(frameworks, start=1):
-        mc_dir = _prefer_existing_mc_dir(base_path, i)
-        out_file = find_output_file_in_mc_dir(mc_dir) if os.path.isdir(mc_dir) else None
+        if existing_mc_dirs is None:
+            mc_dir = _prefer_existing_mc_dir(base_path, i)
+            out_file = find_output_file_in_mc_dir(mc_dir) if os.path.isdir(mc_dir) else None
+        else:
+            mc_dir = _select_mc_dir_from_index(mc_dir_index, base_path, i)
+            out_file = None
+            if mc_dir in existing_mc_dirs:
+                if mc_dir in output_file_cache:
+                    out_file = output_file_cache[mc_dir]
+                else:
+                    out_file = find_output_file_in_mc_dir(mc_dir)
+                    output_file_cache[mc_dir] = out_file
 
         row = {
             'MC_Number': i,
@@ -1102,8 +1116,11 @@ def find_and_process_files_by_csv_template(base_path, selected_items, output_for
         s = _normalize_fw(s)
         return s.replace('.cif','')
     loose_index = {}
+    fmap_items = []
     for k, items in fmap.items():
-        loose_index.setdefault(simple_key(k), []).append(items)
+        skey = simple_key(k)
+        loose_index.setdefault(skey, []).extend(items)
+        fmap_items.append((k, skey, items))
 
     results = []
     # 进度条开关（遵循配置 performance.show_progress，默认True）
@@ -1129,17 +1146,12 @@ def find_and_process_files_by_csv_template(base_path, selected_items, output_for
             # 宽松匹配：去掉 .cif 后缀后相等，或 startswith/endswith
             skey = simple_key(fw)
             if skey in loose_index:
-                # loose_index 存储的是列表的列表
-                flat = []
-                for lst in loose_index[skey]:
-                    flat.extend(lst)
-                chosen = _best_item_for_framework(flat)
+                chosen = _best_item_for_framework(loose_index[skey])
             if not chosen:
                 # 遍历查找开头/包含关系
-                for k, items in fmap.items():
+                for k, kk, items in fmap_items:
                     if not k:
                         continue
-                    kk = simple_key(k)
                     if kk == skey or kk.startswith(skey) or skey.startswith(kk):
                         chosen = _best_item_for_framework(items)
                         if chosen:
@@ -1498,16 +1510,75 @@ def _default_base_path_from_config(cfg: dict):
         pass
     return os.getcwd()
 
+def _get_csv_settings(cfg: dict):
+    try:
+        calc = cfg.get('calculation', {})
+        return calc.get('csv_file_path'), calc.get('framework_column')
+    except Exception:
+        return None, None
+
+def _print_csv_info(csv_file, framework_col):
+    if not csv_file or not framework_col:
+        print("✗ 未配置 csv_file_path / framework_column")
+        return
+    print(f"✓ csv_file_path: {csv_file}")
+    print(f"✓ framework_column: {framework_col}")
+    try:
+        if os.path.exists(csv_file):
+            df = pd.read_csv(csv_file, encoding='utf-8-sig')
+            print(f"✓ CSV 行数: {len(df)}")
+        else:
+            print("✗ CSV 文件不存在")
+    except Exception as e:
+        print(f"✗ 读取 CSV 失败: {e}")
+
 def main():
     print("=== RASPA数据提取工具 (支持 RASPA2/RASPA3) ===")
     print("该工具将从指定目录中提取所有output文件的数据")
 
-    # 预加载配置以给出更合理的默认 base_path
+    # 预加载配置
     cfg, cfg_path = _load_config()
-    suggested_base = _default_base_path_from_config(cfg)
+    suggested_base_from_cfg = _default_base_path_from_config(cfg)
+    csv_file, framework_col = _get_csv_settings(cfg)
+
+    # 选择提取模式（高通量/普通）
+    print("\n选择提取模式:")
+    print("1. 高通量模式（按配置CSV顺序对齐）")
+    print("2. 普通模式（扫描output文件）")
+    default_mode = '1' if (csv_file and framework_col) else '2'
+    mode_choice = input(f"请选择提取模式 (1/2, 默认: {default_mode}): ").strip()
+    if not mode_choice:
+        mode_choice = default_mode
+
+    use_high_throughput = mode_choice == '1'
+    if use_high_throughput:
+        print("\n将使用配置中的CSV进行对齐提取：")
+        _print_csv_info(csv_file, framework_col)
+        if not csv_file or not framework_col or not os.path.exists(csv_file):
+            print("✗ CSV 未就绪，回退到普通模式。")
+            use_high_throughput = False
+    else:
+        print("将使用普通模式扫描output文件。")
+
+    # 选择输出格式
+    print("\n选择输出格式:")
+    print("1. Excel格式 (.xlsx)")
+    print("2. CSV格式 (.csv)")
+    format_choice = input("请选择输出格式 (1/2, 默认为Excel): ").strip()
+    
+    if format_choice == '2':
+        output_format = 'csv'
+        default_filename = 'raspa_results.csv'
+    else:
+        output_format = 'excel'
+        default_filename = 'raspa_results.xlsx'
 
     # 获取目录路径（默认使用配置中的 work_dir/output_directory）
-    base_path = input(f"请输入要提取数据的目录路径 (默认: {suggested_base}): ").strip()
+    if output_format == 'csv':
+        suggested_base = os.getcwd()
+    else:
+        suggested_base = suggested_base_from_cfg
+    base_path = input(f"\n请输入要提取数据的目录路径 (默认: {suggested_base}): ").strip()
     if not base_path:
         base_path = suggested_base
 
@@ -1558,54 +1629,29 @@ def main():
             print("回退到 RASPA2 提取器...")
             raspa_version = "raspa2"
 
-    # 如果成功导入 RASPA3 模块，使用 RASPA3 处理流程
-    if raspa_version == "raspa3":
-        # 继续使用当前工作目录和已输入的 base_path
-        pass  # 后续代码会处理
-
-    # 检测计算模式
-    print("\n检测计算模式...")
+    # 检测目录结构（仅提示）
+    print("\n检测目录结构...")
     mc_dirs = []
     for root, dirs, files in os.walk(base_path):
         for dir_name in dirs:
-            if re.match(r'mc\d+', dir_name):
+            if _MC_DIR_NAME_RE.match(dir_name):
                 mc_dirs.append(dir_name)
         if mc_dirs:
             break  # 只检查第一层目录
 
-    is_high_throughput = len(mc_dirs) > 0
-
-    if is_high_throughput:
-        print(f"✓ 检测到高通量计算模式（找到 {len(mc_dirs)} 个mc目录）")
-        print("将按mc1, mc2, mc3...的顺序提取数据，包括没有输出文件的目录")
-        print("✓ 将基于配置中的 csv_file_path / framework_column 对齐输出行数")
+    if mc_dirs:
+        print(f"✓ 发现 {len(mc_dirs)} 个mc目录")
     else:
-        print("✓ 检测到通用模式")
-
-    # 选择输出格式
-    print("\n选择输出格式:")
-    print("1. Excel格式 (.xlsx)")
-    print("2. CSV格式 (.csv)")
-    format_choice = input("请选择输出格式 (1/2, 默认为Excel): ").strip()
-    
-    if format_choice == '2':
-        output_format = 'csv'
-        default_filename = 'raspa_results.csv'
-    else:
-        output_format = 'excel'
-        default_filename = 'raspa_results.xlsx'
+        print("✓ 未发现mc目录")
 
     # 选择要提取的数据项
     options_dict = {
-        '1': 'pressure',
-        '2': 'He_void_fraction',
-        '3': 'Surface_Area',
-        '4': 'Framework_density',
-        '5': 'absolute_adsorption',
-        '6': 'excess_adsorption',
-        '7': 'adsorption_heat',
-        '8': 'adsorption_heat_infinite_dilution',
-        '9': 'henry_coefficient'
+        '1': 'absolute_adsorption',
+        '2': 'excess_adsorption',
+        '3': 'adsorption_heat',
+        '4': 'adsorption_heat_infinite_dilution',
+        '5': 'henry_coefficient',
+        '6': 'rosenbluth_weight',
     }
 
     # 默认选择所有项
@@ -1617,15 +1663,12 @@ def main():
     if custom_select == 'y':
         while True:
             print("\n请选择要提取的数据项（输入对应的数字，用逗号分隔）：")
-            print("1. Pressure (压力)")
-            print("2. He Void Fraction (氦空隙率)")
-            print("3. Surface Area (比表面积)")
-            print("4. Framework Density (框架密度)")
-            print("5. Absolute Adsorption (绝对吸附量)")
-            print("6. Excess Adsorption (超额吸附量)")
-            print("7. Adsorption Heat (吸附热)")
-            print("8. Adsorption Heat at Infinite Dilution (无限稀释吸附热)")
-            print("9. Henry Coefficient (亨利系数)")
+            print("1. Absolute Adsorption (绝对吸附量)")
+            print("2. Excess Adsorption (超额吸附量)")
+            print("3. Adsorption Heat (吸附热)")
+            print("4. Adsorption Heat at Infinite Dilution (无限稀释吸附热)")
+            print("5. Henry Coefficient (亨利系数)")
+            print("6. Rosenbluth Weight (Rosenbluth权重)")
             selected_numbers = input("您的选择：").strip()
 
             if not selected_numbers:  # 如果用户没有输入，默认选择所有项
@@ -1723,10 +1766,19 @@ def main():
 
     # 根据 RASPA 版本选择处理函数
     if raspa_version == "raspa3":
-        # RASPA3: 使用专用提取器
         print("使用 RASPA3 数据提取器处理...")
-        results = raspa3_process(base_path, selected_items, selected_units)
-    elif is_high_throughput:
+        if use_high_throughput:
+            from data_extractor_raspa3 import find_and_process_files_by_csv_template as raspa3_by_csv
+            results = raspa3_by_csv(
+                base_path,
+                selected_items,
+                selected_units,
+                csv_file=csv_file,
+                framework_col=framework_col,
+            )
+        else:
+            results = raspa3_process(base_path, selected_items, selected_units)
+    elif use_high_throughput:
         # RASPA2 高通量模式：优先使用"按模板(配置CSV中framework_column)匹配"的提取，确保按框架名映射
         results = find_and_process_files_by_csv_template(
             base_path,
@@ -1756,9 +1808,9 @@ def main():
         print(f"\n✓ 数据提取成功。共处理 {len(results)} 个目录。")
         print(f"✓ 结果已保存到 '{output_file}'")
         
-        if is_high_throughput:
-            print(f"✓ 数据已按mc目录编号顺序排列，与配置CSV完全对齐")
-            print(f"✓ 包括没有输出文件/未存在的目录（保留地址或占位信息）")
+        if use_high_throughput:
+            print("✓ 数据已按配置CSV顺序对齐")
+            print("✓ 包括没有输出文件/未存在的目录（保留地址或占位信息）")
     else:
         print("\n✗ 未找到数据文件或所有处理失败。")
 

@@ -11,10 +11,7 @@
       "NumberOfUnitCells" : [2, 2, 2],
       "ExternalTemperature" : 298.0,
       "ExternalPressure" : 10000,
-      "ChargeMethod" : "Ewald",
-      "ComputeDensityGrid" : true,
-      "SampleDensityGridEvery" : 10,
-      "DensityGridSize" : [128, 128, 128]
+      "ChargeMethod" : "Ewald"
     }
   ],
 

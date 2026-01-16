@@ -473,6 +473,10 @@ raspa-calc
 # - simulation.input → 使用 RASPA2 提取器
 ```
 
+更详细的交互顺序、高通量/普通模式差异、以及 Henry/Rosenbluth 等字段说明，见：
+
+- `docs/数据提取模式使用说明.md`
+
 ### 8.3 RASPA3 输出格式
 
 RASPA3 输出文件位于 `output/*.txt`，吸附量格式：

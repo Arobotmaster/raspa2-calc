@@ -81,10 +81,20 @@ for i in "${!NODES[@]}"; do
 
   if [[ "$AUTO_RUN" = "1" ]]; then
     echo "远端执行..."
+    remote_env="NFS_SERVER=${NFS_SERVER} NFS_EXPORT=${NFS_EXPORT}"
+    if [ -n "${NFS_WORK_EXPORT:-}" ]; then
+      remote_env="${remote_env} NFS_WORK_EXPORT=${NFS_WORK_EXPORT}"
+    fi
+    if [ -n "${NFS_WORK_MOUNT:-}" ]; then
+      remote_env="${remote_env} NFS_WORK_MOUNT=${NFS_WORK_MOUNT}"
+    fi
+    if [ -n "${NFS_WORK_OPTS:-}" ]; then
+      remote_env="${remote_env} NFS_WORK_OPTS=${NFS_WORK_OPTS}"
+    fi
     if [[ "$MODE" = "recover" ]]; then
-      ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" "bash ~/${REMOTE_SCRIPT} --recover" || true
+      ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" "${remote_env} bash ~/${REMOTE_SCRIPT} --recover" || true
     else
-      ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" "bash ~/${REMOTE_SCRIPT}" || true
+      ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" "${remote_env} bash ~/${REMOTE_SCRIPT}" || true
     fi
   else
     echo "请手动执行："
