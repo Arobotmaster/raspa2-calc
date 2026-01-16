@@ -131,29 +131,33 @@ bash /home/zjp/raspa2-calc/.raspa_tools/nfs/nfs_setup_all_nodes.sh setup
 bash /home/zjp/raspa2-calc/.raspa_tools/nfs/nfs_setup_all_nodes.sh recover --run
 ```
 
-### 3.1 NFS服务器配置 (worker-node-03)
+### 3.1 当前推荐架构（NVMe 在线 + HDD 归档）
+
+为了让 `raspa-calc` 的脚本/队列/任务目录读写都保持高速，推荐使用 **NVMe NFS 作为在线计算区**，并将历史目录放到 **HDD 归档区**。当前落地的导出为：
+
+- 在线（NVMe）：`10.10.14.12:/srv/raspa2-calc` → `/home/zjp/raspa2-calc`
+- 在线（NVMe work）：`10.10.14.12:/srv/raspa2-calc-work` → `/home/zjp/raspa2-calc/work`
+- 归档（HDD，仅历史备份）：`10.10.14.12:/shared/raspa2-calc/work_hdd_backup_20260115_224850`
+  → `/home/zjp/raspa2-calc/work_hdd_backup_20260115_224850`
+
+详细说明见：`docs/存储架构说明_NVMe_NFS_分层存储.md`
+
+### 3.2 NFS服务器配置 (10.10.14.12)
 
 #### 3.1.1 创建共享目录
 ```bash
-# 在worker-node-03上执行
-sudo mkdir -p /shared/raspa2-calc
-sudo mkdir -p /shared/raspa2-calc/{work,.raspa_tools}
+# 在 NFS 服务器上执行（推荐：在线区用 NVMe）
+sudo mkdir -p /srv/raspa2-calc
+sudo mkdir -p /srv/raspa2-calc-work
 
 # 重要：共享目录建议用固定的用户/组（UID/GID 必须在所有节点一致）
-sudo chown -R zjp:zjp /shared/raspa2-calc
+sudo chown -R zjp:zjp /srv/raspa2-calc /srv/raspa2-calc-work
 
 # 推荐开启 setgid：让新文件继承目录 group（避免跨节点出现 “数字 gid”/权限混乱）
-sudo chmod 2775 /shared/raspa2-calc /shared/raspa2-calc/work /shared/raspa2-calc/.raspa_tools
+sudo chmod 2775 /srv/raspa2-calc /srv/raspa2-calc-work
 ```
 
-> 💡 建议：避免把 `/shared` 的真实数据放在根分区（容易写满）。可以把真实数据放到大盘（如 `/home/shared/raspa2-calc`），再 bind-mount 回 `/shared/raspa2-calc`。
->
-> ```bash
-> sudo mkdir -p /home/shared/raspa2-calc
-> sudo mount --bind /home/shared/raspa2-calc /shared/raspa2-calc
-> echo "/home/shared/raspa2-calc /shared/raspa2-calc none bind 0 0" | sudo tee -a /etc/fstab
-> sudo mount -a
-> ```
+> 💡 空间管理建议：在线区在 NVMe 上会更快，但需要定期归档/清理避免写满。可将历史目录放到 HDD（例如 `/shared/raspa2-calc/work_hdd_backup_...`），并通过单独 NFS 导出挂载到客户端固定路径。
 
 #### 3.1.2 配置NFS导出
 ```bash
@@ -161,7 +165,10 @@ sudo chmod 2775 /shared/raspa2-calc /shared/raspa2-calc/work /shared/raspa2-calc
 sudo vim /etc/exports
 
 # 添加以下内容：
-/shared/raspa2-calc 10.10.14.0/24(rw,sync,no_root_squash,no_subtree_check)
+/srv/raspa2-calc 10.10.14.0/24(rw,sync,no_root_squash,no_subtree_check)
+/srv/raspa2-calc-work 10.10.14.0/24(rw,sync,no_root_squash,no_subtree_check)
+# 可选：HDD 归档目录（按需导出）
+/shared/raspa2-calc/work_hdd_backup_20260115_224850 10.10.14.0/24(rw,sync,no_root_squash,no_subtree_check)
 ```
 
 #### 3.1.3 启动NFS服务
@@ -178,7 +185,7 @@ sudo exportfs -v
 showmount -e localhost
 ```
 
-### 3.2 NFS客户端配置 (所有其他节点)
+### 3.3 NFS客户端配置 (所有节点)
 
 #### 3.2.1 创建挂载点
 ```bash
@@ -190,7 +197,10 @@ sudo chown zjp:zjp /home/zjp/raspa2-calc
 #### 3.2.2 手动挂载测试
 ```bash
 # 测试挂载
-sudo mount -t nfs4 10.10.14.12:/shared/raspa2-calc /home/zjp/raspa2-calc
+sudo mount -t nfs4 10.10.14.12:/srv/raspa2-calc /home/zjp/raspa2-calc
+sudo mount -t nfs4 10.10.14.12:/srv/raspa2-calc-work /home/zjp/raspa2-calc/work
+# 可选：HDD 归档目录
+sudo mount -t nfs4 10.10.14.12:/shared/raspa2-calc/work_hdd_backup_20260115_224850 /home/zjp/raspa2-calc/work_hdd_backup_20260115_224850
 
 # 验证挂载
 df -h | grep raspa
@@ -203,7 +213,10 @@ ls -la /home/zjp/raspa2-calc
 sudo vim /etc/fstab
 
 # 添加以下行：
-10.10.14.12:/shared/raspa2-calc /home/zjp/raspa2-calc nfs4 defaults,_netdev,hard,timeo=600,retrans=2 0 0
+10.10.14.12:/srv/raspa2-calc /home/zjp/raspa2-calc nfs4 defaults,_netdev,hard,timeo=600,retrans=2 0 0
+10.10.14.12:/srv/raspa2-calc-work /home/zjp/raspa2-calc/work nfs4 defaults,_netdev,hard,timeo=600,retrans=2 0 0
+# 可选：HDD 归档目录
+10.10.14.12:/shared/raspa2-calc/work_hdd_backup_20260115_224850 /home/zjp/raspa2-calc/work_hdd_backup_20260115_224850 nfs4 defaults,_netdev,hard,timeo=600,retrans=2 0 0
 
 # 测试fstab配置
 sudo umount /home/zjp/raspa2-calc
