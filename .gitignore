@@ -1,0 +1,6 @@
+*.log
+*.pyc
+__pycache__/
+*.csv
+*.cache
+params_cache.json

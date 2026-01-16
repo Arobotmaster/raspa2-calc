@@ -1,0 +1,165 @@
+# RASPA 计算工具配置文件
+# 版本: 2.5.0 (支持 RASPA2/RASPA3 双版本)
+
+# ============================================================
+#                    环境配置
+# ============================================================
+environment:
+  # 工作目录（所有计算任务、输入文件、输出文件都在此目录下执行和存储）
+  work_dir: "/home/zjp/raspa2-calc/work"
+  # 工作目录最小剩余空间（GB）。低于该值会提醒或阻断提交。
+  # work_dir_min_free_gb: 50
+  # 空间不足时的动作：warn 或 abort
+  # work_dir_min_free_action: "warn"
+
+  # ============ RASPA 版本选择 ============
+  # 选择使用的 RASPA 版本: "raspa2" 或 "raspa3"
+  # 此设置决定使用哪套配置（下方 RASPA2 或 RASPA3 配置块）
+  raspa_version: "raspa3"
+
+  # ============================================================
+  #                    RASPA2 专用配置
+  # ============================================================
+  # 仅当 raspa_version: "raspa2" 时使用以下配置
+
+  # RASPA2 安装目录（需要找到 bin/simulate 可执行文件）
+  raspa_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0"
+
+  # RASPA2 CIF 文件目录
+  raspa2_cif_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif"
+
+  # RASPA2 simulation.input 模板路径（留空使用默认模板）
+  template_path: "/home/zjp/raspa2-calc/work/simulation.input"
+
+  # ============================================================
+  #                    RASPA3 专用配置
+  # ============================================================
+  # 仅当 raspa_version: "raspa3" 时使用以下配置
+
+  # RASPA3 conda 环境名称
+  raspa3_conda_env: "raspa3"
+
+  # RASPA3 JSON 文件目录
+  # 包含: force_field.json 和分子定义文件 (如 CO2.json, CH4.json 等)
+  # 高通量计算时会自动复制到每个任务目录
+  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/wxj"
+
+  # RASPA3 CIF 文件基础路径
+  # 框架名会追加到此路径，例如: {raspa3_cif_base_path}/{框架名}.cif
+  raspa3_cif_base_path: "/home/zjp/raspa2-calc/filter/wxj-3442"
+
+  # RASPA3 simulation.json 模板路径
+  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/wxj/simulation.json"
+
+# ============================================================
+#                    计算参数 (通用)
+# ============================================================
+calculation:
+  # 默认截断半径 (Å)
+  cutoff_radius: 12.8
+
+  # 默认分子 (支持多种气体分子，用空格分隔)
+  # RASPA2 示例: "CO2" 或 "CO2 CH4 N2"
+  # RASPA3 示例: "p-xylene" 或 "CO2"
+  default_molecules: "methylcyclohexane toluene"
+
+  # CSV 文件路径 (用于批量处理，指定框架列表)
+  csv_file_path: "/home/zjp/raspa2-calc/filter/wxj-3442.csv"
+
+  # 框架名称列名（必须与 CSV 文件中的列名完全一致）
+  framework_column: "refcode"
+
+  # 输出目录名
+  output_directory: "wxj-test"
+
+  # 是否启用 CIF 参数缓存 (避免重复计算 UnitCells/VoidFraction)
+  # 缓存文件: params_cache.json
+  use_cif_cache: true
+  
+  # CIF 参数缓存文件路径 (如果不设置，默认为工作目录下的 params_cache.json)
+  cif_cache_path: "/home/zjp/raspa2-calc/.raspa_tools/params_cache.json"
+
+  # 是否从 CSV 文件读取孔隙率
+  use_void_csv: false
+
+  # 孔隙率 CSV 文件路径
+  void_csv_file: ""
+
+  # 孔隙率列名
+  void_column: ""
+
+  # pyMSER 自动平衡
+  mser:
+    enable: true
+    target_cycles: 10000
+    add_cycles: 2000
+    max_iter: 20
+    uncertainty: "uSD"   # SD, SE, uSD, uSE
+    conda_env: "pymser"  # 包含 pymser 的 conda 环境
+    llm: true            # 是否启用 LLM 变体（减少截断点，默认 true）
+    batch_size: 5        # MSER 批大小，平滑数据（默认 5）
+
+  # 节点优先级（可选），格式: 节点名: 权重；数字越大优先级越高
+  node_priorities:
+    master-node: 4
+    worker-node-01: 3
+    worker-node-02: 2
+    worker-node-03: 1
+
+# ============================================================
+#              参数筛选配置（模式1：小批量运算）
+# ============================================================
+# 支持 RASPA2 和 RASPA3 双版本
+# - RASPA2: 修改 simulation.input 文本文件
+# - RASPA3: 修改 simulation.json JSON 文件
+parameter_screening:
+  # 输出目录名
+  output_directory: "Xenew"
+
+  # 是否自动计算 UnitCells
+  auto_unit_cells: true
+
+  # 参数筛选配置 - 可配置的参数
+  # 格式: 参数名: [值1, 值2, 值3, ...]
+  # 程序会自动生成所有参数组合并提交作业
+  #
+  # ============ RASPA2 参数名 ============
+  # CutOffVDW, CutOffChargeCharge, NumberOfCycles, NumberOfInitializationCycles,
+  # NumberOfEquilibrationCycles, ExternalTemperature, ExternalPressure,
+  # ForceField, ChargeMethod, MoleculeName, etc.
+  #
+  # ============ RASPA3 参数名 ============
+  # CutOff (或 CutOffVDW), ExternalTemperature, ExternalPressure,
+  # NumberOfCycles, NumberOfInitializationCycles, NumberOfEquilibrationCycles,
+  # ChargeMethod, etc.
+  #
+  # 注意: 大部分参数名在两个版本间兼容，程序会自动映射
+  parameters:
+    # 重要: 如果启用 auto_unit_cells，必须包含截断半径参数
+    # RASPA2 用 CutOffVDW, RASPA3 用 CutOff (两者都支持)
+    CutOffVDW: [12.8]
+
+    # 压力点 (Pa)
+    ExternalPressure: [100000]
+
+    # 温度点 (K) - 可选
+    # ExternalTemperature: [323.0]
+
+    # 模拟循环次数 - 可选
+    # NumberOfCycles: [10000, 50000]
+
+    # 其他可选参数示例:
+    # ForceField: [UFF, Dreiding]
+    # ChargeMethod: [Ewald, None]
+    Name: [Xe] # 仅 RASPA3
+    # MoleculeName: [CO2, CH4, N2]  # 仅 RASPA2
+
+# ============================================================
+#                    日志配置
+# ============================================================
+logging:
+  # 作业日志输出目录（相对于输出目录）
+  output_dir: "1log"
+
+  # 是否生成作业 .out/.err 日志
+  enable_job_logs: true

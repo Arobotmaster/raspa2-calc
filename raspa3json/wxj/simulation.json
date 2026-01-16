@@ -1,0 +1,33 @@
+{
+"SimulationType" : "MonteCarlo",
+  "NumberOfCycles" : 20000,
+  "NumberOfInitializationCycles" : 0,
+  "PrintEvery" : 1000,
+
+  "Systems" : [
+    {
+      "Type" : "Framework",
+      "Name" : "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif/UIO-66_ASR_pacman.cif",
+      "NumberOfUnitCells" : [2, 2, 2],
+      "ExternalTemperature" : 298.0,
+      "ExternalPressure" : 10000,
+      "ChargeMethod" : "Ewald"
+    }
+  ],
+
+  "Components" : [ 
+    {
+      "Name" : "methylcyclohexane",
+      "MoleculeDefinition": "wxj",
+      "WidomProbability" : 1.0,
+      "CreateNuMberofmolecules" : 0
+    },
+    {
+      "Name" : "toluene",
+      "MoleculeDefinition": "wxj",
+      "WidomProbability" : 1.0,
+      "CreateNuMberofmolecules" : 0
+    }
+
+  ]
+}

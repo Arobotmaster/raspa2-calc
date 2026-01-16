@@ -1,0 +1,268 @@
+#!/bin/bash
+
+# RASPA高通量计算诊断工具（增强版）
+# - 更智能的目标路径解析（相对当前目录优先，回退到 RASPA_WORK_DIR）
+# - 仅诊断目标子目录下的任务；统计状态、一致性与典型问题
+# - 输出 .raspa_worker_limit、.raspa_jobs.list 与 SLURM 活跃作业的一致性
+
+set -euo pipefail
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+
+usage() {
+  echo "用法: raspa-diagnose [选项] [子目录|路径]"
+  echo "说明: 诊断指定路径（默认当前目录或 RASPA_WORK_DIR）下的 RASPA 高通量任务"
+  echo "选项:"
+  echo "  -h, --help     显示本帮助"
+  echo "示例:"
+  echo "  raspa-diagnose                 # 诊断当前目录"
+  echo "  raspa-diagnose work/301adsorption  # 指定子目录/路径"
+}
+
+# 解析目标子目录/路径
+ARG_SUBDIR=""
+SHOW_HELP=0
+if [ $# -gt 0 ]; then
+  case "$1" in
+    -h|--help)
+      SHOW_HELP=1; shift || true ;;
+    *) ARG_SUBDIR="$1"; shift || true ;;
+  esac
+fi
+if [ "$SHOW_HELP" -eq 1 ]; then
+  usage; exit 0
+fi
+
+WORK_DIR=${RASPA_WORK_DIR:-"$PWD"}
+
+if [ -n "$ARG_SUBDIR" ]; then
+  if [[ "$ARG_SUBDIR" = /* ]]; then
+    TARGET_DIR="${ARG_SUBDIR%/}"
+    [ -z "$TARGET_DIR" ] && TARGET_DIR="/"
+  else
+    CWD="$(pwd -P)"
+    if [ -d "$CWD/${ARG_SUBDIR#/}" ]; then
+      TARGET_DIR="$CWD/${ARG_SUBDIR#/}"
+    elif [ -d "${WORK_DIR%/}/${ARG_SUBDIR#/}" ]; then
+      TARGET_DIR="${WORK_DIR%/}/${ARG_SUBDIR#/}"
+    else
+      TARGET_DIR="$CWD/${ARG_SUBDIR#/}"
+    fi
+  fi
+else
+  TARGET_DIR="$PWD"
+fi
+
+TARGET_DIR="${TARGET_DIR%/}"
+
+echo "=== RASPA 高通量计算诊断工具 ==="
+echo "工作目录: $PWD"
+echo "目标路径: $TARGET_DIR"
+echo "时间: $(date)"
+echo
+
+# 检查环境变量
+echo "🔍 检查环境变量..."
+if [ -z "${RASPA_DIR:-}" ]; then
+  echo "❌ RASPA_DIR 环境变量未设置"
+  echo "   请设置: export RASPA_DIR=/path/to/raspa"
+else
+  echo "✅ RASPA_DIR = $RASPA_DIR"
+fi
+
+if [ -z "${RASPA_WORK_DIR:-}" ]; then
+  echo "⚠️  RASPA_WORK_DIR 未设置，默认使用当前目录"
+else
+  echo "✅ RASPA_WORK_DIR = $RASPA_WORK_DIR"
+fi
+echo
+
+# 检查工具命令
+echo "🔍 检查工具安装..."
+command -v raspa-calc >/dev/null 2>&1 && echo "✅ raspa-calc 命令可用" || echo "❌ raspa-calc 命令不可用 (考虑运行 bash install.sh)"
+command -v raspa-status >/dev/null 2>&1 && echo "✅ raspa-status 命令可用" || echo "❌ raspa-status 命令不可用"
+echo
+
+# 找到包含 job_templates 的根目录（用于诊断脚本是否齐全）
+BASE_DIR="$TARGET_DIR"
+while [ "$BASE_DIR" != "/" ] && [ ! -d "$BASE_DIR/job_templates" ]; do
+  BASE_DIR="$(dirname "$BASE_DIR")"
+done
+[ -d "$BASE_DIR/job_templates" ] || BASE_DIR=""
+
+# 统计任务
+echo "🔍 检查任务文件..."
+if [ ! -d "$TARGET_DIR" ]; then
+  echo "❌ 目标目录不存在: $TARGET_DIR"
+  exit 1
+fi
+
+mapfile -t mc_dirs < <(find "$TARGET_DIR" -maxdepth 2 -type d -name 'mc*' 2>/dev/null | sort -V)
+if [ ${#mc_dirs[@]} -eq 0 ]; then
+  echo "❌ 未找到任何 mc* 格式的任务目录"
+  echo "   可能原因: 尚未生成任务 / 路径不对 / 任务在其它目录"
+else
+  echo "✅ 在目标路径下找到 ${#mc_dirs[@]} 个任务目录"
+fi
+echo
+
+# 状态分布
+pending=0; running_cnt=0; done_cnt=0; failed_cnt=0; completed_cnt=0
+if [ ${#mc_dirs[@]} -gt 0 ]; then
+  echo "🔍 检查任务状态分布..."
+  for dir in "${mc_dirs[@]}"; do
+    bn=$(basename "$dir")
+    case "$bn" in
+      *_*_*) ;; # 不特殊处理
+    esac
+    if [[ "$bn" =~ __done$ ]]; then
+      ((done_cnt+=1))
+    elif [[ "$bn" =~ __running$ ]]; then
+      ((running_cnt+=1))
+    elif [[ "$bn" =~ __failed$ ]]; then
+      ((failed_cnt+=1))
+    elif [[ "$bn" =~ __completed$ ]]; then
+      ((completed_cnt+=1))
+    else
+      ((pending+=1))
+    fi
+  done
+  total=$((pending + running_cnt + done_cnt + failed_cnt + completed_cnt))
+  echo "   待处理: $pending"
+  echo "   运行中: $running_cnt"
+  echo "   已完成: $done_cnt"
+  echo "   失败: $failed_cnt"
+  echo "   异常完成: $completed_cnt"
+  echo "   总计: $total"
+  if [ $total -gt 0 ]; then
+    progress=$((done_cnt * 100 / total))
+    echo "   完成率: $progress%"
+  fi
+  echo
+fi
+
+# .raspa_worker_limit
+LIMIT_FILE="$TARGET_DIR/.raspa_worker_limit"
+if [ -f "$LIMIT_FILE" ]; then
+  lim=$(awk 'NR==1{print $1}' "$LIMIT_FILE" 2>/dev/null || true)
+  echo "🔍 并发上限文件: .raspa_worker_limit = ${lim:-未设置}"
+else
+  echo "🔍 并发上限文件: 未找到 (.raspa_worker_limit)"
+fi
+echo
+
+echo "🔍 检查集群作业追踪..."
+JOBS_FILE="$TARGET_DIR/.raspa_jobs.list"
+if command -v squeue >/dev/null 2>&1; then
+  # SLURM 路径：按 .raspa_jobs.list 与 squeue 映射
+  mapfile -t LIVE_SQ < <(squeue -u "$USER" -h -o "%i" 2>/dev/null | sort -u)
+  if [ -s "$JOBS_FILE" ] && [ ${#LIVE_SQ[@]} -gt 0 ]; then
+    mapfile -t TRACKED < <(awk '{print $1}' "$JOBS_FILE" | sort -u)
+    managed_live=$(comm -12 <(printf "%s\n" "${LIVE_SQ[@]}") <(printf "%s\n" "${TRACKED[@]}") | wc -l)
+    echo "   受管活跃作业数: $managed_live"
+  elif [ -s "$JOBS_FILE" ]; then
+    echo "   ⚠️  发现 .raspa_jobs.list 但 squeue 无法获取或无作业"
+  else
+    echo "   未发现 .raspa_jobs.list（可能未通过 raspa-scale 提交或已清理）"
+  fi
+  fs_running=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' | wc -l)
+  echo "   文件系统标记运行中: $fs_running"
+  if [ "$fs_running" -gt 0 ] && [ ${#LIVE_SQ[@]} -eq 0 ]; then
+    echo "   ⚠️  存在 __running 目录，但 squeue 无活跃作业，可能异常终止，请考虑重置"
+    echo "      可用: raspa-status -d '$TARGET_DIR' --reset-all"
+  fi
+elif command -v qstat >/dev/null 2>&1; then
+  # PBS 路径：统计当前用户活跃作业，并尝试匹配以数字为名的工人作业
+  # qstat 列格式随版本不同，这里抽取前两列（jobid 与 name），跳过表头线
+  mapfile -t PBS_LINES < <(qstat -u "$USER" 2>/dev/null | awk 'NR>2 && $1 ~ /\./ {print $1, $2}')
+  total_jobs=${#PBS_LINES[@]}
+  echo "   PBS 当前用户活跃作业: $total_jobs"
+  # 统计名称为纯数字（与 worker 编号一致）的作业数量
+  pbs_worker=0
+  list_sample=""
+  for line in "${PBS_LINES[@]}"; do
+    jid="${line%% *}"; name="${line#* }"
+    if [[ "$name" =~ ^[0-9]+$ ]]; then
+      pbs_worker=$((pbs_worker+1))
+      if [ -z "$list_sample" ]; then list_sample="$jid($name)"; else list_sample+=" $jid($name)"; fi
+    fi
+  done
+  echo "   与本工具约定命名（数字名）的作业: $pbs_worker"
+  if [ "$pbs_worker" -gt 0 ]; then
+    echo "   示例: $list_sample"
+  fi
+  fs_running=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' | wc -l)
+  echo "   文件系统标记运行中: $fs_running"
+  if [ "$fs_running" -gt 0 ] && [ "$pbs_worker" -eq 0 ]; then
+    echo "   ⚠️  存在 __running 目录，但 qstat 未见数字命名作业，可能已退出或命名未按约定"
+  fi
+else
+  echo "   未检测到 squeue/qstat，可能在本地环境运行"
+fi
+echo
+
+# 检查脚本文件（在包含 job_templates 的根目录）
+echo "🔍 检查脚本文件..."
+if [ -n "$BASE_DIR" ]; then
+  for script in job_templates/tasksrun.sh job_templates/runjobs.sh; do
+    if [ -f "$BASE_DIR/$script" ]; then
+      echo "✅ ${script} 存在"
+      if [ "$script" = "job_templates/runjobs.sh" ]; then
+        # 显示关键环境变量读取，而不是旧版 shell 变量（新版依赖环境变量）
+        if grep -q "RASPA_DIR" "$BASE_DIR/$script"; then
+          echo "   ✅ 脚本使用环境变量驱动 (RASPA_DIR/RASPA_SUBDIR 等)"
+        fi
+      fi
+      if [ "$script" = "job_templates/tasksrun.sh" ]; then
+        if grep -q "延迟" "$BASE_DIR/$script" 2>/dev/null; then
+          echo "   ✅ 含延迟优化"
+        fi
+      fi
+    else
+      echo "❌ ${script} 不存在 (根目录: $BASE_DIR)"
+    fi
+  done
+else
+  echo "⚠️  未找到包含 job_templates 的根目录，略过脚本完整性检查"
+fi
+echo
+
+# 集群环境概览
+echo "🔍 检查集群环境..."
+if command -v sbatch >/dev/null 2>&1; then
+  echo "✅ SLURM 环境可用 (sbatch)"
+  if command -v sinfo >/dev/null 2>&1; then
+    out=$(sinfo -h -o '%C' 2>/dev/null | head -n1 || true)
+    [ -n "$out" ] && echo "   资源概览 %C: $out"
+  fi
+elif command -v qsub >/dev/null 2>&1; then
+  echo "✅ PBS 环境可用 (qsub)"
+else
+  echo "❌ 未检测到集群环境 (sbatch/qsub)"
+  echo "   可能在本地环境运行"
+fi
+echo
+
+# 建议操作
+echo "💡 建议操作..."
+if [ ${#mc_dirs[@]} -eq 0 ]; then
+  echo "1) 首先生成任务：raspa-calc → 选择高通量模式"
+elif [ $((pending + failed_cnt)) -gt 0 ]; then
+  echo "1) 提交/补交：raspa-scale -i '$TARGET_DIR'  # 交互式选择并发，避免过度提交"
+  echo "2) 监控：raspa-status -d '$TARGET_DIR'"
+elif [ $done_cnt -gt 0 ]; then
+  echo "1) 运行正常：raspa-status -d '$TARGET_DIR' 查看详情"
+  echo "2) 数据提取：raspa-calc → 选择数据提取模式"
+fi
+if [ $failed_cnt -gt 0 ]; then
+  echo "- 发现失败任务：raspa-status -d '$TARGET_DIR' -r  # 重置失败任务"
+fi
+if [ $completed_cnt -gt 0 ]; then
+  echo "- 发现异常完成任务：raspa-status -d '$TARGET_DIR' -c  # 重置异常完成"
+fi
+echo
+echo "📖 参考命令："
+echo "- raspa-scale -i '$TARGET_DIR'       # 交互式调整并发，展示集群资源"
+echo "- raspa-status -d '$TARGET_DIR' -m   # 实时监控"
+echo
+echo "=== 诊断完成 ==="
