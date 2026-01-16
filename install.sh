@@ -315,24 +315,9 @@ if [ -d "$HOME/raspa2-calc" ]; then
     fi
 fi
 
-# 备份现有安装
-backup_existing_installation() {
-    if [ -d "$TOOL_DIR" ]; then
-        local backup_dir="${TOOL_DIR}.backup.$(date +%Y%m%d_%H%M%S)"
-        echo "📦 发现现有安装，正在备份..."
-        echo "备份位置: $backup_dir"
-        cp -r "$TOOL_DIR" "$backup_dir"
-        echo "✅ 备份完成"
-        echo ""
-    fi
-}
-
 # 创建工具目录
 echo "创建工具目录..."
 mkdir -p "$TOOL_DIR"
-
-# 备份现有安装
-backup_existing_installation
 
 # 复制所有项目文件到工具目录（排除.git和安装脚本本身）
 echo "复制项目文件..."
@@ -419,6 +404,7 @@ EXECUTABLES=(
     "bin/main.sh"
     "bin/chmod.sh"
     "bin/raspa-scale"
+    "bin/raspa-calc"
     "bin/raspa-status"
     "bin/recheck-failed"
     "bin/raspa-diagnose"
@@ -463,10 +449,9 @@ else
 fi
 
 # 检查PATH是否已配置 (更精确的检查)
-if ! grep -q "^export PATH=.*raspa2-calc/.raspa_tools.*PATH" "$SHELL_RC" 2>/dev/null; then
+if ! grep -q "^export PATH=.*raspa2-calc/.raspa_tools/bin.*PATH" "$SHELL_RC" 2>/dev/null; then
     echo "" >> "$SHELL_RC"
     echo "# RASPA2高通量计算工具" >> "$SHELL_RC"
-    echo "export PATH=\"\$HOME/raspa2-calc/.raspa_tools:\$PATH\"" >> "$SHELL_RC"
     echo "export PATH=\"\$HOME/raspa2-calc/.raspa_tools/bin:\$PATH\"" >> "$SHELL_RC"
     echo "已添加PATH配置到 $SHELL_RC"
 else
@@ -474,25 +459,17 @@ else
 fi
 
 # 立即生效PATH配置
-export PATH="$HOME/raspa2-calc/.raspa_tools:$HOME/raspa2-calc/.raspa_tools/bin:$PATH"
+export PATH="$HOME/raspa2-calc/.raspa_tools/bin:$PATH"
 
-# 创建符号链接以便直接访问主要工具
+# 清理旧的根目录软链（统一从 bin/ 调用）
 echo ""
-echo "创建符号链接..."
-if [ -f "$TOOL_DIR/bin/raspa-status" ]; then
-    ln -sf "$TOOL_DIR/bin/raspa-status" "$TOOL_DIR/raspa-status" 2>/dev/null
-    echo "✅ raspa-status 符号链接创建完成"
-fi
-
-if [ -f "$TOOL_DIR/bin/raspa-diagnose" ]; then
-    ln -sf "$TOOL_DIR/bin/raspa-diagnose" "$TOOL_DIR/raspa-diagnose" 2>/dev/null
-    echo "✅ raspa-diagnose 符号链接创建完成"
-fi
-
-if [ -f "$TOOL_DIR/bin/main.sh" ]; then
-    ln -sf "$TOOL_DIR/bin/main.sh" "$TOOL_DIR/raspa-calc" 2>/dev/null
-    echo "✅ raspa-calc 符号链接创建完成"
-fi
+echo "清理旧的根目录软链接..."
+for link in "$TOOL_DIR/raspa-status" "$TOOL_DIR/raspa-diagnose" "$TOOL_DIR/raspa-calc"; do
+    if [ -L "$link" ]; then
+        rm -f "$link" 2>/dev/null || true
+        echo "✅ 已移除 $link"
+    fi
+done
 
 echo ""
 echo "=================================================="

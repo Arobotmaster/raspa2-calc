@@ -1,0 +1,5 @@
+#!/bin/bash
+
+TOOL_DIR="$HOME/raspa2-calc/.raspa_tools"
+
+exec "$TOOL_DIR/bin/main.sh" "$@"
