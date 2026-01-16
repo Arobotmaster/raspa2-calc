@@ -9,4 +9,4 @@ WORK_DIR="$PWD"
 export RASPA_WORK_DIR="$WORK_DIR"
 
 # 调用Python主程序，支持配置文件功能
-exec python "$TOOL_DIR/scripts/python/raspa_calc.py"
+exec python "$TOOL_DIR/scripts/python/raspa_calc.py" "$@"

@@ -401,16 +401,16 @@ def get_framework_names(csv_file, column_number):
         return []
 
 def get_void_fraction_from_csv(framework_name, csv_file=None, void_fraction_column=None, framework_column=None):
-    """从CSV文件中获取空隙率
+    """从CSV文件中获取孔隙率
 
     Args:
         framework_name (str): 框架名称
         csv_file (str, optional): CSV文件路径. 默认为None.
-        void_fraction_column (str or int, optional): 包含空隙率的列名或列号. 默认为None.
+        void_fraction_column (str or int, optional): 包含孔隙率的列名或列号. 默认为None.
         framework_column (str, optional): 框架名称列名，强制使用此列. 默认为None.
 
     Returns:
-        float: 空隙率值，如果找不到则返回None
+        float: 孔隙率值，如果找不到则返回None
     """
     if csv_file is None or void_fraction_column is None:
         return None
@@ -459,7 +459,7 @@ def get_void_fraction_from_csv(framework_name, csv_file=None, void_fraction_colu
                 logger.warning(f"无法在CSV文件中找到框架名称列")
                 return None
 
-        # 获取空隙率列
+        # 获取孔隙率列
         void_fraction_col = None
         if isinstance(void_fraction_column, int):
             if 0 <= void_fraction_column < len(df.columns):
@@ -479,7 +479,7 @@ def get_void_fraction_from_csv(framework_name, csv_file=None, void_fraction_colu
         if clean_framework_name.lower().endswith('.cif'):
             clean_framework_name = clean_framework_name[:-4]  # 移除.cif后缀
 
-        # 查找框架对应的空隙率
+        # 查找框架对应的孔隙率
         framework_row = df[df[framework_column_name] == clean_framework_name]
         if framework_row.empty:
             # 尝试其他可能的名称形式
@@ -496,25 +496,25 @@ def get_void_fraction_from_csv(framework_name, csv_file=None, void_fraction_colu
                     break
 
             if framework_row.empty:
-                logger.info(f"在CSV文件中找不到框架: {framework_name}，将使用默认空隙率")
+                logger.info(f"在CSV文件中找不到框架: {framework_name}，将使用默认孔隙率")
                 return None
 
-        # 获取空隙率值
+        # 获取孔隙率值
         void_fraction = framework_row[void_fraction_col].iloc[0]
         if pd.isna(void_fraction):
-            logger.warning(f"框架 {framework_name} 的空隙率值为空")
+            logger.warning(f"框架 {framework_name} 的孔隙率值为空")
             return None
 
         try:
             void_fraction = float(void_fraction)
-            logger.info(f"从CSV文件获取到框架 {framework_name} 的空隙率: {void_fraction}")
+            logger.info(f"从CSV文件获取到框架 {framework_name} 的孔隙率: {void_fraction}")
             return void_fraction
         except (ValueError, TypeError):
-            logger.warning(f"无法将空隙率值转换为浮点数: {void_fraction}")
+            logger.warning(f"无法将孔隙率值转换为浮点数: {void_fraction}")
             return None
 
     except Exception as e:
-        logger.warning(f"从CSV文件获取空隙率时出错: {str(e)}")
+        logger.warning(f"从CSV文件获取孔隙率时出错: {str(e)}")
         return None
 
 def process_structure_file(structure_file, r_cut=12.0, result_cache=None, csv_file=None, void_fraction_column=None, framework_column=None):
@@ -524,8 +524,8 @@ def process_structure_file(structure_file, r_cut=12.0, result_cache=None, csv_fi
         structure_file (str): 结构文件路径（wei或cif格式）
         r_cut (float, optional): 截断半径. 默认为12.0.
         result_cache (dict, optional): 缓存字典. 默认为None.
-        csv_file (str, optional): 包含空隙率的CSV文件路径. 默认为None.
-        void_fraction_column (str or int, optional): 包含空隙率的列名或列号. 默认为None.
+        csv_file (str, optional): 包含孔隙率的CSV文件路径. 默认为None.
+        void_fraction_column (str or int, optional): 包含孔隙率的列名或列号. 默认为None.
         framework_column (str, optional): 框架名称列名，强制使用此列. 默认为None.
 
     Returns:
@@ -559,12 +559,12 @@ def process_structure_file(structure_file, r_cut=12.0, result_cache=None, csv_fi
             framework_name = framework_name[:-4]  # 移除.cif后缀
         logger.info(f"处理框架: {framework_name}")
 
-        # 尝试从CSV文件获取空隙率
+        # 尝试从CSV文件获取孔隙率
         csv_void_fraction = None
         if csv_file is not None and void_fraction_column is not None:
             csv_void_fraction = get_void_fraction_from_csv(framework_name, csv_file, void_fraction_column, framework_column)
             if csv_void_fraction is not None:
-                logger.info(f"使用从CSV文件获取的空隙率: {csv_void_fraction}")
+                logger.info(f"使用从CSV文件获取的孔隙率: {csv_void_fraction}")
                 helium_void_fraction = csv_void_fraction
 
         # 根据不同文件类型处理
@@ -575,10 +575,10 @@ def process_structure_file(structure_file, r_cut=12.0, result_cache=None, csv_fi
                 logger.error(f"从CIF文件提取参数失败: {structure_file}")
                 return False, None, None
 
-            # 如果没有从CSV获取到空隙率，使用默认值
+            # 如果没有从CSV获取到孔隙率，使用默认值
             if csv_void_fraction is None:
                 helium_void_fraction = 0.5  # 使用默认值
-                logger.info(f"CIF文件未从CSV获取到空隙率，使用默认void_fraction: {helium_void_fraction}")
+                logger.info(f"CIF文件未从CSV获取到孔隙率，使用默认void_fraction: {helium_void_fraction}")
 
         else:
             logger.error(f"不支持的文件类型: {file_ext}")
@@ -658,7 +658,7 @@ def main():
         parser = argparse.ArgumentParser(description='计算RASPA模拟参数')
         parser.add_argument('input', help='CSV文件或结构文件路径')
         parser.add_argument('--column', '-c', help='CSV文件中框架名称列的列号')
-        parser.add_argument('--void-csv', help='包含空隙率的CSV文件路径')
+        parser.add_argument('--void-csv', help='包含孔隙率的CSV文件路径')
         parser.add_argument('--void-column', help='空隙率列的列名或列号')
         parser.add_argument('--framework-column', help='框架名称列的列名')
         parser.add_argument('--cutoff', '-r', type=float, default=12.0, help='截断半径，默认为12.0')

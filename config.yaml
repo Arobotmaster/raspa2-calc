@@ -72,6 +72,13 @@ calculation:
   # 输出目录名
   output_directory: "wxj-test"
 
+  # 是否启用 CIF 参数缓存 (避免重复计算 UnitCells/VoidFraction)
+  # 缓存文件: params_cache.json
+  use_cif_cache: true
+  
+  # CIF 参数缓存文件路径 (如果不设置，默认为工作目录下的 params_cache.json)
+  cif_cache_path: "/home/zjp/raspa2-calc/.raspa_tools/params_cache.json"
+
   # 是否从 CSV 文件读取孔隙率
   use_void_csv: false
 

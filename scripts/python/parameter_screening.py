@@ -19,7 +19,7 @@ from pathlib import Path
 from force_field_utils import write_filtered_force_field
 
 # 导入calculate_params模块中的必要函数
-from calculate_params import process_structure_file, get_cif_cell_parameters
+from calculate_params import process_structure_file, get_cif_cell_parameters, load_cache, save_cache
 
 # 尝试导入yaml处理配置文件
 try:
@@ -152,15 +152,15 @@ def read_csv_data(csv_path, column_number):
         return []
 
 def load_void_fraction_from_csv(csv_path, framework_column, void_column):
-    """从CSV文件加载空隙率数据
+    """从CSV文件加载孔隙率数据
 
     Args:
         csv_path: CSV文件路径
         framework_column: 框架名称列名
-        void_column: 空隙率列名
+        void_column: 孔隙率列名
 
     Returns:
-        dict: {框架名: 空隙率}
+        dict: {框架名: 孔隙率}
     """
     try:
         df = pd.read_csv(csv_path)
@@ -170,10 +170,10 @@ def load_void_fraction_from_csv(csv_path, framework_column, void_column):
             return {}
 
         if void_column not in df.columns:
-            logger.error(f"CSV文件中未找到空隙率列: {void_column}")
+            logger.error(f"CSV文件中未找到孔隙率列: {void_column}")
             return {}
 
-        # 创建框架名到空隙率的映射
+        # 创建框架名到孔隙率的映射
         void_dict = {}
         for _, row in df.iterrows():
             framework = row[framework_column]
@@ -181,11 +181,11 @@ def load_void_fraction_from_csv(csv_path, framework_column, void_column):
             if pd.notna(framework) and pd.notna(void_frac):
                 void_dict[str(framework)] = float(void_frac)
 
-        logger.info(f"从CSV文件加载了 {len(void_dict)} 个框架的空隙率数据")
+        logger.info(f"从CSV文件加载了 {len(void_dict)} 个框架的孔隙率数据")
         return void_dict
 
     except Exception as e:
-        logger.error(f"加载空隙率数据失败: {e}")
+        logger.error(f"加载孔隙率数据失败: {e}")
         return {}
 
 def find_cif_file(framework_name, cif_dir):
@@ -363,7 +363,7 @@ def copy_raspa3_json_files(json_dir, output_dir, component_names=None, cif_path=
         return False
 
 
-def create_simulation_json(template_path, params, cif_path, output_path, config=None, void_fraction_csv=None, mser_config=None):
+def create_simulation_json(template_path, params, cif_path, output_path, config=None, void_fraction_csv=None, mser_config=None, result_cache=None):
     """根据模板和参数创建 RASPA3 simulation.json 文件
 
     Args:
@@ -372,8 +372,9 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
         cif_path: CIF 文件路径
         output_path: 输出文件路径
         config: 配置对象
-        void_fraction_csv: 空隙率数据字典
+        void_fraction_csv: 孔隙率数据字典
         mser_config: pyMSER 配置（可覆盖）
+        result_cache: 计算结果缓存字典
 
     RASPA3 参数映射:
         - CutOff / CutOffVDW -> Systems[0].CutOff
@@ -415,20 +416,20 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
         if auto_unit_cells and cif_path and os.path.exists(cif_path):
             try:
                 success, unit_cells_tuple, void_fraction = process_structure_file(
-                    cif_path, cutoff_value
+                    cif_path, cutoff_value, result_cache=result_cache
                 )
                 if success and unit_cells_tuple:
                     system_cfg['NumberOfUnitCells'] = list(unit_cells_tuple)
                     logger.info(f"计算 NumberOfUnitCells: {unit_cells_tuple}")
 
-                    # 设置空隙率
+                    # 设置孔隙率
                     if void_fraction is not None:
                         system_cfg['HeliumVoidFraction'] = void_fraction
                         logger.info(f"设置 HeliumVoidFraction: {void_fraction}")
             except Exception as e:
                 logger.warning(f"计算 UnitCells 失败: {e}")
 
-        # 从 CSV 获取空隙率（如果配置了）
+        # 从 CSV 获取孔隙率（如果配置了）
         if void_fraction_csv and framework_name:
             vf = void_fraction_csv.get(framework_name)
             if vf is not None:
@@ -754,7 +755,7 @@ fi
 
 def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, template_path,
                                           output_dir, job_system, config=None,
-                                          void_fraction_csv=None, json_dir=None, mser_config=None):
+                                          void_fraction_csv=None, json_dir=None, mser_config=None, result_cache=None):
     """处理 RASPA3 所有参数组合并创建作业
 
     Args:
@@ -765,9 +766,10 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
         output_dir: 输出目录
         job_system: 作业系统类型
         config: 配置对象
-        void_fraction_csv: 空隙率数据字典
+        void_fraction_csv: 孔隙率数据字典
         json_dir: RASPA3 JSON 文件目录
         mser_config: pyMSER 配置
+        result_cache: 计算结果缓存字典
     """
     # 生成所有参数组合
     combinations = generate_parameter_combinations(param_ranges)
@@ -831,7 +833,7 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
         # 创建 simulation.json 文件
         sim_json_path = os.path.join(param_dir, "simulation.json")
 
-        if create_simulation_json(template_path, sim_params, cif_path, sim_json_path, config, void_fraction_csv, mser_config):
+        if create_simulation_json(template_path, sim_params, cif_path, sim_json_path, config, void_fraction_csv, mser_config, result_cache=result_cache):
             # 创建作业脚本
             job_name = f"{framework}_{param_dir_name}"[:63]  # SLURM 作业名限制
             job_script_path = create_job_script_raspa3(param_dir, job_name, job_system, conda_env, mser_config)
@@ -852,7 +854,7 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
 #                    RASPA2 参数筛选 (原有功能)
 # ============================================================
 
-def create_simulation_input(template_path, params, cif_path, output_path, config=None, void_fraction_csv=None, mser_config=None):
+def create_simulation_input(template_path, params, cif_path, output_path, config=None, void_fraction_csv=None, mser_config=None, result_cache=None):
     """根据模板和参数创建simulation.input文件 - 支持通用参数替换
 
     Args:
@@ -861,8 +863,9 @@ def create_simulation_input(template_path, params, cif_path, output_path, config
         cif_path: CIF文件路径
         output_path: 输出文件路径
         config: 配置对象,用于获取auto_unit_cells等设置
-        void_fraction_csv: 空隙率数据字典(从CSV读取)
+        void_fraction_csv: 孔隙率数据字典(从CSV读取)
         mser_config: pyMSER 配置
+        result_cache: 计算结果缓存字典
     """
     try:
         # 读取模板文件
@@ -889,17 +892,17 @@ def create_simulation_input(template_path, params, cif_path, output_path, config
         void_fraction = None
         auto_unit_cells = config.get('parameter_screening', {}).get('auto_unit_cells', True) if config else True
 
-        # 检查是否从CSV获取空隙率
+        # 检查是否从CSV获取孔隙率
         use_void_csv = config.get('calculation', {}).get('use_void_csv', False) if config else False
         framework_name = params.get('framework')
 
         if use_void_csv and void_fraction_csv and framework_name:
-            # 从CSV字典获取空隙率
+            # 从CSV字典获取孔隙率
             void_fraction = void_fraction_csv.get(framework_name)
             if void_fraction is not None:
-                logger.info(f"从CSV文件获取空隙率: {void_fraction}")
+                logger.info(f"从CSV文件获取孔隙率: {void_fraction}")
             else:
-                logger.warning(f"CSV中未找到框架 {framework_name} 的空隙率数据")
+                logger.warning(f"CSV中未找到框架 {framework_name} 的孔隙率数据")
 
         if cif_path and os.path.exists(cif_path) and auto_unit_cells:
             try:
@@ -923,16 +926,17 @@ def create_simulation_input(template_path, params, cif_path, output_path, config
                     cutoff_value,
                     csv_file=csv_file,
                     void_fraction_column=void_fraction_column,
-                    framework_column=framework_column
+                    framework_column=framework_column,
+                    result_cache=result_cache
                 )
 
                 if success and unit_cells_tuple:
                     unit_cells = unit_cells_tuple
-                    # 如果process_structure_file从CSV读取了空隙率,使用它
+                    # 如果process_structure_file从CSV读取了孔隙率,使用它
                     # 否则使用之前从void_fraction_csv字典获取的值
                     if void_fraction is None and void_fraction_value is not None:
                         void_fraction = void_fraction_value
-                        logger.info(f"从CSV/CIF文件获取到空隙率: {void_fraction}")
+                        logger.info(f"从CSV/CIF文件获取到孔隙率: {void_fraction}")
                     logger.info(f"从CIF文件计算得到UnitCells: {unit_cells}")
                 else:
                     # 备用：直接尝试使用get_cif_cell_parameters
@@ -1616,7 +1620,7 @@ def interactive_parameter_selection(framework_name, cif_dir=None, reuse_params=N
     
     return params
 
-def process_parameter_combinations(framework, cif_path, param_ranges, template_path, output_dir, job_system, config=None, void_fraction_csv=None, mser_config=None):
+def process_parameter_combinations(framework, cif_path, param_ranges, template_path, output_dir, job_system, config=None, void_fraction_csv=None, mser_config=None, result_cache=None):
     """处理所有参数组合并创建作业
 
     Args:
@@ -1627,8 +1631,9 @@ def process_parameter_combinations(framework, cif_path, param_ranges, template_p
         output_dir: 输出目录
         job_system: 作业系统类型
         config: 配置对象
-        void_fraction_csv: 空隙率数据字典
+        void_fraction_csv: 孔隙率数据字典
         mser_config: pyMSER 配置
+        result_cache: 计算结果缓存字典
     """
     # 生成所有参数组合
     combinations = generate_parameter_combinations(param_ranges)
@@ -1664,7 +1669,7 @@ def process_parameter_combinations(framework, cif_path, param_ranges, template_p
         # 创建simulation.input文件
         sim_input_path = os.path.join(param_dir, "simulation.input")
 
-        if create_simulation_input(template_path, sim_params, cif_path, sim_input_path, config, void_fraction_csv, mser_config):
+        if create_simulation_input(template_path, sim_params, cif_path, sim_input_path, config, void_fraction_csv, mser_config, result_cache=result_cache):
             # 创建作业脚本
             job_name = f"{framework}_{param_dir_name}"
             job_script_path = create_job_script(param_dir, job_name, job_system, mser_config)
@@ -1743,6 +1748,18 @@ def main():
         screening_config = config.get('parameter_screening', {})
         output_dir = screening_config.get('output_directory', 'param_screening_output')
         param_ranges = screening_config.get('parameters', {})
+
+        # CIF 缓存设置
+        use_cif_cache = config.get('use_cif_cache', False)
+        cif_cache_path = config.get('cif_cache_path') or os.path.join(os.getcwd(), "params_cache.json")
+        result_cache = None
+        
+        if use_cif_cache:
+            result_cache = load_cache(cif_cache_path)
+            if result_cache:
+                logger.info(f"启用 CIF 参数缓存 (已加载 {len(result_cache)} 条记录) | 路径: {cif_cache_path}")
+            else:
+                logger.info(f"启用 CIF 参数缓存 (无现有缓存) | 路径: {cif_cache_path}")
 
         # 验证必需参数（使用 print 确保错误可见）
         if not csv_file:
@@ -1892,7 +1909,7 @@ def main():
             print("已取消")
             return 0
 
-        # 加载空隙率数据(如果配置启用)
+        # 加载孔隙率数据(如果配置启用)
         void_fraction_csv = None
         use_void_csv = config.get('calculation', {}).get('use_void_csv', False)
         if use_void_csv:
@@ -1900,7 +1917,7 @@ def main():
             void_column = config.get('calculation', {}).get('void_column', 'VF')
             void_fraction_csv = load_void_fraction_from_csv(void_csv_file, framework_col, void_column)
             if void_fraction_csv:
-                print(f"\n📊 已从CSV加载 {len(void_fraction_csv)} 个框架的空隙率数据")
+                print(f"\n📊 已从CSV加载 {len(void_fraction_csv)} 个框架的孔隙率数据")
 
         # 处理每个框架
         all_jobs = []
@@ -1928,7 +1945,8 @@ def main():
                     config=config,
                     void_fraction_csv=void_fraction_csv,
                     json_dir=json_dir,
-                    mser_config=mser_config
+                    mser_config=mser_config,
+                    result_cache=result_cache
                 )
             else:
                 # RASPA2: 使用文本格式
@@ -1941,7 +1959,8 @@ def main():
                     job_system=job_system,
                     config=config,
                     void_fraction_csv=void_fraction_csv,
-                    mser_config=mser_config
+                    mser_config=mser_config,
+                    result_cache=result_cache
                 )
             all_jobs.extend(jobs)
 
@@ -1951,6 +1970,10 @@ def main():
                 json.dump(jobs, f, indent=2)
 
             logger.info(f"  ✓ 框架 {framework} 的作业信息已保存到: {jobs_file}")
+
+        # 保存缓存
+        if use_cif_cache and result_cache is not None:
+            save_cache(result_cache, cif_cache_path)
 
         # 总结
         print("\n" + "="*60)

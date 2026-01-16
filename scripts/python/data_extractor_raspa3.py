@@ -295,7 +295,7 @@ class RASPA3_Output_Data:
             return self._framework_density
 
     def get_He_void_fraction(self):
-        """获取氦空隙率"""
+        """获取氦孔隙率"""
         if self._he_void_fraction is not _UNSET:
             return self._he_void_fraction
         try:
@@ -1166,7 +1166,7 @@ def main():
         print("\n请选择要提取的数据项（输入对应的数字，用逗号分隔）：")
         print("1. Pressure (压力)")
         print("2. Temperature (温度)")
-        print("3. He Void Fraction (氦空隙率)")
+        print("3. He Void Fraction (氦孔隙率)")
         print("4. Framework Density (框架密度)")
         print("5. Absolute Adsorption (绝对吸附量)")
         print("6. Excess Adsorption (超额吸附量)")

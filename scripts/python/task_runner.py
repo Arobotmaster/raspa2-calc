@@ -12,7 +12,7 @@ import shutil
 import copy
 from contextlib import contextmanager, nullcontext
 from collections import OrderedDict
-from calculate_params import process_structure_file
+from calculate_params import process_structure_file, load_cache, save_cache
 from force_field_utils import write_filtered_force_field
 
 
@@ -852,16 +852,16 @@ def get_computation_setup(total_tasks, cif_dir=None):
             else:
                 logger.warning(f"模板文件不存在，继续使用默认模板: {user_input}")
 
-    # 询问是否使用CSV文件获取空隙率
+    # 询问是否使用CSV文件获取孔隙率
     use_void_csv_env = os.environ.get('RASPA_USE_VOID_CSV')
     void_csv_file_env = os.environ.get('RASPA_VOID_CSV_FILE')
     void_column_env = os.environ.get('RASPA_VOID_COLUMN')
 
     if use_void_csv_env:
         use_void_csv = use_void_csv_env.lower() == 'true'
-        logger.info(f"从配置文件读取空隙率设置: {'使用' if use_void_csv else '不使用'}CSV文件")
+        logger.info(f"从配置文件读取孔隙率设置: {'使用' if use_void_csv else '不使用'}CSV文件")
     else:
-        use_void_csv = input("是否使用CSV文件获取空隙率? (y/n): ").strip().lower() == 'y'
+        use_void_csv = input("是否使用CSV文件获取孔隙率? (y/n): ").strip().lower() == 'y'
 
     void_csv_file = None
     void_fraction_column = None
@@ -870,13 +870,13 @@ def get_computation_setup(total_tasks, cif_dir=None):
         if void_csv_file_env:
             void_csv_file = void_csv_file_env
             if os.path.exists(void_csv_file):
-                logger.info(f"从配置文件读取空隙率CSV文件: {void_csv_file}")
+                logger.info(f"从配置文件读取孔隙率CSV文件: {void_csv_file}")
             else:
-                logger.warning(f"配置文件中的空隙率CSV文件不存在: {void_csv_file}")
+                logger.warning(f"配置文件中的孔隙率CSV文件不存在: {void_csv_file}")
                 void_csv_file = None
         else:
             while True:
-                void_csv_file = input("请输入包含空隙率的CSV文件路径: ").strip()
+                void_csv_file = input("请输入包含孔隙率的CSV文件路径: ").strip()
                 if not void_csv_file:
                     logger.warning("文件路径不能为空")
                     continue
@@ -894,19 +894,19 @@ def get_computation_setup(total_tasks, cif_dir=None):
             for i, col in enumerate(columns):
                 print(f"{i+1}. {col}")
 
-            # 尝试从环境变量读取空隙率列名
+            # 尝试从环境变量读取孔隙率列名
             if void_column_env:
                 if void_column_env in columns:
                     void_fraction_column = void_column_env
-                    logger.info(f"从配置文件读取空隙率列名: {void_fraction_column}")
+                    logger.info(f"从配置文件读取孔隙率列名: {void_fraction_column}")
                 else:
-                    logger.warning(f"配置文件中的空隙率列名 '{void_column_env}' 不存在，使用默认列")
+                    logger.warning(f"配置文件中的孔隙率列名 '{void_column_env}' 不存在，使用默认列")
                     void_fraction_column = columns[0]  # 使用第一列作为默认
             else:
                 # 选择列名
                 while True:
                     try:
-                        choice = input("\n请选择包含空隙率的列名 (输入序号或列名): ")
+                        choice = input("\n请选择包含孔隙率的列名 (输入序号或列名): ")
                         if choice.isdigit() and 1 <= int(choice) <= len(columns):
                             void_fraction_column = columns[int(choice)-1]
                             break
@@ -919,7 +919,7 @@ def get_computation_setup(total_tasks, cif_dir=None):
                         logger.info("用户取消操作")
                         sys.exit(130)  # 使用SIGINT的标准退出码
 
-            logger.info(f"已选择空隙率列: {void_fraction_column}")
+            logger.info(f"已选择孔隙率列: {void_fraction_column}")
 
         except Exception as e:
             logger.error(f"读取CSV文件时出错: {e}")
@@ -1058,7 +1058,7 @@ def check_structure_files(framework_name, custom_cif_dir=None):
     logger.error(f"找不到框架 {framework_name} 的CIF结构文件")
     return None
 
-def process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_file=None, void_fraction_column=None, template_path=None, molecule_name="I2", cif_dir=None, framework_column=None):
+def process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_file=None, void_fraction_column=None, template_path=None, molecule_name="I2", cif_dir=None, framework_column=None, result_cache=None):
     """处理单个框架结构
 
     Args:
@@ -1067,12 +1067,13 @@ def process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_
         counter (int): 结构计数器
         framework_name (str): 框架名称
         cutoff (float): 截断半径
-        void_csv_file (str, optional): 包含空隙率的CSV文件路径. 默认为None.
-        void_fraction_column (str, optional): 空隙率列的列名. 默认为None.
+        void_csv_file (str, optional): 包含孔隙率的CSV文件路径. 默认为None.
+        void_fraction_column (str, optional): 孔隙率列的列名. 默认为None.
         framework_column (str, optional): 框架名称列的列名. 默认为None.
         template_path (str, optional): 自定义simulation.input模板路径. 默认为None.
         molecule_name (str, optional): 分子名称. 默认为"I2".
         cif_dir (str, optional): 自定义CIF文件目录. 默认为None.
+        result_cache (dict, optional): 计算结果缓存字典. 默认为None.
 
     Returns:
         bool: 处理成功返回True，失败返回False
@@ -1090,7 +1091,8 @@ def process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_
             cutoff,
             csv_file=void_csv_file,
             void_fraction_column=void_fraction_column,
-            framework_column=framework_column
+            framework_column=framework_column,
+            result_cache=result_cache
         )
         if not success:
             return False
@@ -1206,7 +1208,7 @@ def process_framework(topdir, subdir, counter, framework_name, cutoff, void_csv_
 
 def process_framework_raspa3(topdir, subdir, counter, framework_name, cutoff, void_csv_file=None,
                               void_fraction_column=None, template_path=None, molecule_name="CO2",
-                              cif_base_path=None, json_dir=None, framework_column=None):
+                              cif_base_path=None, json_dir=None, framework_column=None, result_cache=None):
     """处理单个框架结构 (RASPA3 版本)
 
     Args:
@@ -1215,13 +1217,14 @@ def process_framework_raspa3(topdir, subdir, counter, framework_name, cutoff, vo
         counter (int): 结构计数器
         framework_name (str): 框架名称
         cutoff (float): 截断半径
-        void_csv_file (str, optional): 包含空隙率的CSV文件路径
-        void_fraction_column (str, optional): 空隙率列的列名
+        void_csv_file (str, optional): 包含孔隙率的CSV文件路径
+        void_fraction_column (str, optional): 孔隙率列的列名
         framework_column (str, optional): 框架名称列的列名
         template_path (str, optional): 自定义 simulation.json 模板路径
         molecule_name (str, optional): 分子名称 (支持多分子空格分隔)
         cif_base_path (str, optional): CIF 文件基础路径
         json_dir (str, optional): JSON 文件目录 (force_field.json, 分子定义文件)
+        result_cache (dict, optional): 计算结果缓存字典
 
     Returns:
         bool: 处理成功返回True，失败返回False
@@ -1256,7 +1259,8 @@ def process_framework_raspa3(topdir, subdir, counter, framework_name, cutoff, vo
             cutoff,
             csv_file=void_csv_file,
             void_fraction_column=void_fraction_column,
-            framework_column=framework_column
+            framework_column=framework_column,
+            result_cache=result_cache
         )
         if not success:
             # 后备方案：简单计算
@@ -1277,7 +1281,7 @@ def process_framework_raspa3(topdir, subdir, counter, framework_name, cutoff, vo
                     unit_b = max(1, math.ceil(2 * cutoff / cell_params['b']))
                     unit_c = max(1, math.ceil(2 * cutoff / cell_params['c']))
                     unit_cells = [unit_a, unit_b, unit_c]
-                    void_fraction = 0.5  # 默认空隙率
+                    void_fraction = 0.5  # 默认孔隙率
                 else:
                     unit_cells = [1, 1, 1]
                     void_fraction = 0.5
@@ -1312,7 +1316,7 @@ def process_framework_raspa3(topdir, subdir, counter, framework_name, cutoff, vo
             sim_config["Systems"][0]["Name"] = cif_path
             # 设置 NumberOfUnitCells
             sim_config["Systems"][0]["NumberOfUnitCells"] = unit_cells
-            # 设置空隙率
+            # 设置孔隙率
             sim_config["Systems"][0]["HeliumVoidFraction"] = void_fraction
 
         # 更新 Components (分子名称)
@@ -1374,6 +1378,36 @@ def process_framework_raspa3(topdir, subdir, counter, framework_name, cutoff, vo
         logger.debug(f"RASPA3 处理框架 {framework_name} 时出错: {e}")
         return False
 
+
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+def _process_framework_wrapper(args):
+    """Wrapper for parallel processing of frameworks"""
+    func_name, kwargs = args
+    result_cache = kwargs.get('result_cache')
+    
+    # Snapshot cache keys to detect new entries
+    initial_keys = set(result_cache.keys()) if result_cache else set()
+    
+    success = False
+    try:
+        if func_name == 'raspa3':
+            success = process_framework_raspa3(**kwargs)
+        else:
+            success = process_framework(**kwargs)
+    except Exception as e:
+        logger.error(f"Error in worker for {kwargs.get('framework_name')}: {e}")
+        return False, {}
+
+    # Identify new cache entries
+    new_entries = {}
+    if result_cache:
+        current_keys = set(result_cache.keys())
+        new_keys = current_keys - initial_keys
+        for k in new_keys:
+            new_entries[k] = result_cache[k]
+            
+    return success, new_entries
 
 def main():
     try:
@@ -1542,17 +1576,45 @@ def main():
             # 检查 CIF 标签是否包含编号
             label_issues = []
             total_label_issues = 0
+            
+            # 使用并行处理加速标签检查
+            logger.info("正在检查 CIF 文件标签格式...")
+            
+            # 准备检查任务
+            check_tasks = []
             for framework in framework_names:
                 cif_path = framework_cif_paths.get(framework)
                 if not cif_path:
                     continue
+                # 如果路径包含 cleaned_cif，直接跳过（认为已清理）
                 if "cleaned_cif" in os.path.normpath(cif_path).split(os.sep):
-                    logger.info(f"检测到已清理版本，跳过编号检查: {cif_path}")
                     continue
-                issue_count = count_numbered_labels(cif_path)
-                if issue_count > 0:
-                    label_issues.append((framework, cif_path, issue_count))
-                    total_label_issues += issue_count
+                check_tasks.append((framework, cif_path))
+            
+            if check_tasks:
+                try:
+                    cpu_count = multiprocessing.cpu_count()
+                except Exception:
+                    cpu_count = 2
+                max_workers = min(16, cpu_count)  # IO密集型，不需要太多进程
+                
+                with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    # 提交任务：只传递 cif_path 给 count_numbered_labels
+                    # 我们需要包装一下以便返回 framework 名称
+                    future_to_fw = {
+                        executor.submit(count_numbered_labels, cif_path): (framework, cif_path)
+                        for framework, cif_path in check_tasks
+                    }
+                    
+                    for future in as_completed(future_to_fw):
+                        framework, cif_path = future_to_fw[future]
+                        try:
+                            issue_count = future.result()
+                            if issue_count > 0:
+                                label_issues.append((framework, cif_path, issue_count))
+                                total_label_issues += issue_count
+                        except Exception:
+                            pass
 
             if label_issues:
                 preview_limit = 10
@@ -1602,8 +1664,8 @@ def main():
         if template_path:
             logger.info(f"- 自定义模板路径: {template_path}")
         if void_csv_file and void_fraction_column:
-            logger.info(f"- 空隙率CSV文件: {void_csv_file}")
-            logger.info(f"- 空隙率列名: {void_fraction_column}")
+            logger.info(f"- 孔隙率CSV文件: {void_csv_file}")
+            logger.info(f"- 孔隙率列名: {void_fraction_column}")
         
         # 显示完整的模拟输入文件示例 (根据RASPA版本显示不同格式)
         if raspa_version == 'raspa3':
@@ -1685,7 +1747,7 @@ def main():
                             print(f"📦 此示例使用框架: {first_framework}")
                             print(f"📦 CIF 文件路径: {structure_file}")
                             print(f"📦 NumberOfUnitCells: {list(unit_cells)}")
-                            print(f"📦 空隙率: {void_fraction}")
+                            print(f"📦 孔隙率: {void_fraction}")
                             if len(molecule_list) > 1:
                                 print(f"📦 多组分分子: {', '.join(molecule_list)}")
                             else:
@@ -1739,7 +1801,7 @@ def main():
                             print("\n" + "="*50)
                             print(f"📦 此示例使用框架: {first_framework}")
                             print(f"📦 UnitCells: {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}")
-                            print(f"📦 空隙率: {void_fraction}")
+                            print(f"📦 孔隙率: {void_fraction}")
                             if len(molecule_list) > 1:
                                 print(f"📦 多组分分子: {', '.join(molecule_list)}")
                             else:
@@ -1753,6 +1815,18 @@ def main():
             logger.info("程序已终止")
             sys.exit(0)
 
+        # 步骤3.5：加载缓存（如果启用）
+        use_cache = _env_flag('RASPA_USE_CIF_CACHE', False)
+        result_cache = None
+        cache_file = os.environ.get('RASPA_CIF_CACHE_PATH') or os.path.join(topdir, "params_cache.json")
+        
+        if use_cache:
+            result_cache = load_cache(cache_file)
+            if result_cache:
+                logger.info(f"启用 CIF 参数缓存 (已加载 {len(result_cache)} 条记录) | 路径: {cache_file}")
+            else:
+                logger.info(f"启用 CIF 参数缓存 (无现有缓存) | 路径: {cache_file}")
+
         # 步骤4：处理结构文件
         print(f"\n步骤4：处理结构文件 ({raspa_version.upper()})")
         successful_structures = 0
@@ -1763,31 +1837,78 @@ def main():
 
         quiet_mode = not _env_flag("RASPA_HT_VERBOSE", False)
         console_ctx = quiet_console(logging.WARNING) if quiet_mode else nullcontext()
+        
+        # 准备任务列表
+        tasks = []
+        for counter, framework_name in enumerate(framework_names, 1):
+            if raspa_version == 'raspa3':
+                kwargs = {
+                    'topdir': topdir,
+                    'subdir': subdir,
+                    'counter': counter,
+                    'framework_name': framework_name,
+                    'cutoff': cutoff,
+                    'void_csv_file': void_csv_file,
+                    'void_fraction_column': void_fraction_column,
+                    'template_path': template_path,
+                    'molecule_name': molecule_name,
+                    'cif_base_path': cif_dir,
+                    'json_dir': json_dir,
+                    'framework_column': framework_column,
+                    'result_cache': result_cache if result_cache is not None else {}
+                }
+                tasks.append(('raspa3', kwargs))
+            else:
+                kwargs = {
+                    'topdir': topdir,
+                    'subdir': subdir,
+                    'counter': counter,
+                    'framework_name': framework_name,
+                    'cutoff': cutoff,
+                    'void_csv_file': void_csv_file,
+                    'void_fraction_column': void_fraction_column,
+                    'template_path': template_path,
+                    'molecule_name': molecule_name,
+                    'cif_dir': cif_dir,
+                    'framework_column': framework_column,
+                    'result_cache': result_cache if result_cache is not None else {}
+                }
+                tasks.append(('raspa2', kwargs))
+
+        # 并行处理
         with console_ctx:
-            with tqdm(total=len(framework_names), desc="处理进度", unit="结构") as pbar:
-                for counter, framework_name in enumerate(framework_names, 1):
-                    if raspa_version == 'raspa3':
-                        # 使用 RASPA3 处理函数
-                        success = process_framework_raspa3(
-                            topdir, subdir, counter, framework_name, cutoff,
-                            void_csv_file=void_csv_file,
-                            void_fraction_column=void_fraction_column,
-                            template_path=template_path,
-                            molecule_name=molecule_name,
-                            cif_base_path=cif_dir,
-                            json_dir=json_dir,
-                            framework_column=framework_column
-                        )
-                    else:
-                        # 使用 RASPA2 处理函数
-                        success = process_framework(
-                            topdir, subdir, counter, framework_name, cutoff,
-                            void_csv_file, void_fraction_column, template_path,
-                            molecule_name, cif_dir, framework_column
-                        )
-                    if success:
-                        successful_structures += 1
-                    pbar.update(1)
+            # 确定并行 worker 数量
+            try:
+                cpu_count = multiprocessing.cpu_count()
+            except Exception:
+                cpu_count = 2
+            # 限制最大 worker 数，避免过多进程竞争磁盘IO
+            max_workers = min(32, cpu_count)
+            logger.info(f"启用并行处理结构文件，使用 {max_workers} 个进程")
+
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有任务
+                futures = [executor.submit(_process_framework_wrapper, task) for task in tasks]
+                
+                # 使用 tqdm 显示进度
+                with tqdm(total=len(tasks), desc="处理进度", unit="结构") as pbar:
+                    for future in as_completed(futures):
+                        try:
+                            success, new_cache = future.result()
+                            if success:
+                                successful_structures += 1
+                            
+                            # 合并缓存更新
+                            if result_cache is not None and new_cache:
+                                result_cache.update(new_cache)
+                        except Exception as e:
+                            logger.error(f"任务执行异常: {e}")
+                        
+                        pbar.update(1)
+
+        # 保存缓存
+        if use_cache and result_cache is not None:
+            save_cache(result_cache, cache_file)
 
         # 步骤5：检查处理结果
         print("\n步骤5：处理结果")

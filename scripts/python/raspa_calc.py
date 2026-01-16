@@ -609,7 +609,7 @@ def run_task_runner():
                     if parts:
                         os.environ['RASPA_NODE_PRIORITIES'] = ",".join(parts)
 
-            # 设置空隙率相关参数
+            # 设置孔隙率相关参数
             if 'use_void_csv' in calc_config:
                 os.environ['RASPA_USE_VOID_CSV'] = str(calc_config['use_void_csv']).lower()
 
@@ -618,6 +618,12 @@ def run_task_runner():
 
             if 'void_column' in calc_config:
                 os.environ['RASPA_VOID_COLUMN'] = calc_config['void_column']
+
+            if 'use_cif_cache' in calc_config:
+                os.environ['RASPA_USE_CIF_CACHE'] = str(calc_config['use_cif_cache']).lower()
+
+            if 'cif_cache_path' in calc_config and calc_config['cif_cache_path']:
+                os.environ['RASPA_CIF_CACHE_PATH'] = calc_config['cif_cache_path']
 
             if 'cache_dir' in calc_config and calc_config['cache_dir']:
                 os.environ['RASPA_CACHE_DIR'] = calc_config['cache_dir']

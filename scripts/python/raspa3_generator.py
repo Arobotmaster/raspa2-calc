@@ -227,7 +227,7 @@ def generate_raspa3_tasks(
         json_dir: JSON 文件目录 (force_field.json, 分子文件)
         cif_base_path: CIF 文件基础路径
         cutoff: 截断半径
-        void_fraction: 默认空隙率
+        void_fraction: 默认孔隙率
 
     Returns:
         (成功数, 失败数)
@@ -274,7 +274,7 @@ def generate_raspa3_tasks(
                 sim_config["Systems"][0]["Name"] = cif_path
                 # 设置 NumberOfUnitCells
                 sim_config["Systems"][0]["NumberOfUnitCells"] = unit_cells
-                # 设置空隙率
+                # 设置孔隙率
                 if "HeliumVoidFraction" in sim_config["Systems"][0]:
                     sim_config["Systems"][0]["HeliumVoidFraction"] = void_fraction
 
@@ -309,7 +309,7 @@ def main():
     parser.add_argument('--json-dir', help='JSON 文件目录')
     parser.add_argument('--cif-base-path', help='CIF 文件基础路径')
     parser.add_argument('--cutoff', type=float, default=12.0, help='截断半径')
-    parser.add_argument('--void-fraction', type=float, default=0.5, help='默认空隙率')
+    parser.add_argument('--void-fraction', type=float, default=0.5, help='默认孔隙率')
 
     args = parser.parse_args()
 
