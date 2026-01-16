@@ -1,0 +1,545 @@
+#!/bin/bash
+
+# RASPA 高通量计算工具安装脚本
+# 版本: v2.5.0 (RASPA3 支持版本)
+# 新增: RASPA2/RASPA3 双版本支持、自动版本检测、RASPA3 数据提取器
+
+VERSION="2.5.0"
+
+echo "=================================================="
+echo "    RASPA 高通量计算工具 v${VERSION} 安装程序"
+echo "=================================================="
+echo ""
+
+# 脚本配置
+set -e  # 遇到错误立即退出
+set -u  # 使用未定义变量时报错
+
+# 依赖检查函数
+check_dependencies() {
+    echo "🔍 检查系统依赖..."
+
+    local missing_deps=()
+    local warnings=()
+
+    # 检查bash版本
+    if ! bash --version >/dev/null 2>&1; then
+        missing_deps+=("bash")
+    fi
+
+    # 检查find命令
+    if ! command -v find >/dev/null 2>&1; then
+        missing_deps+=("find")
+    fi
+
+    # 检查grep命令
+    if ! command -v grep >/dev/null 2>&1; then
+        missing_deps+=("grep")
+    fi
+
+    # 检查sed命令
+    if ! command -v sed >/dev/null 2>&1; then
+        missing_deps+=("sed")
+    fi
+
+    if [ ${#missing_deps[@]} -ne 0 ]; then
+        echo "❌ 缺少必要依赖: ${missing_deps[*]}"
+        echo "请安装这些工具后再运行安装脚本"
+        exit 1
+    fi
+
+    echo "✅ 系统工具检查通过"
+    echo ""
+
+    # ============ Python 环境检测 ============
+    echo "🐍 检查 Python 环境..."
+    
+    # 检查 Python3 是否存在
+    if command -v python3 >/dev/null 2>&1; then
+        PYTHON_CMD="python3"
+    elif command -v python >/dev/null 2>&1; then
+        # 检查 python 是否为 Python 3
+        if python --version 2>&1 | grep -q "Python 3"; then
+            PYTHON_CMD="python"
+        else
+            echo "❌ 未找到 Python 3，请安装 Python 3.8 或更高版本"
+            exit 1
+        fi
+    else
+        echo "❌ 未找到 Python，请安装 Python 3.8 或更高版本"
+        exit 1
+    fi
+
+    # 检查 Python 版本
+    PYTHON_VERSION=$($PYTHON_CMD -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    PYTHON_MAJOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.major)")
+    PYTHON_MINOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.minor)")
+
+    if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 8 ]); then
+        echo "❌ Python 版本过低: $PYTHON_VERSION (需要 3.8+)"
+        exit 1
+    fi
+
+    echo "✅ Python $PYTHON_VERSION"
+
+    # ============ Python 依赖包检测 ============
+    echo ""
+    echo "📦 检查 Python 依赖包..."
+    
+    local missing_packages=()
+    local optional_missing=()
+
+    # 必需包
+    for pkg in yaml numpy pandas gemmi; do
+        if $PYTHON_CMD -c "import $pkg" 2>/dev/null; then
+            echo "  ✅ $pkg"
+        else
+            if [ "$pkg" = "yaml" ]; then
+                # yaml 包实际名为 PyYAML
+                if $PYTHON_CMD -c "import yaml" 2>/dev/null; then
+                    echo "  ✅ PyYAML (yaml)"
+                else
+                    missing_packages+=("PyYAML")
+                    echo "  ❌ PyYAML (yaml) - 必需"
+                fi
+            else
+                missing_packages+=("$pkg")
+                echo "  ❌ $pkg - 必需"
+            fi
+        fi
+    done
+
+    # 可选包
+    for pkg in tqdm openpyxl matplotlib; do
+        if $PYTHON_CMD -c "import $pkg" 2>/dev/null; then
+            echo "  ✅ $pkg (可选)"
+        else
+            optional_missing+=("$pkg")
+            echo "  ⚠️  $pkg - 可选 (缺失)"
+        fi
+    done
+
+    if [ ${#missing_packages[@]} -ne 0 ]; then
+        echo ""
+        echo "❌ 缺少必需的 Python 包: ${missing_packages[*]}"
+        echo "   请运行: pip install ${missing_packages[*]}"
+        echo ""
+        read -p "是否继续安装? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "安装已取消"
+            exit 1
+        fi
+        warnings+=("缺少 Python 包: ${missing_packages[*]}")
+    fi
+
+    if [ ${#optional_missing[@]} -ne 0 ]; then
+        echo ""
+        echo "💡 可选包安装命令: pip install ${optional_missing[*]}"
+    fi
+
+    echo ""
+
+    # ============ RASPA 环境检测 ============
+    echo "⚗️  检查 RASPA 环境..."
+    
+    local raspa2_found=false
+    local raspa3_found=false
+    local pymser_found=false
+    local conda_base="${CONDA_PREFIX:-$HOME/anaconda3}"
+
+    # 检查 RASPA2
+    if [ -n "${RASPA_DIR:-}" ]; then
+        if [ -x "$RASPA_DIR/bin/simulate" ]; then
+            echo "  ✅ RASPA2: $RASPA_DIR/bin/simulate"
+            raspa2_found=true
+        else
+            echo "  ⚠️  RASPA2: RASPA_DIR 已设置但 bin/simulate 不存在"
+        fi
+    else
+        # 尝试常见位置
+        for dir in "$HOME/anaconda3/pkgs/raspa2-"*/; do
+            if [ -x "${dir}bin/simulate" ] 2>/dev/null; then
+                echo "  ✅ RASPA2 (自动检测): ${dir}bin/simulate"
+                raspa2_found=true
+                break
+            fi
+        done
+        if [ "$raspa2_found" = false ]; then
+            echo "  ℹ️  RASPA2: 未检测到 (RASPA_DIR 未设置)"
+        fi
+    fi
+
+    # 检查 RASPA3
+    if command -v raspa3 >/dev/null 2>&1; then
+        RASPA3_PATH=$(which raspa3)
+        echo "  ✅ RASPA3: $RASPA3_PATH"
+        raspa3_found=true
+    else
+        # 尝试在 conda 环境中查找
+        for env_name in raspa3 RASPA3 raspa; do
+            CONDA_BASE="${CONDA_PREFIX:-$HOME/anaconda3}"
+            if [ -x "$CONDA_BASE/envs/$env_name/bin/raspa3" ]; then
+                echo "  ✅ RASPA3 (conda $env_name): $CONDA_BASE/envs/$env_name/bin/raspa3"
+                raspa3_found=true
+                break
+            fi
+        done
+        if [ "$raspa3_found" = false ]; then
+            echo "  ℹ️  RASPA3: 未检测到 (可通过 conda 安装)"
+        fi
+    fi
+
+    # 检查 pyMSER 环境 (pymser)
+    if command -v conda >/dev/null 2>&1; then
+        if conda env list | awk '{print $1}' | grep -qx "pymser"; then
+            echo "  ✅ pymser 环境已存在 (pyMSER 用)"
+            pymser_found=true
+        else
+            if [ -d "$conda_base/envs/pymser" ]; then
+                echo "  ✅ pymser 环境已存在 (目录检测)"
+                pymser_found=true
+            else
+                echo "  ℹ️  未检测到 pymser 环境（用于 pyMSER 自动平衡）"
+            fi
+        fi
+    else
+        echo "  ⚠️  未检测到 conda，无法检查/创建 raspa2/raspa3/pymser 环境"
+    fi
+
+    if [ "$raspa2_found" = false ] && [ "$raspa3_found" = false ]; then
+        echo ""
+        echo "⚠️  未检测到 RASPA2 或 RASPA3"
+        echo "   请确保至少安装一个 RASPA 版本:"
+        echo "   - RASPA2: 设置 export RASPA_DIR=/path/to/raspa2"
+        echo "   - RASPA3: conda install -c conda-forge raspa3"
+        echo ""
+        warnings+=("未检测到 RASPA 安装")
+    fi
+
+    if command -v conda >/dev/null 2>&1; then
+        if [ "$raspa2_found" = false ]; then
+            warnings+=("缺少 raspa2 环境")
+            echo "   建议：conda create --name raspa2 && conda activate raspa2 && conda install -c conda-forge raspa2"
+        fi
+        if [ "$raspa3_found" = false ]; then
+            warnings+=("缺少 raspa3 环境")
+            echo "   建议：conda create --name raspa3 && conda activate raspa3 && conda install -c conda-forge raspa3"
+        fi
+        if [ "$pymser_found" = false ]; then
+            warnings+=("缺少 pymser 环境")
+            echo "   建议：conda env create -f $HOME/raspa2-calc/.raspa_tools/environment.yml"
+        fi
+    fi
+
+    echo ""
+
+    # ============ 总结 ============
+    if [ ${#warnings[@]} -ne 0 ]; then
+        echo "⚠️  检测到以下警告:"
+        for warn in "${warnings[@]}"; do
+            echo "   • $warn"
+        done
+        echo ""
+        echo "工具仍可安装，但部分功能可能无法使用"
+    fi
+
+    echo "✅ 环境预检测完成"
+    echo ""
+}
+
+# 验证安装函数
+validate_installation() {
+    echo "🔍 验证安装..."
+
+    local errors=()
+
+    # 检查工具目录
+    if [ ! -d "$TOOL_DIR" ]; then
+        errors+=("工具目录不存在: $TOOL_DIR")
+    fi
+
+    # 检查关键可执行文件
+    local key_files=("bin/raspa-status" "job_templates/runjobs.sh" "job_templates/tasksrun.sh")
+    for file in "${key_files[@]}"; do
+        if [ ! -f "$TOOL_DIR/$file" ]; then
+            errors+=("关键文件缺失: $file")
+        elif [ ! -x "$TOOL_DIR/$file" ]; then
+            errors+=("文件无执行权限: $file")
+        fi
+    done
+
+    # 检查关键目录
+    local key_dirs=("raspa3json" "nfs")
+    for dir in "${key_dirs[@]}"; do
+        if [ ! -d "$TOOL_DIR/$dir" ]; then
+            errors+=("关键目录缺失: $dir/")
+        fi
+    done
+
+    if [ ${#errors[@]} -ne 0 ]; then
+        echo "❌ 安装验证失败:"
+        for error in "${errors[@]}"; do
+            echo "   - $error"
+        done
+        return 1
+    fi
+
+    echo "✅ 安装验证通过"
+    return 0
+}
+
+# 主函数
+main() {
+    echo "🚀 开始安装 RASPA 高通量计算工具 v${VERSION}..."
+    echo ""
+
+    # 检查依赖
+    check_dependencies
+
+    # 获取脚本所在目录（项目根目录）
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    echo "项目根目录: $SCRIPT_DIR"
+
+# 设置工具目录
+TOOL_DIR="$HOME/raspa2-calc/.raspa_tools"
+
+# 预检查：若 NFS 挂载出现 Stale file handle，会导致 Slurm 作业 0 秒失败且无 stdout/err
+if [ -d "$HOME/raspa2-calc" ]; then
+    if ! ls -ld "$HOME/raspa2-calc" >/dev/null 2>&1; then
+        echo "❌ 检测到目录无法访问: $HOME/raspa2-calc"
+        echo "   这通常是 NFS 的 Stale file handle，先修复挂载再安装："
+        echo "   - sudo umount -fl $HOME/raspa2-calc && sudo mount -a"
+        echo "   - 或运行: bash \"$SCRIPT_DIR/nfs/nfs_client_setup.sh\" --recover"
+        exit 1
+    fi
+fi
+
+# 创建工具目录
+echo "创建工具目录..."
+mkdir -p "$TOOL_DIR"
+
+# 复制所有项目文件到工具目录（排除.git和安装脚本本身）
+echo "复制项目文件..."
+echo "正在复制 bin/ 目录..."
+cp -r "$SCRIPT_DIR/bin" "$TOOL_DIR/" 2>/dev/null && echo "✅ bin/ 复制完成" || echo "⚠️  bin/ 复制失败或不存在"
+
+# 更新main.sh为支持配置文件的版本
+cat > "$TOOL_DIR/bin/main.sh" << 'EOF'
+#!/bin/bash
+
+# 获取工具安装目录
+TOOL_DIR="$HOME/raspa2-calc/.raspa_tools"
+# 获取当前工作目录
+WORK_DIR="$PWD"
+
+# 设置工作目录环境变量
+export RASPA_WORK_DIR="$WORK_DIR"
+
+# 调用Python主程序，支持配置文件功能
+exec python "$TOOL_DIR/scripts/python/raspa_calc.py"
+EOF
+echo "✅ main.sh 已更新为配置文件版本"
+
+echo "正在复制 job_templates/ 目录..."
+cp -r "$SCRIPT_DIR/job_templates" "$TOOL_DIR/" 2>/dev/null && echo "✅ job_templates/ 复制完成" || echo "⚠️  job_templates/ 复制失败或不存在"
+
+echo "正在复制 scripts/ 目录..."
+cp -r "$SCRIPT_DIR/scripts" "$TOOL_DIR/" 2>/dev/null && echo "✅ scripts/ 复制完成" || echo "⚠️  scripts/ 复制失败或不存在"
+
+echo "正在复制 raspa3json/ 目录..."
+cp -r "$SCRIPT_DIR/raspa3json" "$TOOL_DIR/" 2>/dev/null && echo "✅ raspa3json/ 复制完成（RASPA3 模板与分子库）" || echo "⚠️  raspa3json/ 复制失败或不存在"
+
+echo "正在复制 raspa2-3/ 目录..."
+cp -r "$SCRIPT_DIR/raspa2-3" "$TOOL_DIR/" 2>/dev/null && echo "✅ raspa2-3/ 复制完成" || echo "⚠️  raspa2-3/ 复制失败或不存在"
+
+echo "正在复制 nfs/ 目录..."
+cp -r "$SCRIPT_DIR/nfs" "$TOOL_DIR/" 2>/dev/null && echo "✅ nfs/ 复制完成（NFS 挂载/修复脚本）" || echo "⚠️  nfs/ 复制失败或不存在"
+
+echo "正在复制其他文件..."
+cp "$SCRIPT_DIR/README.md" "$TOOL_DIR/" 2>/dev/null && echo "✅ README.md 复制完成" || echo "⚠️  README.md 复制失败或不存在"
+cp "$SCRIPT_DIR/qdel.sh" "$TOOL_DIR/" 2>/dev/null && echo "✅ qdel.sh 复制完成" || echo "⚠️  qdel.sh 复制失败或不存在"
+cp "$SCRIPT_DIR/environment.yml" "$TOOL_DIR/" 2>/dev/null && echo "✅ environment.yml 复制完成（pymser 环境定义）" || echo "⚠️  environment.yml 复制失败或不存在"
+cp -r "$SCRIPT_DIR/docs" "$TOOL_DIR/" 2>/dev/null && echo "✅ docs/ 复制完成（说明文档）" || echo "⚠️  docs/ 复制失败或不存在"
+
+echo "正在复制配置文件..."
+cp "$SCRIPT_DIR/config.yaml" "$TOOL_DIR/" 2>/dev/null && echo "✅ config.yaml 复制完成" || echo "⚠️  config.yaml 复制失败或不存在"
+cp "$SCRIPT_DIR/requirements.txt" "$TOOL_DIR/" 2>/dev/null && echo "✅ requirements.txt 复制完成" || echo "⚠️  requirements.txt 复制失败或不存在"
+
+# 设置脚本权限
+echo ""
+echo "设置脚本执行权限..."
+
+# 给所有.sh文件执行权限
+echo "正在设置 .sh 文件权限..."
+find "$TOOL_DIR" -name "*.sh" -type f -exec chmod 755 {} \; 2>/dev/null
+echo "✅ 所有 .sh 文件权限设置完成"
+
+# 给bin目录下的所有文件执行权限
+if [ -d "$TOOL_DIR/bin" ]; then
+    echo "正在设置 bin/ 目录文件权限..."
+    find "$TOOL_DIR/bin" -type f -exec chmod 755 {} \; 2>/dev/null
+    echo "✅ bin/ 目录文件权限设置完成"
+fi
+
+# 给job_templates目录下的所有文件执行权限
+if [ -d "$TOOL_DIR/job_templates" ]; then
+    echo "正在设置 job_templates/ 目录文件权限..."
+    find "$TOOL_DIR/job_templates" -type f -exec chmod 755 {} \; 2>/dev/null
+    echo "✅ job_templates/ 目录文件权限设置完成"
+fi
+
+# 给scripts目录下的所有脚本文件执行权限
+if [ -d "$TOOL_DIR/scripts" ]; then
+    echo "正在设置 scripts/ 目录文件权限..."
+    find "$TOOL_DIR/scripts" -name "*.sh" -type f -exec chmod 755 {} \; 2>/dev/null
+    find "$TOOL_DIR/scripts" -name "*.py" -type f -exec chmod 755 {} \; 2>/dev/null
+    echo "✅ scripts/ 目录文件权限设置完成"
+fi
+
+# 特别确保关键可执行文件的权限
+echo "正在设置关键可执行文件权限..."
+EXECUTABLES=(
+    "qdel.sh"
+    "bin/main.sh"
+    "bin/chmod.sh"
+    "bin/raspa-scale"
+    "bin/raspa-calc"
+    "bin/raspa-status"
+    "bin/recheck-failed"
+    "bin/raspa-diagnose"
+    "bin/raspa-scale-pbs"
+    "bin/raspa-plot-isotherm"
+
+    "job_templates/pbs.sh"
+    "job_templates/local.sh"
+    "job_templates/sbatch.sh"
+    "job_templates/runjobs.sh"
+    "job_templates/runjobs_raspa3.sh"
+    "job_templates/tasksrun.sh"
+    "job_templates/job_array.sh"
+    "job_templates/job_submit.sh"
+    "job_templates/job_submit_ht.sh"
+
+    "nfs/nfs_client_setup.sh"
+    "nfs/nfs_setup_all_nodes.sh"
+)
+
+for exe in "${EXECUTABLES[@]}"; do
+    if [ -f "$TOOL_DIR/$exe" ]; then
+        chmod 755 "$TOOL_DIR/$exe"
+        echo "✅ $exe 权限设置完成"
+    else
+        echo "⚠️  $exe 文件不存在"
+    fi
+done
+
+# 检查并添加PATH环境变量
+echo ""
+echo "配置环境变量..."
+SHELL_RC=""
+
+# 安全地检测shell类型（避免set -u导致的unbound variable错误）
+if [ "${ZSH_VERSION:-}" ]; then
+    SHELL_RC="$HOME/.zshrc"
+elif [ "${BASH_VERSION:-}" ]; then
+    SHELL_RC="$HOME/.bashrc"
+else
+    SHELL_RC="$HOME/.profile"
+fi
+
+# 检查PATH是否已配置 (更精确的检查)
+if ! grep -q "^export PATH=.*raspa2-calc/.raspa_tools/bin.*PATH" "$SHELL_RC" 2>/dev/null; then
+    echo "" >> "$SHELL_RC"
+    echo "# RASPA2高通量计算工具" >> "$SHELL_RC"
+    echo "export PATH=\"\$HOME/raspa2-calc/.raspa_tools/bin:\$PATH\"" >> "$SHELL_RC"
+    echo "已添加PATH配置到 $SHELL_RC"
+else
+    echo "PATH配置已存在"
+fi
+
+# 立即生效PATH配置
+export PATH="$HOME/raspa2-calc/.raspa_tools/bin:$PATH"
+
+# 清理旧的根目录软链（统一从 bin/ 调用）
+echo ""
+echo "清理旧的根目录软链接..."
+for link in "$TOOL_DIR/raspa-status" "$TOOL_DIR/raspa-diagnose" "$TOOL_DIR/raspa-calc"; do
+    if [ -L "$link" ]; then
+        rm -f "$link" 2>/dev/null || true
+        echo "✅ 已移除 $link"
+    fi
+done
+
+echo ""
+echo "=================================================="
+echo "              安装完成！"
+echo "=================================================="
+echo ""
+echo "🎉 RASPA 高通量计算工具 v${VERSION} 完整安装成功！"
+echo ""
+echo "📋 v${VERSION} 核心特性："
+echo "   ✅ RASPA2/RASPA3 双版本支持 (自动检测版本，支持配置切换)"
+echo "   ✅ RASPA3 数据提取器 (科学计数法格式解析)"
+echo "   ✅ 自动版本检测 (simulation.json→RASPA3 / simulation.input→RASPA2)"
+echo "   ✅ SLURM作业数组 (sbatch --array 提交速度快50倍)"
+echo "   ✅ 共享任务队列 (原子竞争机制，减少90% NFS扫描)"
+echo "   ✅ 动态并发缩放 (raspa-scale N 实时调整)"
+echo "   ✅ 五大计算模式 (参数筛选/高通量/数据提取/警告处理/等温线绘制)"
+echo "   ✅ 多节点集群支持 (NFS共享存储 + 960+ CPU核心)"
+echo "   ✅ 原子文件锁机制 (基于POSIX noclobber的并发安全)"
+echo "   ✅ 多调度系统支持 (SLURM/PBS/本地)"
+echo "   ✅ 智能环境检测 (自动识别SLURM/PBS/LOCAL)"
+echo "   ✅ 实时任务监控 (raspa-status精确统计)"
+echo "   ✅ 警告处理系统 (失败任务提取 + CSV数据替换)"
+echo ""
+echo "📁 安装位置: $TOOL_DIR"
+echo ""
+echo "🗂️  NFS/集群提示："
+echo "   - 若 Slurm 作业 0 秒失败且无 stdout/err，优先检查 NFS 是否报 Stale file handle"
+echo "   - 单节点修复: bash \"$TOOL_DIR/nfs/nfs_client_setup.sh\" --recover"
+echo "   - 批量修复: bash \"$TOOL_DIR/nfs/nfs_setup_all_nodes.sh\" recover --run"
+echo ""
+echo "🚀 快速开始："
+echo "   1. 确认三个 conda 环境："
+echo "      - raspa2: conda create --name raspa2 && conda activate raspa2 && conda install -c conda-forge raspa2"
+echo "      - raspa3: conda create --name raspa3 && conda activate raspa3 && conda install -c conda-forge raspa3"
+echo "      - pymser: conda env create -f \$HOME/raspa2-calc/.raspa_tools/environment.yml"
+echo "   2. 重新加载shell环境:"
+if [ "${ZSH_VERSION:-}" ]; then
+    echo "      source ~/.zshrc"
+elif [ "${BASH_VERSION:-}" ]; then
+    echo "      source ~/.bashrc"
+else
+    echo "      source ~/.profile"
+fi
+echo "   3. 进入工作目录: cd /path/to/your/project"
+echo "   4. 开始计算: raspa-calc 或 raspa-status"
+echo ""
+echo "🔧 可用命令："
+echo "   - raspa-calc: 主计算工具"
+echo "   - raspa-status: 状态检查工具"
+echo "   - raspa-diagnose: 诊断工具"
+echo ""
+echo "📖 详细使用说明请查看 README.md"
+echo ""
+echo "⚙️  如需配置RASPA_DIR等环境变量，请参考文档"
+echo ""
+
+# 验证安装
+if validate_installation; then
+    echo ""
+    echo "🎉 安装完成！所有验证通过。"
+    echo ""
+    echo "💡 提示: 建议配置以下环境变量以获得最佳体验:"
+    echo "   export RASPA_DIR=/path/to/raspa/installation"
+    echo "   export RASPA_WORK_DIR=/path/to/work/directory"
+else
+    echo ""
+    echo "⚠️  安装完成但存在一些问题，请检查上述错误信息。"
+    exit 1
+fi
+}
+
+# 执行主函数
+main "$@"
