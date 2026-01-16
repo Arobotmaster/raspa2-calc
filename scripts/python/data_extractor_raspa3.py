@@ -20,6 +20,7 @@ import json
 import traceback
 import logging
 from datetime import datetime
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 try:
     from tqdm import tqdm
@@ -141,38 +142,56 @@ class RASPA3_Output_Data:
                 self._loadings_section = self.output_string
         return self._loadings_section
 
+    def _parse_components_and_blocks(self):
+        """一次性解析所有组件名称和对应的块"""
+        if self._components is not None and self._component_blocks is not None:
+            return
+
+        self._components = []
+        self._component_blocks = {}
+        
+        loadings = self._get_loadings_section()
+        
+        # 查找所有组件头的位置
+        # 格式: Component 0 (Name) 或 Component 0 [Name]
+        header_pattern = re.compile(r'Component\s+\d+\s+[\(\[](.+?)[\)\]]')
+        header_iter = list(header_pattern.finditer(loadings))
+        
+        source_text = loadings
+        
+        # 如果 Loadings 部分没找到组件，回退到全文搜索
+        if not header_iter and loadings is not self.output_string:
+            header_iter = list(self._re_components.finditer(self.output_string))
+            source_text = self.output_string
+
+        for i, match in enumerate(header_iter):
+            comp_name = match.group(1)
+            # 保持顺序并去重
+            if comp_name not in self._components:
+                self._components.append(comp_name)
+            
+            start_pos = match.start()
+            # 结束位置是下一个组件的开始，或者是文本结束
+            if i < len(header_iter) - 1:
+                end_pos = header_iter[i+1].start()
+            else:
+                end_pos = len(source_text)
+            
+            # 存储组件块 (如果同名组件出现多次，这里只存最后一次，或者应该合并？
+            # RASPA通常每个组件只出现一次 Loadings 块。如果出现多次，通常是不同部分的统计。
+            # 原逻辑是 re.search 找到第一个匹配。这里我们也应该尽量保持一致。)
+            if comp_name not in self._component_blocks:
+                self._component_blocks[comp_name] = source_text[start_pos:end_pos]
+
     def get_components(self):
         """获取组分名称列表 (从 Loadings 部分提取)"""
-        if self._components is None:
-            loadings = self._get_loadings_section()
-            # 在 Loadings 部分查找组件 (格式: Component X (name))
-            comp_pattern = re.compile(r'Component\s+\d+\s+\(([^)]+)\)')
-            self._components = list(dict.fromkeys(comp_pattern.findall(loadings)))
-
-            # 如果 Loadings 部分没找到，回退到全文搜索
-            if not self._components:
-                self._components = list(dict.fromkeys(self._re_components.findall(self.output_string)))
+        self._parse_components_and_blocks()
         return self._components
 
     def _get_component_block(self, component):
         """获取特定组分在 Loadings 部分的数据块"""
-        if self._component_blocks is None:
-            self._component_blocks = {}
-
-        if component not in self._component_blocks:
-            comp_pattern = re.escape(component)
-            # 组件块可能使用 () 或 []，优先在 Loadings 中匹配，失败回退到全文
-            block_pattern = (
-                r"Component\s+\d+\s+[\(\[]" + comp_pattern +
-                r"[\)\]][\s\S]+?(?=Component\s+\d+\s+[\(\[]|$)"
-            )
-            loadings = self._get_loadings_section()
-            match = re.search(block_pattern, loadings)
-            if not match and loadings is not self.output_string:
-                match = re.search(block_pattern, self.output_string)
-            self._component_blocks[component] = match.group(0) if match else ""
-
-        return self._component_blocks[component]
+        self._parse_components_and_blocks()
+        return self._component_blocks.get(component, "")
 
     def _get_component_block_full(self, component):
         """强制从全文获取组件块（包含 Widom/Henry/Rosenbluth 等）"""
@@ -517,10 +536,10 @@ def find_mc_dir_from_path(file_path):
 def find_all_mc_directories(base_path):
     """
     查找所有 mc 目录
-
+    
     Args:
         base_path: 基础目录路径
-
+        
     Returns:
         mc 目录路径列表
     """
@@ -531,11 +550,13 @@ def find_all_mc_directories(base_path):
         mc_directories.append(base_path)
 
     for root, dirs, files in os.walk(base_path):
-        for dir_name in dirs:
+        for dir_name in dirs[:]:
             # 匹配 mc 数字格式的目录（包括各种状态后缀）
             if _MC_DIR_NAME_RE.match(dir_name):
                 full_path = os.path.join(root, dir_name)
                 mc_directories.append(full_path)
+                # 优化: 找到 mc 目录后不再递归进入
+                dirs.remove(dir_name)
 
     return mc_directories
 
@@ -609,18 +630,37 @@ def _scan_mc_framework_map(base_path):
 
 def find_all_output_files(base_path):
     """
-    遍历 base_path 下所有 output 目录中的 .txt 文件
-
+    高效查找 RASPA3 输出文件
+    
+    策略:
+    1. 复用 find_all_mc_directories 快速定位 mc 目录
+    2. 仅在 mc 目录下的 output 子目录中查找 .txt 文件
+    3. 避免全盘扫描，减少 I/O 开销
+    
     Returns:
         输出文件路径列表
     """
     output_files = []
-
-    for root, dirs, files in os.walk(base_path):
-        if os.path.basename(root).lower() == 'output':
-            for file_name in files:
-                if file_name.endswith('.txt'):
-                    output_files.append(os.path.join(root, file_name))
+    mc_dirs = find_all_mc_directories(base_path)
+    
+    for mc_dir in mc_dirs:
+        # 检查常见的 output 目录变体
+        possible_output_dirs = ['output', 'Output', 'OUTPUT']
+        for sub in possible_output_dirs:
+            out_dir = os.path.join(mc_dir, sub)
+            if os.path.isdir(out_dir):
+                try:
+                    with os.scandir(out_dir) as it:
+                        for entry in it:
+                            if entry.is_file() and entry.name.endswith('.txt'):
+                                output_files.append(entry.path)
+                except PermissionError:
+                    pass
+                # 通常每个 mc 目录只有一个有效的 output 目录，找到一个即可？
+                # 但为了保险起见，RASPA3 似乎只用小写 output。
+                # 如果找到了文件，就不再检查其他变体了，避免重复
+                if output_files and output_files[-1].startswith(out_dir):
+                    break
 
     return output_files
 
@@ -740,16 +780,10 @@ def find_and_process_files_by_csv_template(base_path, selected_items, selected_u
         fmap_items.append((k, skey, items))
 
     results = []
+    task_list = []
 
     # 进度条开关（默认True）
     show_progress = True
-    pbar = None
-    if show_progress:
-        try:
-            from tqdm import tqdm as _tqdm
-            pbar = _tqdm(total=len(fw_list), desc="Processing", unit="row")
-        except Exception:
-            pbar = None
 
     for i, fw in enumerate(fw_list, start=1):
         chosen = None
@@ -769,49 +803,135 @@ def find_and_process_files_by_csv_template(base_path, selected_items, selected_u
                             break
 
         if chosen and chosen.get('out_file'):
-            parsed = process_output_file(chosen['out_file'], i, selected_items, selected_units)
-            if parsed:
-                parsed['Framework Name'] = fw
-                parsed['MC_Directory'] = os.path.basename(chosen['mc_dir'])
-                parsed['Status'] = chosen['status']
-                results.append(parsed)
+            # 将任务加入列表，稍后并行处理
+            task_list.append((i, fw, chosen))
+        else:
+            row = {
+                'MC_Number': i,
+                'File Path': chosen['mc_dir'] if chosen else '',
+                'Framework Name': fw,
+                'warnings': [],
+                'MC_Directory': os.path.basename(chosen['mc_dir']) if chosen else '',
+            }
+            st = chosen['status'] if chosen else 'Unknown'
+            row['Status'] = st
+            if not chosen:
+                row['warnings'] = ['not_found']
+            else:
+                if st == 'Done':
+                    row['warnings'] = ['no_output']
+                elif st == 'Failed':
+                    row['warnings'] = ['failed']
+                elif st == 'Running':
+                    row['warnings'] = ['running']
+                else:
+                    row['warnings'] = ['not_started']
+
+            results.append(row)
+
+    # 并行处理收集到的任务
+    if task_list:
+        try:
+            cpu_count = os.cpu_count() or 2
+        except Exception:
+            cpu_count = 2
+        
+        max_workers = min(32, cpu_count)
+        print(f"CSV 对齐模式并行处理: 使用 {max_workers} 个 worker 进程处理 {len(task_list)} 个任务")
+        
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for i, fw, chosen in task_list:
+                fut = executor.submit(process_output_file, chosen['out_file'], i, selected_items, selected_units)
+                futures[fut] = (i, fw, chosen)
+            
+            pbar = None
+            if show_progress:
+                try:
+                    from tqdm import tqdm as _tqdm
+                    pbar = _tqdm(total=len(task_list), desc="Processing", unit="row")
+                except Exception:
+                    pbar = None
+            
+            for fut in as_completed(futures):
+                i, fw, chosen = futures[fut]
+                try:
+                    parsed = fut.result()
+                    if parsed:
+                        parsed['Framework Name'] = fw
+                        parsed['MC_Directory'] = os.path.basename(chosen['mc_dir'])
+                        parsed['Status'] = chosen['status']
+                        results.append(parsed)
+                    else:
+                        row = {
+                            'MC_Number': i,
+                            'File Path': chosen['out_file'],
+                            'Framework Name': fw,
+                            'warnings': ['parse_error'],
+                            'MC_Directory': os.path.basename(chosen['mc_dir']),
+                            'Status': chosen['status']
+                        }
+                        results.append(row)
+                except Exception as e:
+                    row = {
+                        'MC_Number': i,
+                        'File Path': chosen['out_file'],
+                        'Framework Name': fw,
+                        'warnings': ['error'],
+                        'MC_Directory': os.path.basename(chosen['mc_dir']),
+                        'Status': chosen['status']
+                    }
+                    results.append(row)
+                
                 if pbar:
                     pbar.update(1)
-                continue
+            
+            if pbar:
+                pbar.close()
 
-        row = {
-            'MC_Number': i,
-            'File Path': chosen['mc_dir'] if chosen else '',
-            'Framework Name': fw,
-            'warnings': [],
-            'MC_Directory': os.path.basename(chosen['mc_dir']) if chosen else '',
-        }
-        st = chosen['status'] if chosen else 'Unknown'
-        row['Status'] = st
-        if not chosen:
-            row['warnings'] = ['not_found']
-        else:
-            if st == 'Done':
-                row['warnings'] = ['no_output']
-            elif st == 'Failed':
-                row['warnings'] = ['failed']
-            elif st == 'Running':
-                row['warnings'] = ['running']
-            else:
-                row['warnings'] = ['not_started']
+    results.sort(key=lambda x: x['MC_Number'])
 
-        results.append(row)
-        if pbar:
-            pbar.update(1)
-
-    if pbar:
-        pbar.close()
     return results
+
+
+def _process_single_file_task(output_file, idx, selected_items, selected_units):
+    """并行处理单个文件的 Worker 函数"""
+    try:
+        mc_dir, dir_name = find_mc_dir_from_path(output_file)
+        mc_number = extract_mc_number(mc_dir) if mc_dir else idx
+
+        result = process_output_file(
+            output_file, mc_number, selected_items, selected_units
+        )
+        if result:
+            if dir_name:
+                if '__done' in dir_name:
+                    result['Status'] = 'Done'
+                elif '__failed' in dir_name:
+                    result['Status'] = 'Failed'
+                    if 'warnings' not in result: result['warnings'] = []
+                    result['warnings'].append('failed')
+                elif '__running' in dir_name:
+                    result['Status'] = 'Running'
+                    if 'warnings' not in result: result['warnings'] = []
+                    result['warnings'].append('running')
+                else:
+                    result['Status'] = 'Unknown'
+                result['MC_Directory'] = dir_name
+            else:
+                result['Status'] = 'Unknown'
+                result['MC_Directory'] = ''
+
+            return result, mc_dir
+    except Exception:
+        pass
+    return None, None
 
 
 def find_and_process_files_high_throughput(base_path, selected_items, selected_units=None):
     """
-    自动遍历 output 目录数据提取
+    专门处理高通量计算的文件处理函数
+    按mc1, mc2, mc3...的顺序处理并提取数据
 
     Args:
         base_path: 基础目录路径
@@ -841,34 +961,33 @@ def find_and_process_files_high_throughput(base_path, selected_items, selected_u
 
     mc_with_output = set()
 
-    with tqdm(total=len(output_files), desc="Processing", unit="file") as pbar:
-        for idx, output_file in enumerate(output_files, start=1):
-            mc_dir, dir_name = find_mc_dir_from_path(output_file)
-            mc_number = extract_mc_number(mc_dir) if mc_dir else idx
+    # 并行处理
+    try:
+        cpu_count = os.cpu_count() or 2
+    except Exception:
+        cpu_count = 2
+    
+    # 尽可能多使用核心，因为 Python 正则是 CPU 密集型
+    max_workers = min(32, cpu_count)
+    print(f"并行处理已启用: 使用 {max_workers} 个 worker 进程处理 {len(output_files)} 个文件")
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_process_single_file_task, f, idx, selected_items, selected_units): f 
+            for idx, f in enumerate(output_files, start=1)
+        }
 
-            result = process_output_file(
-                output_file, mc_number, selected_items, selected_units
-            )
-            if result:
-                if dir_name:
-                    mc_with_output.add(mc_dir)
-                    if '__done' in dir_name:
-                        result['Status'] = 'Done'
-                    elif '__failed' in dir_name:
-                        result['Status'] = 'Failed'
-                        result['warnings'].append('failed')
-                    elif '__running' in dir_name:
-                        result['Status'] = 'Running'
-                        result['warnings'].append('running')
-                    else:
-                        result['Status'] = 'Unknown'
-                    result['MC_Directory'] = dir_name
-                else:
-                    result['Status'] = 'Unknown'
-                    result['MC_Directory'] = ''
-
-                all_results.append(result)
-            pbar.update(1)
+        with tqdm(total=len(output_files), desc="Processing", unit="file") as pbar:
+            for future in as_completed(futures):
+                try:
+                    res, mc_dir = future.result()
+                    if res:
+                        all_results.append(res)
+                        if mc_dir:
+                            mc_with_output.add(mc_dir)
+                except Exception as e:
+                    pass
+                pbar.update(1)
 
     # 为存在但无输出的 mc 目录补占位记录
     if mc_directories:

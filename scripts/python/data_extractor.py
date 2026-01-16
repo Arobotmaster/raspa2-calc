@@ -508,6 +508,7 @@ def process_output_file(file_path, mc_number, selected_items, temperature=None, 
 def find_all_mc_directories(base_path):
     """
     查找所有mc目录，包括有输出文件和没有输出文件的
+    优化：找到mc目录后不再递归进入，大幅减少遍历时间
     """
     mc_directories = []
     
@@ -515,11 +516,14 @@ def find_all_mc_directories(base_path):
     
     # 查找所有mc目录（包括__done和__failed状态）
     for root, dirs, files in os.walk(base_path):
-        for dir_name in dirs:
+        # 使用切片复制一份，以便在遍历时修改 dirs
+        for dir_name in dirs[:]:
             # 匹配mc数字格式的目录（包括各种状态）
             if _MC_DIR_NAME_RE.match(dir_name):
                 full_path = os.path.join(root, dir_name)
                 mc_directories.append(full_path)
+                # 找到mc目录后，不需要再深入遍历其子目录，从dirs中移除
+                dirs.remove(dir_name)
     
     print(f"找到 {len(mc_directories)} 个mc目录")
     return mc_directories
@@ -693,13 +697,14 @@ def find_and_process_files_high_throughput(base_path, selected_items, output_for
     print("开始处理目录...")
     total = len(mc_directories)
     if parallel and total > 1:
-        # 默认进程数：min(8, CPU) 避免压垮共享盘
+        # 默认进程数：尝试使用更多核心以提高速度
         if not workers or workers < 1:
             try:
                 cpu = os.cpu_count() or 2
             except Exception:
                 cpu = 2
-            workers = min(8, cpu)
+            # 提高并发上限到32，或者CPU核心数，取较小值
+            workers = min(32, cpu)
 
         with ProcessPoolExecutor(max_workers=workers) as executor:
             futures = [

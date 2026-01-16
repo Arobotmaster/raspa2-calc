@@ -20,6 +20,22 @@ NFS 导出：
 - `raspa-calc`/`raspa-scale`/`job_templates`/脚本执行所需的读写都在 NVMe 上完成。
 - `work/` 是高通量任务最密集的读写目录，**必须**在 NVMe 上。
 
+### 2.1.1 为什么 work 目录要单独挂载？（Mount Overlay 机制）
+
+你可能会疑惑：`/srv/raspa2-calc` 里明明也有 `work` 子目录，为什么还要再挂载一次 `/srv/raspa2-calc-work`？
+
+这是有意设计的**挂载覆盖（Mount Overlay）**：
+
+1.  **服务器端物理分离**：
+    - `/srv/raspa2-calc`（代码层）：存放脚本、配置。其下的 `work/` 只是一个空目录（挂载点）。
+    - `/srv/raspa2-calc-work`（数据层）：存放真实的计算数据。
+2.  **客户端统一视图**：
+    - 客户端先挂载代码层到 `/home/zjp/raspa2-calc`。
+    - 再把数据层挂载到 `/home/zjp/raspa2-calc/work`，**覆盖**原本的空目录。
+3.  **优势**：
+    - **灵活扩容**：如果未来数据量暴涨，管理员可以把 `/srv/raspa2-calc-work` 迁移到另一块更大的硬盘，而**无需修改任何客户端脚本或路径**。
+    - **性能调优**：可以针对数据目录单独设置 NFS 参数（如更激进的缓存策略），而不影响代码目录的安全性。
+
 ### 2.2 HDD（归档区，仅保留历史）
 
 NFS 导出：
