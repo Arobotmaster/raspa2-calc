@@ -70,7 +70,7 @@ calculation:
   framework_column: "refcode"
 
   # 输出目录名
-  output_directory: "wxj-H"
+  output_directory: "wxj-test"
 
   # 是否从 CSV 文件读取孔隙率
   use_void_csv: false

@@ -1,6 +1,7 @@
 import os
 import math
 import json
+import re
 import pandas as pd
 import logging
 import sys
@@ -9,6 +10,7 @@ import subprocess
 import multiprocessing
 import shutil
 import copy
+from contextlib import contextmanager, nullcontext
 from collections import OrderedDict
 from calculate_params import process_structure_file
 from force_field_utils import write_filtered_force_field
@@ -31,6 +33,8 @@ def load_raspa3_config():
     }
 
 # 配置日志系统
+CONSOLE_HANDLER = None
+
 def setup_logging(log_file="raspa_calculation.log"):
     """设置日志系统"""
     # 获取根日志记录器
@@ -49,13 +53,18 @@ def setup_logging(log_file="raspa_calculation.log"):
 
     # 文件处理器
     file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(log_formatter)
     root_logger.addHandler(file_handler)
 
     # 控制台处理器
     console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(log_formatter)
     root_logger.addHandler(console_handler)
+
+    global CONSOLE_HANDLER
+    CONSOLE_HANDLER = console_handler
 
     return root_logger
 
@@ -63,6 +72,64 @@ def setup_logging(log_file="raspa_calculation.log"):
 logger = setup_logging()
 CURRENT_SUBDIR = None
 CURRENT_TOPDIR = None
+
+@contextmanager
+def quiet_console(level=logging.WARNING):
+    """临时降低控制台日志级别，避免批量处理刷屏。"""
+    if CONSOLE_HANDLER is None:
+        yield
+        return
+    previous_level = CONSOLE_HANDLER.level
+    CONSOLE_HANDLER.setLevel(level)
+    try:
+        yield
+    finally:
+        CONSOLE_HANDLER.setLevel(previous_level)
+
+def _env_flag(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "y", "on")
+
+def _positive_int(raw, default):
+    try:
+        value = int(raw)
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+def _parse_submit_index(line):
+    match = re.search(r"正在提交(?:作业\s*|第)(\d+)", line)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+def _should_print_submit_line(line):
+    important_markers = (
+        "错误",
+        "失败",
+        "⚠️",
+        "❌",
+        "警告",
+        "WARNING",
+        "Error",
+        "ERROR",
+        "开始提交计算任务",
+        "使用CPU核心数",
+        "提交模式",
+        "开始逐个提交作业",
+        "job array",
+        "Job array",
+        "节点分配计划",
+        "所有作业已提交完成",
+        "提示",
+        "检测到",
+    )
+    return any(marker in line for marker in important_markers)
 
 
 def locate_cif_file(framework_name, cif_dir):
@@ -1606,8 +1673,13 @@ def main():
                                 sim_config.pop("WriteBinaryRestartEvery", None)
                                 sim_config.pop("RestartFromBinaryFile", None)
 
-                                # 显示 JSON 内容
-                                print(json.dumps(sim_config, indent=2))
+                                # 显示 JSON 内容（限制行数避免刷屏）
+                                sim_text = json.dumps(sim_config, indent=2)
+                                sim_lines = sim_text.splitlines()
+                                preview_lines = 60
+                                print("\n".join(sim_lines[:preview_lines]))
+                                if len(sim_lines) > preview_lines:
+                                    print(f"... (共{len(sim_lines)}行，仅显示前{preview_lines}行)")
 
                             print("\n" + "="*50)
                             print(f"📦 此示例使用框架: {first_framework}")
@@ -1689,30 +1761,33 @@ def main():
         # 获取 RASPA3 专用配置
         json_dir = raspa3_config.get('json_dir', '') if raspa_version == 'raspa3' else None
 
-        with tqdm(total=len(framework_names), desc="处理进度", unit="结构") as pbar:
-            for counter, framework_name in enumerate(framework_names, 1):
-                if raspa_version == 'raspa3':
-                    # 使用 RASPA3 处理函数
-                    success = process_framework_raspa3(
-                        topdir, subdir, counter, framework_name, cutoff,
-                        void_csv_file=void_csv_file,
-                        void_fraction_column=void_fraction_column,
-                        template_path=template_path,
-                        molecule_name=molecule_name,
-                        cif_base_path=cif_dir,
-                        json_dir=json_dir,
-                        framework_column=framework_column
-                    )
-                else:
-                    # 使用 RASPA2 处理函数
-                    success = process_framework(
-                        topdir, subdir, counter, framework_name, cutoff,
-                        void_csv_file, void_fraction_column, template_path,
-                        molecule_name, cif_dir, framework_column
-                    )
-                if success:
-                    successful_structures += 1
-                pbar.update(1)
+        quiet_mode = not _env_flag("RASPA_HT_VERBOSE", False)
+        console_ctx = quiet_console(logging.WARNING) if quiet_mode else nullcontext()
+        with console_ctx:
+            with tqdm(total=len(framework_names), desc="处理进度", unit="结构") as pbar:
+                for counter, framework_name in enumerate(framework_names, 1):
+                    if raspa_version == 'raspa3':
+                        # 使用 RASPA3 处理函数
+                        success = process_framework_raspa3(
+                            topdir, subdir, counter, framework_name, cutoff,
+                            void_csv_file=void_csv_file,
+                            void_fraction_column=void_fraction_column,
+                            template_path=template_path,
+                            molecule_name=molecule_name,
+                            cif_base_path=cif_dir,
+                            json_dir=json_dir,
+                            framework_column=framework_column
+                        )
+                    else:
+                        # 使用 RASPA2 处理函数
+                        success = process_framework(
+                            topdir, subdir, counter, framework_name, cutoff,
+                            void_csv_file, void_fraction_column, template_path,
+                            molecule_name, cif_dir, framework_column
+                        )
+                    if success:
+                        successful_structures += 1
+                    pbar.update(1)
 
         # 步骤5：检查处理结果
         print("\n步骤5：处理结果")
@@ -1774,26 +1849,32 @@ def main():
                                   text=True,
                                   bufsize=1,
                                   env=env) as proc:
+                submit_verbose = _env_flag("RASPA_SUBMIT_VERBOSE", False)
+                submit_every = _positive_int(os.environ.get("RASPA_SUBMIT_LOG_EVERY"), 10)
+                submit_every = min(submit_every, max(1, actual_cores))
+                if not submit_verbose and submit_every > 1:
+                    print(f"提交中... 每 {submit_every} 个任务提示一次 (完整输出可设 RASPA_SUBMIT_VERBOSE=1)")
+
                 submitted = 0
                 for line in proc.stdout:
                     line_strip = line.strip()
-                    # 透传关键行，同时捕获“正在提交作业 N ...”格式，转换为“正在提交第N个任务…”
-                    if "正在提交作业" in line_strip:
-                        # 提取编号
-                        import re
-                        m = re.search(r"正在提交作业\s+(\d+)", line_strip)
-                        if m:
-                            submitted = max(submitted, int(m.group(1)))
+                    if not line_strip:
+                        continue
+                    if submit_verbose:
+                        print(line_strip)
+                        continue
+
+                    # 捕获“正在提交第N个任务/正在提交作业 N ...”格式，按间隔打印
+                    idx = _parse_submit_index(line_strip)
+                    if idx is not None:
+                        submitted = max(submitted, idx)
+                        if submitted == 1 or submitted == actual_cores or submitted % submit_every == 0:
                             print(f"正在提交第{submitted}个任务…")
-                        else:
-                            print(line_strip)
-                    elif "✅ 作业" in line_strip and "提交完成" in line_strip:
-                        # 已在上一行统计submitted，此处只简要透传
-                        pass
-                    else:
-                        # 其他有用信息按需透传（避免刷屏）
-                        if line_strip:
-                            print(line_strip)
+                        continue
+
+                    # 其他关键信息按需透传（避免刷屏）
+                    if _should_print_submit_line(line_strip):
+                        print(line_strip)
                 ret = proc.wait()
 
             if ret == 0:
