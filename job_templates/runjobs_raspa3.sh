@@ -499,6 +499,12 @@ while :; do
                   "${MSER_ARGS[@]}"
             fi
             mser_status=$?
+            if [ -f "mser_status.txt" ]; then
+                mser_note=$(head -n 1 "mser_status.txt" | tr -d '\r')
+                if [ -n "$mser_note" ]; then
+                    echo " ==> < pyMSER 状态 > mc${mid}: ${mser_note}" >> ${LOGFILE}
+                fi
+            fi
             if [ $mser_status -ne 0 ]; then
                 echo " ==> < pyMSER 平衡失败 > in directory mc${mid} on core (${thiscore}) (标记失败，查看auto_mser.log)" >> ${LOGFILE}
             fi

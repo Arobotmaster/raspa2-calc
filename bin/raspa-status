@@ -50,6 +50,163 @@ count_tasks() {
     find "$TARGET_DIR" -type d -name "${prefix}" 2>/dev/null | wc -l
 }
 
+SCAN_CACHE_TS=0
+SCAN_CACHE_TARGET=""
+SCAN_CACHE_PENDING=0
+SCAN_CACHE_RUNNING=0
+SCAN_CACHE_DONE=0
+SCAN_CACHE_FAILED=0
+SCAN_CACHE_COMPLETED=0
+
+scan_status_counts() {
+    local target="$1"
+    local cache_sec="${RASPA_STATUS_CACHE_SEC:-5}"
+    local now
+    if ! [[ "$cache_sec" =~ ^[0-9]+$ ]]; then
+        cache_sec=5
+    fi
+    now=$(date +%s)
+    if [ "$SCAN_CACHE_TARGET" = "$target" ] && [ "$SCAN_CACHE_TS" -gt 0 ] && [ "$cache_sec" -gt 0 ]; then
+        if [ $((now - SCAN_CACHE_TS)) -le "$cache_sec" ]; then
+            STATUS_PENDING="$SCAN_CACHE_PENDING"
+            STATUS_RUNNING="$SCAN_CACHE_RUNNING"
+            STATUS_DONE="$SCAN_CACHE_DONE"
+            STATUS_FAILED="$SCAN_CACHE_FAILED"
+            STATUS_COMPLETED="$SCAN_CACHE_COMPLETED"
+            return 0
+        fi
+    fi
+    local out
+    out=$(python - "$target" <<'PY' 2>/dev/null || true
+import os
+import re
+import sys
+
+target = sys.argv[1] if len(sys.argv) > 1 else ""
+if not target:
+    sys.exit(1)
+
+pending = running = done = failed = completed = 0
+pat = re.compile(r"^mc")
+
+try:
+    with os.scandir(target) as it:
+        for entry in it:
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except Exception:
+                continue
+            name = entry.name
+            if not pat.match(name):
+                continue
+            if name.endswith("__running"):
+                running += 1
+            elif name.endswith("__done"):
+                done += 1
+            elif name.endswith("__failed"):
+                failed += 1
+            elif name.endswith("__completed"):
+                completed += 1
+            elif "__" not in name:
+                pending += 1
+except Exception:
+    sys.exit(1)
+
+print(f"{pending} {running} {done} {failed} {completed}")
+PY
+    )
+    if [ -n "$out" ]; then
+        read -r STATUS_PENDING STATUS_RUNNING STATUS_DONE STATUS_FAILED STATUS_COMPLETED <<< "$out"
+        if [[ "${STATUS_PENDING:-}" =~ ^[0-9]+$ ]] && [[ "${STATUS_RUNNING:-}" =~ ^[0-9]+$ ]]; then
+            SCAN_CACHE_TARGET="$target"
+            SCAN_CACHE_TS="$now"
+            SCAN_CACHE_PENDING="$STATUS_PENDING"
+            SCAN_CACHE_RUNNING="$STATUS_RUNNING"
+            SCAN_CACHE_DONE="$STATUS_DONE"
+            SCAN_CACHE_FAILED="$STATUS_FAILED"
+            SCAN_CACHE_COMPLETED="$STATUS_COMPLETED"
+            return 0
+        fi
+    fi
+    STATUS_PENDING=$(find "$target" -maxdepth 1 -type d -name "mc*" ! -name "*__*" 2>/dev/null | wc -l)
+    STATUS_RUNNING=$(find "$target" -maxdepth 1 -type d -name "mc*__running" 2>/dev/null | wc -l)
+    STATUS_DONE=$(find "$target" -maxdepth 1 -type d -name "mc*__done" 2>/dev/null | wc -l)
+    STATUS_FAILED=$(find "$target" -maxdepth 1 -type d -name "mc*__failed" 2>/dev/null | wc -l)
+    STATUS_COMPLETED=$(find "$target" -maxdepth 1 -type d -name "mc*__completed" 2>/dev/null | wc -l)
+    SCAN_CACHE_TARGET="$target"
+    SCAN_CACHE_TS="$now"
+    SCAN_CACHE_PENDING="$STATUS_PENDING"
+    SCAN_CACHE_RUNNING="$STATUS_RUNNING"
+    SCAN_CACHE_DONE="$STATUS_DONE"
+    SCAN_CACHE_FAILED="$STATUS_FAILED"
+    SCAN_CACHE_COMPLETED="$STATUS_COMPLETED"
+}
+
+scan_status_lists() {
+    local target="$1"
+    local failed_limit="${RASPA_STATUS_DETAIL_LIMIT:-10}"
+    local completed_limit="${RASPA_STATUS_DETAIL_LIMIT:-10}"
+    local running_limit="${RASPA_STATUS_RUNNING_LIMIT:-0}"
+    python - "$target" "$failed_limit" "$completed_limit" "$running_limit" <<'PY'
+import os
+import re
+import sys
+
+target = sys.argv[1] if len(sys.argv) > 1 else ""
+failed_limit = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 10
+completed_limit = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else 10
+running_limit = int(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4].isdigit() else 0
+
+running = []
+failed = []
+completed = []
+pat = re.compile(r"^mc")
+
+def sort_key(name):
+    m = re.match(r"^mc(\d+)", name)
+    if m:
+        return (0, int(m.group(1)), name)
+    return (1, name)
+
+try:
+    with os.scandir(target) as it:
+        for entry in it:
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except Exception:
+                continue
+            name = entry.name
+            if not pat.match(name):
+                continue
+            if name.endswith("__running"):
+                running.append(name)
+            elif name.endswith("__failed"):
+                failed.append(name)
+            elif name.endswith("__completed"):
+                completed.append(name)
+except Exception:
+    pass
+
+running = sorted(running, key=sort_key)
+failed = sorted(failed, key=sort_key)[:failed_limit]
+completed = sorted(completed, key=sort_key)[:completed_limit]
+if running_limit > 0:
+    running = running[:running_limit]
+
+print("RUNNING")
+for name in running:
+    print(name)
+print("FAILED")
+for name in failed:
+    print(name)
+print("COMPLETED")
+for name in completed:
+    print(name)
+PY
+}
+
 show_status() {
     echo -e "${BLUE}RASPA任务状态统计${NC}"
     echo "工作目录: ${WORK_DIR}"
@@ -66,11 +223,12 @@ show_status() {
         return
     fi
     
-    local pending=$(find "$TARGET_DIR" -type d -name "mc*" ! -name "*__*" 2>/dev/null | wc -l)
-    local running=$(count_tasks "mc*__running")
-    local done=$(count_tasks "mc*__done")
-    local failed=$(count_tasks "mc*__failed")
-    local completed=$(count_tasks "mc*__completed")
+    scan_status_counts "$TARGET_DIR"
+    local pending=$STATUS_PENDING
+    local running=$STATUS_RUNNING
+    local done=$STATUS_DONE
+    local failed=$STATUS_FAILED
+    local completed=$STATUS_COMPLETED
     
     local total=$((pending + running + done + failed + completed))
     
@@ -109,34 +267,44 @@ show_detail() {
         return
     fi
     
-    # 显示运行中的任务
-    local running_tasks=($(find "$TARGET_DIR" -type d -name "mc*__running" | sort -V))
+    local -a running_tasks=()
+    local -a failed_tasks=()
+    local -a completed_tasks=()
+    local section=""
+    while IFS= read -r line; do
+        case "$line" in
+            RUNNING) section="running" ;;
+            FAILED) section="failed" ;;
+            COMPLETED) section="completed" ;;
+            *)
+                case "$section" in
+                    running) running_tasks+=("$line") ;;
+                    failed) failed_tasks+=("$line") ;;
+                    completed) completed_tasks+=("$line") ;;
+                esac
+                ;;
+        esac
+    done < <(scan_status_lists "$TARGET_DIR")
+
     if [ ${#running_tasks[@]} -gt 0 ]; then
         echo -e "${YELLOW}运行中的任务:${NC}"
-        for task in "${running_tasks[@]}"; do
-            local task_name=$(basename "$task")
+        for task_name in "${running_tasks[@]}"; do
             echo "  $task_name"
         done
         echo ""
     fi
-    
-    # 显示失败的任务（前10个）
-    local failed_tasks=($(find "$TARGET_DIR" -type d -name "mc*__failed" | sort -V | head -10))
+
     if [ ${#failed_tasks[@]} -gt 0 ]; then
         echo -e "${RED}失败的任务（前10个）:${NC}"
-        for task in "${failed_tasks[@]}"; do
-            local task_name=$(basename "$task")
+        for task_name in "${failed_tasks[@]}"; do
             echo "  $task_name"
         done
         echo ""
     fi
-    
-    # 显示异常完成的任务（前10个）
-    local completed_tasks=($(find "$TARGET_DIR" -type d -name "mc*__completed" | sort -V | head -10))
+
     if [ ${#completed_tasks[@]} -gt 0 ]; then
         echo -e "${YELLOW}异常完成的任务（前10个）:${NC}"
-        for task in "${completed_tasks[@]}"; do
-            local task_name=$(basename "$task")
+        for task_name in "${completed_tasks[@]}"; do
             echo "  $task_name"
         done
         echo ""
@@ -329,17 +497,50 @@ fi
 if [[ $SUBDIR_SET -eq 0 ]]; then
     # 只在当前选择为 '.' 时尝试
     if [[ "$SUBDIR" = "." ]]; then
-        candidates=()
-        while IFS= read -r d; do
-            # 跳过隐藏目录
-            base=$(basename "$d")
-            [[ "$base" = .* ]] && continue
-            if find "$d" -maxdepth 1 -type d -name 'mc*' 2>/dev/null | head -n1 | grep -q .; then
-                candidates+=("$d")
-            fi
-        done < <(find "$TARGET_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
-        if [[ ${#candidates[@]} -eq 1 ]]; then
-            TARGET_DIR="${candidates[0]}"
+        candidate=$(python - "$TARGET_DIR" <<'PY' 2>/dev/null || true
+import os
+import sys
+
+base = sys.argv[1] if len(sys.argv) > 1 else ""
+if not base:
+    sys.exit(0)
+
+def has_mc_dir(path: str) -> bool:
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False) and entry.name.startswith("mc"):
+                        return True
+                except Exception:
+                    continue
+    except Exception:
+        return False
+    return False
+
+candidates = []
+try:
+    with os.scandir(base) as it:
+        for entry in it:
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except Exception:
+                continue
+            name = entry.name
+            if name.startswith("."):
+                continue
+            if has_mc_dir(entry.path):
+                candidates.append(entry.path)
+except Exception:
+    pass
+
+if len(candidates) == 1:
+    print(candidates[0])
+PY
+        )
+        if [[ -n "$candidate" ]]; then
+            TARGET_DIR="$candidate"
             SUBDIR="$(basename "$TARGET_DIR")"
         fi
     fi

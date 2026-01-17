@@ -90,6 +90,37 @@ def _parse_output_to_timeseries(workdir: str) -> pd.DataFrame:
     return df
 
 
+def _find_constant_tail_t0(series: pd.Series) -> int:
+    values = series.to_numpy()
+    if len(values) == 0:
+        return 0
+    last = values[-1]
+    idx = len(values) - 1
+    while idx >= 0 and values[idx] == last:
+        idx -= 1
+    return idx + 1
+
+
+def _write_status_note(workdir: str, note: str) -> None:
+    status_path = os.path.join(workdir, "status.txt")
+    note_line = f"note: {note}"
+    try:
+        with open(status_path, "r", encoding="utf-8") as f:
+            lines = [line.rstrip("\n") for line in f]
+    except FileNotFoundError:
+        lines = []
+    if note_line not in lines:
+        lines.append(note_line)
+        with open(status_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+
+def _write_mser_status_flag(workdir: str, note: str) -> None:
+    status_path = os.path.join(workdir, "mser_status.txt")
+    with open(status_path, "w", encoding="utf-8") as f:
+        f.write(note + "\n")
+
+
 def _update_sim_json(workdir: str, add_cycles: int, restart_file: str) -> None:
     sim_path = os.path.join(workdir, "simulation.json")
     if not os.path.exists(sim_path):
@@ -238,15 +269,35 @@ def main():
         # 统一使用 pandas Series 便于后续 iloc/tail 处理，同时传 numpy 给 pymser
         series = pd.Series(series_np)
 
-        eq = pymser.equilibrate(
-            series.to_numpy(),
-            LLM=bool(args.llm),
-            batch_size=max(1, int(args.batch_size)),
-            print_results=False,
-            uncertainty=args.uncertainty,
-        )
-        t0 = int(eq.get("t0", 0))
-        ac_time = float(eq.get("ac_time", 1))
+        mser_note = None
+        try:
+            eq = pymser.equilibrate(
+                series.to_numpy(),
+                LLM=bool(args.llm),
+                batch_size=max(1, int(args.batch_size)),
+                print_results=False,
+                uncertainty=args.uncertainty,
+            )
+            t0 = int(eq.get("t0", 0))
+            ac_time = float(eq.get("ac_time", 1))
+        except ValueError as exc:
+            if "constant" not in str(exc).lower():
+                raise
+            t0 = _find_constant_tail_t0(series)
+            ac_time = 1.0
+            mser_note = "mser_constant_series_fallback"
+            msg = f"[auto-mser3] pyMSER ADF 检测到常数序列，改用尾部常数区间作为平衡区: t0={t0}"
+            print(msg)
+            with open(mser_log, "a", encoding="utf-8") as lf:
+                lf.write(msg + "\n")
+            try:
+                _write_mser_status_flag(workdir, mser_note)
+                _write_status_note(workdir, mser_note)
+            except Exception as note_exc:  # noqa: BLE001
+                warn = f"[auto-mser3] 写入状态说明失败: {note_exc}"
+                print(warn)
+                with open(mser_log, "a", encoding="utf-8") as lf:
+                    lf.write(warn + "\n")
         n_samples = len(series)
 
         # 合法化 t0 范围

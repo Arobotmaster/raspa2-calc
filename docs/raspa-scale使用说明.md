@@ -16,6 +16,11 @@
 - `raspa-scale <并发数> -a`：直接写入上限并自动扩/缩容。
 - `raspa-scale <并发数> --limit-only`：只写入 `.raspa_worker_limit`，不提交流程变更。
 - `-y`：无交互自动采用推荐并发并执行自动扩/缩容（适合无终端或 CI）。
+- `RASPA_SCALE_RECOMMEND=auto|run_idle|idle|full`：控制“推荐并发”策略；默认 auto（按“当前目录运行中 + 集群空闲”推荐，且不超过任务总数）。
+- `RASPA_SCALE_SCAN_JOBS=<N>`：并行扫描任务目录的线程数（默认自动使用最多 32 线程；设为 1 可禁用并行）。
+- `RASPA_SCALE_SCAN_MODE=auto|fast|verify`：任务统计模式；auto 在任务很多时自动切换到 fast（不逐目录检查 simulation.*）。
+- `RASPA_SCALE_SCAN_FAST_THRESHOLD=<N>`：auto 模式触发 fast 的阈值（默认 2000）。
+- `RASPA_SCALE_SCAN_CACHE_SEC=<N>`：任务统计缓存秒数（默认 15，避免脚本内多次重复扫描）。
 - `raspa-scale kill`：进入终止任务的交互菜单（按用户/范围/列表）。
 - `raspa-scale kill -u <用户名>`：终止指定用户的全部 SLURM 任务。
 - `raspa-scale kill -r <开始-结束>`：按作业ID范围终止。

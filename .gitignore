@@ -1,6 +1,47 @@
+# Logs
 *.log
-*.pyc
+
+# Cache and compiled files
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python·
+
+# Data files
 *.csv
-*.cache
-params_cache.json
+*.xlsx
+*.xls
+
+# Environment
+.env
+.venv
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# Test outputs
+.pytest_cache/
+.coverage
+
+# Local config overrides
+.raspa_config.yaml

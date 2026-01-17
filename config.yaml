@@ -61,7 +61,7 @@ calculation:
   # 默认分子 (支持多种气体分子，用空格分隔)
   # RASPA2 示例: "CO2" 或 "CO2 CH4 N2"
   # RASPA3 示例: "p-xylene" 或 "CO2"
-  default_molecules: "methylcyclohexane toluene"
+  default_molecules: "methylcyclohexane"
 
   # CSV 文件路径 (用于批量处理，指定框架列表)
   csv_file_path: "/home/zjp/raspa2-calc/filter/wxj-3442.csv"
@@ -70,7 +70,7 @@ calculation:
   framework_column: "refcode"
 
   # 输出目录名
-  output_directory: "wxj-test"
+  output_directory: "wxj-qmch-ads"
 
   # 是否启用 CIF 参数缓存 (避免重复计算 UnitCells/VoidFraction)
   # 缓存文件: params_cache.json
@@ -80,18 +80,18 @@ calculation:
   cif_cache_path: "/home/zjp/raspa2-calc/.raspa_tools/params_cache.json"
 
   # 是否从 CSV 文件读取孔隙率
-  use_void_csv: false
+  use_void_csv: true
 
   # 孔隙率 CSV 文件路径
-  void_csv_file: ""
+  void_csv_file: "/home/zjp/raspa2-calc/filter/wxj-3442.csv"
 
   # 孔隙率列名
-  void_column: ""
+  void_column: "VF"
 
   # pyMSER 自动平衡
   mser:
     enable: true
-    target_cycles: 10000
+    target_cycles: 8000
     add_cycles: 2000
     max_iter: 20
     uncertainty: "uSD"   # SD, SE, uSD, uSE
