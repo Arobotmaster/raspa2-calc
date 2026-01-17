@@ -30,6 +30,8 @@ kill_usage() {
   echo "说明: 需要 SLURM 环境 (scancel/squeue)"
   echo "选项:"
   echo "  -u, --user <用户名>           删除指定用户的所有任务"
+  echo "  -n, --node <节点列表>        按节点终止任务（如 nodeA:5,nodeB:3；可配合 -c）"
+  echo "  -c, --count <数量>           未在节点列表中指定数量时，默认每个节点终止的任务数"
   echo "  -r, --range <开始-结束>       删除指定范围的作业ID (例如: -r 12894-13421)"
   echo "  -l, --list <作业ID列表>       删除指定的作业ID列表 (例如: -l 12894,12895,13421)"
   echo "  -f, --force                   跳过确认，直接删除"
@@ -37,6 +39,8 @@ kill_usage() {
   echo ""
   echo "示例:"
   echo "  raspa-scale kill -u zjp"
+  echo "  raspa-scale kill -n worker-node-01:10"
+  echo "  raspa-scale kill -n worker-node-01,worker-node-02 -c 5"
   echo "  raspa-scale kill -r 12894-13421"
   echo "  raspa-scale kill -l 12894,12895,13421"
 }
@@ -44,6 +48,13 @@ kill_usage() {
 kill_require_scancel() {
   if ! command -v scancel >/dev/null 2>&1; then
     echo "错误: 未检测到 scancel，无法终止任务（需要 SLURM 环境）" >&2
+    exit 1
+  fi
+}
+
+kill_require_squeue() {
+  if ! command -v squeue >/dev/null 2>&1; then
+    echo "错误: 未检测到 squeue，无法按节点筛选任务（需要 SLURM 环境）" >&2
     exit 1
   fi
 }
@@ -128,18 +139,128 @@ kill_list_jobs() {
   echo "完成删除列表任务"
 }
 
+kill_node_jobs() {
+  local node_spec="$1"
+  local count_default="$2"
+  local username="${3:-}"
+  [ -z "$username" ] && username="$USER"
+  [ -z "$node_spec" ] && echo "错误: 节点列表不能为空" >&2 && exit 1
+  kill_require_scancel
+  kill_require_squeue
+
+  local -a nodes=()
+  local -a counts=()
+  IFS=',' read -r -a parts <<< "$node_spec"
+  for part in "${parts[@]}"; do
+    part="${part//[[:space:]]/}"
+    [ -z "$part" ] && continue
+    local node="" count=""
+    if [[ "$part" == *:* ]]; then
+      node="${part%%:*}"
+      count="${part#*:}"
+    elif [[ "$part" == *=* ]]; then
+      node="${part%%=*}"
+      count="${part#*=}"
+    else
+      node="$part"
+      count="$count_default"
+    fi
+    if [ -z "$node" ]; then
+      continue
+    fi
+    if [ -z "$count" ]; then
+      echo "错误: 节点 $node 未指定数量（可用 -c 或 node:count）" >&2
+      exit 1
+    fi
+    if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+      echo "错误: 节点 $node 数量无效: $count" >&2
+      exit 1
+    fi
+    if [ "$count" -le 0 ]; then
+      echo "提示: 节点 $node 数量为0，跳过"
+      continue
+    fi
+    nodes+=("$node")
+    counts+=("$count")
+  done
+
+  if [ ${#nodes[@]} -eq 0 ]; then
+    echo "错误: 未解析到有效节点" >&2
+    exit 1
+  fi
+
+  echo "正在获取用户 $username 在指定节点上的运行中任务..."
+  local -a kill_ids=()
+  local -a kill_info=()
+  declare -A kill_seen=()
+  local i
+  for i in "${!nodes[@]}"; do
+    local node="${nodes[$i]}"
+    local count="${counts[$i]}"
+    mapfile -t node_jobs < <(squeue -u "$username" -h -w "$node" -t R -o "%i" 2>/dev/null | awk '/^[0-9]+(_[0-9]+)?$/' || true)
+    if [ ${#node_jobs[@]} -eq 0 ]; then
+      echo "节点 $node 未找到可终止的作业"
+      continue
+    fi
+    if [ "$count" -gt "${#node_jobs[@]}" ]; then
+      count="${#node_jobs[@]}"
+    fi
+    if [ "$count" -le 0 ]; then
+      echo "节点 $node 可终止作业数为0"
+      continue
+    fi
+    echo "节点 $node 计划终止 $count 个作业"
+    local j
+    for ((j=0; j<count; j++)); do
+      local jid="${node_jobs[$j]}"
+      [ -z "$jid" ] && continue
+      if [ -z "${kill_seen[$jid]+x}" ]; then
+        kill_ids+=("$jid")
+        kill_info+=("${jid}@${node}")
+        kill_seen["$jid"]=1
+      fi
+    done
+  done
+
+  if [ ${#kill_ids[@]} -eq 0 ]; then
+    echo "未找到可终止的作业"
+    return 0
+  fi
+
+  echo "将终止以下作业 (jobid@node):"
+  printf "%s\n" "${kill_info[@]}" | sort -u
+  echo ""
+  if kill_confirm "确认终止以上作业?"; then
+    echo "正在删除任务..."
+    for jid in "${kill_ids[@]}"; do
+      echo "删除任务 $jid"
+      scancel "$jid"
+    done
+    echo "完成终止节点作业"
+  else
+    echo "操作已取消"
+  fi
+}
+
 kill_interactive_menu() {
   echo "请选择终止方式："
   echo "  [u] 按用户终止"
+  echo "  [n] 按节点终止"
   echo "  [r] 按作业ID范围终止"
   echo "  [l] 按作业ID列表终止"
   echo "  [q] 退出"
-  read -r -p "请输入选择 [u/r/l/q]: " choice || choice=""
+  read -r -p "请输入选择 [u/n/r/l/q]: " choice || choice=""
   case "${choice,,}" in
     u)
       read -r -p "请输入用户名: " KILL_USER || KILL_USER=""
       [ -z "$KILL_USER" ] && echo "已取消（未提供用户名）" && return 0
       kill_user_jobs "$KILL_USER"
+      ;;
+    n)
+      read -r -p "请输入节点列表 (node[:count], 逗号分隔): " KILL_NODE_SPEC || KILL_NODE_SPEC=""
+      [ -z "$KILL_NODE_SPEC" ] && echo "已取消（未提供节点）" && return 0
+      read -r -p "默认终止数量 (可留空): " KILL_COUNT || KILL_COUNT=""
+      kill_node_jobs "$KILL_NODE_SPEC" "$KILL_COUNT" "$USER"
       ;;
     r)
       read -r -p "请输入范围 (开始-结束): " KILL_RANGE || KILL_RANGE=""
@@ -168,10 +289,16 @@ if [ "${1:-}" = "kill" ] || [ "${1:-}" = "qdel" ] || [ "${1:-}" = "--kill" ]; th
   KILL_USER=""
   KILL_RANGE=""
   KILL_LIST=""
+  KILL_NODE_SPEC=""
+  KILL_COUNT=""
   while [ $# -ge 1 ]; do
     case "${1:-}" in
       -u|--user)
         KILL_USER="${2:-}"; shift 2 || true ;;
+      -n|--node|--nodes)
+        KILL_NODE_SPEC="${2:-}"; shift 2 || true ;;
+      -c|--count)
+        KILL_COUNT="${2:-}"; shift 2 || true ;;
       -r|--range)
         KILL_RANGE="${2:-}"; shift 2 || true ;;
       -l|--list|--ids)
@@ -187,7 +314,7 @@ if [ "${1:-}" = "kill" ] || [ "${1:-}" = "qdel" ] || [ "${1:-}" = "--kill" ]; th
     esac
   done
 
-  if [ -z "$KILL_USER" ] && [ -z "$KILL_RANGE" ] && [ -z "$KILL_LIST" ]; then
+  if [ -z "$KILL_USER" ] && [ -z "$KILL_RANGE" ] && [ -z "$KILL_LIST" ] && [ -z "$KILL_NODE_SPEC" ]; then
     if [ -t 0 ]; then
       kill_interactive_menu
       exit 0
@@ -197,7 +324,11 @@ if [ "${1:-}" = "kill" ] || [ "${1:-}" = "qdel" ] || [ "${1:-}" = "--kill" ]; th
       exit 1
     fi
   fi
-  [ -n "$KILL_USER" ] && kill_user_jobs "$KILL_USER"
+  if [ -n "$KILL_NODE_SPEC" ]; then
+    kill_node_jobs "$KILL_NODE_SPEC" "$KILL_COUNT" "${KILL_USER:-$USER}"
+  elif [ -n "$KILL_USER" ]; then
+    kill_user_jobs "$KILL_USER"
+  fi
   [ -n "$KILL_RANGE" ] && kill_range_jobs "$KILL_RANGE"
   [ -n "$KILL_LIST" ] && kill_list_jobs "$KILL_LIST"
   exit 0

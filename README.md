@@ -126,6 +126,7 @@ raspa-status -m        # 实时监控任务进度
 ```bash
 raspa-scale -i 核心数    # 交互式
 raspa-scale -y 核心数    # 自动采用建议并发
+raspa-scale kill -n worker-node-01:10,worker-node-02:5  # 按节点终止指定数量作业
 ```
 
 ### 环境诊断：raspa-diagnose

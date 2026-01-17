@@ -23,8 +23,13 @@
 - `RASPA_SCALE_SCAN_CACHE_SEC=<N>`：任务统计缓存秒数（默认 15，避免脚本内多次重复扫描）。
 - `raspa-scale kill`：进入终止任务的交互菜单（按用户/范围/列表）。
 - `raspa-scale kill -u <用户名>`：终止指定用户的全部 SLURM 任务。
+- `raspa-scale kill -n <node[:count],...> [-c <count>]`：按节点终止运行中的任务（支持多个节点与数量）。
 - `raspa-scale kill -r <开始-结束>`：按作业ID范围终止。
 - `raspa-scale kill -l <id1,id2,...>`：按作业ID列表终止。
+
+示例：
+- `raspa-scale kill -n worker-node-01:10,worker-node-02:5`
+- `raspa-scale kill -n worker-node-01,worker-node-02 -c 3`
 
 菜单含义：
 - **模式菜单**：`1` 自动扩缩容（写入并执行）；`2` 终止任务（按用户/范围/列表）；`q` 退出。
