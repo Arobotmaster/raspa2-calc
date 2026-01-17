@@ -1324,6 +1324,22 @@ if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1; then
     local now
     now=$(date +%s)
     IFS=',' read -r -a arr <<< "$missing_csv"
+    local total_workers=${#arr[@]}
+    local submit_verbose=0
+    case "${RASPA_SUBMIT_VERBOSE:-0}" in
+      1|true|yes|y|on) submit_verbose=1 ;;
+    esac
+    local submit_every="${RASPA_SUBMIT_LOG_EVERY:-10}"
+    if ! [[ "$submit_every" =~ ^[0-9]+$ ]] || [ "$submit_every" -le 0 ]; then
+      submit_every=10
+    fi
+    if [ "$total_workers" -gt 0 ] && [ "$submit_every" -gt "$total_workers" ]; then
+      submit_every="$total_workers"
+    fi
+    echo "开始逐个提交作业...（补交模式）"
+    if [ "$submit_verbose" -eq 0 ] && [ "$submit_every" -gt 1 ]; then
+      echo "提交中... 每 ${submit_every} 个任务提示一次 (完整输出可设 RASPA_SUBMIT_VERBOSE=1)"
+    fi
     local -a plan_queue=()
     local plan_len=0
     # 若不存在节点计划，尝试基于集群信息和优先级生成
@@ -1632,7 +1648,6 @@ PY
 
     local plan_index=0
     local job_base_dir
-    local total_workers=${#arr[@]}
     local planned_jobs=0
     local idx=0
     local plan_strict=0
@@ -1691,6 +1706,15 @@ PY
       local WORKER_IDS_CSV
       WORKER_IDS_CSV=$(IFS=,; echo "${WORKER_IDS[*]}")
       local NAMENEW="${WORKER_IDS[0]}"
+      local last_wid="${WORKER_IDS[$((pack_size - 1))]}"
+      local next_idx=$((idx + pack_size))
+      if [ "$submit_verbose" -eq 1 ]; then
+        echo "正在提交第${last_wid}个任务…"
+      else
+        if [ "$next_idx" -eq "$pack_size" ] || [ "$next_idx" -eq "$total_workers" ] || [ $((next_idx % submit_every)) -eq 0 ]; then
+          echo "正在提交第${last_wid}个任务…"
+        fi
+      fi
       local -a SBATCH_EXTRA_ARGS=()
       if [ "$pack_size" -gt 1 ]; then
         SBATCH_EXTRA_ARGS+=(--cpus-per-task="$pack_size")
@@ -1721,10 +1745,21 @@ PY
           sbatch --export=ALL "${SBATCH_EXTRA_ARGS[@]}" -J "$NAMENEW" -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1
         )
       fi
-      echo "$submit_result"
+      local submit_ok=0
       if [[ "$submit_result" =~ Submitted\ batch\ job\ ([0-9]+) ]]; then
+        submit_ok=1
         jid="${BASH_REMATCH[1]}"
         printf "%s %s %s %s\n" "$jid" "$NAMENEW" "$now" "$WORKER_IDS_CSV" >> "$JOBS_BUF"
+      fi
+      if [ "$submit_verbose" -eq 1 ]; then
+        echo "$submit_result"
+        if [ "$submit_ok" -eq 1 ]; then
+          echo "✅ 作业 $NAMENEW 提交完成"
+        fi
+      else
+        if [ "$submit_ok" -eq 0 ]; then
+          echo "$submit_result"
+        fi
       fi
       idx=$((idx + pack_size))
       if [ -n "$submit_sleep" ] && [[ "$submit_sleep" =~ ^[0-9]+([.][0-9]+)?$ ]] && [ "$submit_sleep" != "0" ] && [ "$submit_sleep" != "0.0" ]; then
