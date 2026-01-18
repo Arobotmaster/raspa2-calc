@@ -139,10 +139,50 @@ kill_list_jobs() {
   echo "完成删除列表任务"
 }
 
+resolve_kill_target_dir() {
+  local abs_pwd base_dir subdir target_dir has_tasks
+  abs_pwd="$(pwd -P)"
+  base_dir="$abs_pwd"
+  while [ "$base_dir" != "/" ] && [ ! -d "$base_dir/job_templates" ]; do
+    base_dir="$(dirname "$base_dir")"
+  done
+  if [ ! -d "$base_dir/job_templates" ]; then
+    echo "$abs_pwd"
+    return
+  fi
+  if [ "$abs_pwd" = "$base_dir" ]; then
+    subdir="."
+  else
+    subdir="${abs_pwd#$base_dir/}"
+  fi
+  if [ "$subdir" = "." ]; then
+    target_dir="$base_dir"
+  else
+    target_dir="$base_dir/$subdir"
+  fi
+  if [ "$subdir" = "." ]; then
+    has_tasks=$(find "$target_dir" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -print -quit 2>/dev/null)
+    if [ -z "$has_tasks" ]; then
+      local -a candidates=()
+      mapfile -t candidates < <(find "$target_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | while read -r d; do
+        find "$d" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -print -quit 2>/dev/null | grep -q . && basename "$d"
+      done)
+      if [ ${#candidates[@]} -eq 1 ]; then
+        target_dir="$base_dir/${candidates[0]}"
+      fi
+    fi
+  fi
+  if [ -n "$target_dir" ] && [ -d "$target_dir" ]; then
+    target_dir="$(cd "$target_dir" && pwd -P)"
+  fi
+  echo "$target_dir"
+}
+
 kill_node_jobs() {
   local node_spec="$1"
   local count_default="$2"
   local username="${3:-}"
+  local target_dir="${4:-}"
   [ -z "$username" ] && username="$USER"
   [ -z "$node_spec" ] && echo "错误: 节点列表不能为空" >&2 && exit 1
   kill_require_scancel
@@ -189,6 +229,42 @@ kill_node_jobs() {
     exit 1
   fi
 
+  if [ -z "$target_dir" ]; then
+    target_dir="$(resolve_kill_target_dir)"
+  fi
+  if [ -z "$target_dir" ]; then
+    target_dir="$(pwd -P)"
+  fi
+  if [ -d "$target_dir" ]; then
+    target_dir="$(cd "$target_dir" && pwd -P)"
+  fi
+  local target_dir_trim="${target_dir%/}"
+  local target_prefix="${target_dir_trim}/"
+  local jobs_file="$target_dir/.raspa_jobs.list"
+  local use_jobs_file=0
+  declare -A allowed_jobs=()
+  declare -A array_jobs=()
+  if [ -s "$jobs_file" ]; then
+    while read -r jid name ts extra; do
+      [ -n "$jid" ] || continue
+      if ! [[ "$jid" =~ ^[0-9]+$ ]]; then
+        continue
+      fi
+      if [ "$extra" = "array" ]; then
+        array_jobs["$jid"]=1
+      else
+        allowed_jobs["$jid"]=1
+      fi
+    done < "$jobs_file"
+    if [ ${#allowed_jobs[@]} -gt 0 ] || [ ${#array_jobs[@]} -gt 0 ]; then
+      use_jobs_file=1
+    fi
+  fi
+  if [ "$use_jobs_file" -eq 1 ]; then
+    echo "仅终止当前项目记录的作业: $jobs_file"
+  else
+    echo "仅终止 StdOut/WorkDir 位于 $target_dir 的作业"
+  fi
   echo "正在获取用户 $username 在指定节点上的运行中任务..."
   local -a kill_ids=()
   local -a kill_info=()
@@ -197,7 +273,22 @@ kill_node_jobs() {
   for i in "${!nodes[@]}"; do
     local node="${nodes[$i]}"
     local count="${counts[$i]}"
-    mapfile -t node_jobs < <(squeue -u "$username" -h -w "$node" -t R -o "%i" 2>/dev/null | awk '/^[0-9]+(_[0-9]+)?$/' || true)
+    local -a node_jobs=()
+    while IFS='|' read -r jid stdout workdir; do
+      [[ "$jid" =~ ^[0-9]+(_[0-9]+)?$ ]] || continue
+      if [ "$use_jobs_file" -eq 1 ]; then
+        local base_jid="${jid%%_*}"
+        if [ -n "${allowed_jobs[$jid]+x}" ] || [ -n "${allowed_jobs[$base_jid]+x}" ] || [ -n "${array_jobs[$base_jid]+x}" ]; then
+          node_jobs+=("$jid")
+        fi
+      else
+        [ "$stdout" = "N/A" ] && stdout=""
+        [ "$workdir" = "N/A" ] && workdir=""
+        if [[ -n "$target_dir_trim" && ( "$stdout" == "$target_prefix"* || "$workdir" == "$target_prefix"* || "$workdir" == "$target_dir_trim" ) ]]; then
+          node_jobs+=("$jid")
+        fi
+      fi
+    done < <(squeue -u "$username" -h -w "$node" -t R -o "%i|%o|%Z" 2>/dev/null || true)
     if [ ${#node_jobs[@]} -eq 0 ]; then
       echo "节点 $node 未找到可终止的作业"
       continue

@@ -13,8 +13,7 @@
       "ExternalTemperature" : 298.0,
       "ExternalPressure" : 100000,
       "ChargeMethod" : "Ewald",
-      "HeliumVoidFraction": 0.5,
-      "DensityGridSize" : [128, 128, 128]
+      "HeliumVoidFraction": 0.5
     }
   ],
 

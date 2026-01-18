@@ -417,7 +417,6 @@ EXECUTABLES=(
     "job_templates/runjobs.sh"
     "job_templates/runjobs_raspa3.sh"
     "job_templates/tasksrun.sh"
-    "job_templates/job_array.sh"
     "job_templates/job_submit.sh"
     "job_templates/job_submit_ht.sh"
 
