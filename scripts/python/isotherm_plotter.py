@@ -378,9 +378,9 @@ def plot_isotherms(data,
             csv_name = _sanitize_filename(f'isotherm_{fw}_{comp}_{ads_type}_{unit}_{pressure_unit}.csv')
             csv_path = os.path.join(outdir, csv_name)
             with open(csv_path, 'w', encoding='utf-8') as f:
-                f.write(f'Pressure[{pressure_unit}],Loading[{unit}]\\n')
+                f.write(f'Pressure[{pressure_unit}],Loading[{unit}]\n')
                 for p, y in pts:
-                    f.write(f'{p},{y}\\n')
+                    f.write(f'{p},{y}\n')
 
 
 def parse_args(argv=None):

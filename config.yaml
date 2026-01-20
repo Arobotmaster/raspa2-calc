@@ -42,14 +42,14 @@ environment:
   # RASPA3 JSON 文件目录
   # 包含: force_field.json 和分子定义文件 (如 CO2.json, CH4.json 等)
   # 高通量计算时会自动复制到每个任务目录
-  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/Rn"
+  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/wxj"
 
   # RASPA3 CIF 文件基础路径
   # 框架名会追加到此路径，例如: {raspa3_cif_base_path}/{框架名}.cif
-  raspa3_cif_base_path: "/home/zjp/raspa2-calc/work/Rncif/939"
+  raspa3_cif_base_path: "/home/zjp/raspa2-calc/filter/wxj-3442"
 
   # RASPA3 simulation.json 模板路径
-  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/Rn/simulation.json"
+  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/wxj/simulation.json"
 
 # ============================================================
 #                    计算参数 (通用)
@@ -61,16 +61,16 @@ calculation:
   # 默认分子 (支持多种气体分子，用空格分隔)
   # RASPA2 示例: "CO2" 或 "CO2 CH4 N2"
   # RASPA3 示例: "p-xylene" 或 "CO2"
-  default_molecules: "N2 Rn"
+  default_molecules: "methylcyclohexane toluene"
 
   # CSV 文件路径 (用于批量处理，指定框架列表)
-  csv_file_path: "/home/zjp/raspa2-calc/work/peocessed-694吸水-水稳定-property&adsorption.csv"
+  csv_file_path: "/home/zjp/raspa2-calc/filter/wxj-3442.csv"
 
   # 框架名称列名（必须与 CSV 文件中的列名完全一致）
-  framework_column: "Framework Name"
+  framework_column: "refcode"
 
   # 输出目录名
-  output_directory: "694Rntest"
+  output_directory: "wxj-3442-Sdes"
 
   # 是否启用 CIF 参数缓存 (避免重复计算 UnitCells/VoidFraction)
   # 缓存文件: params_cache.json
@@ -80,7 +80,7 @@ calculation:
   cif_cache_path: "/home/zjp/raspa2-calc/.raspa_tools/params_cache.json"
 
   # 是否从 CSV 文件读取孔隙率
-  use_void_csv: false
+  use_void_csv: true
 
   # 孔隙率 CSV 文件路径
   void_csv_file: "/home/zjp/raspa2-calc/filter/wxj-3442.csv"
