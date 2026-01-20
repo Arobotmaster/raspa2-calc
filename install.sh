@@ -15,6 +15,73 @@ echo ""
 set -e  # 遇到错误立即退出
 set -u  # 使用未定义变量时报错
 
+# 复制工具函数
+copy_dir_quiet() {
+    local label="$1"
+    local src="$2"
+    local success_msg="${3:-✅ ${label} 复制完成}"
+
+    if cp -r "$src" "$TOOL_DIR/" 2>/dev/null; then
+        echo "$success_msg"
+    else
+        echo "⚠️  ${label} 复制失败或不存在"
+    fi
+}
+
+copy_dir_with_header() {
+    local label="$1"
+    local src="$2"
+
+    echo "正在复制 ${label} 目录..."
+    copy_dir_quiet "$label" "$src" "${3:-}"
+}
+
+copy_file_quiet() {
+    local label="$1"
+    local src="$2"
+    local success_msg="${3:-✅ ${label} 复制完成}"
+
+    if cp "$src" "$TOOL_DIR/" 2>/dev/null; then
+        echo "$success_msg"
+    else
+        echo "⚠️  ${label} 复制失败或不存在"
+    fi
+}
+
+set_exec_for_dir() {
+    local dir="$1"
+    local label="$2"
+    shift 2
+
+    if [ ! -d "$dir" ]; then
+        return
+    fi
+
+    echo "正在设置 ${label} 目录文件权限..."
+    if [ "$#" -eq 0 ]; then
+        find "$dir" -type f -exec chmod 755 {} \; 2>/dev/null
+    else
+        local pattern=""
+        for pattern in "$@"; do
+            find "$dir" -name "$pattern" -type f -exec chmod 755 {} \; 2>/dev/null
+        done
+    fi
+    echo "✅ ${label} 目录文件权限设置完成"
+}
+
+detect_shell_config() {
+    if [ "${ZSH_VERSION:-}" ]; then
+        SHELL_RC="$HOME/.zshrc"
+        SHELL_SOURCE="source ~/.zshrc"
+    elif [ "${BASH_VERSION:-}" ]; then
+        SHELL_RC="$HOME/.bashrc"
+        SHELL_SOURCE="source ~/.bashrc"
+    else
+        SHELL_RC="$HOME/.profile"
+        SHELL_SOURCE="source ~/.profile"
+    fi
+}
+
 # 依赖检查函数
 check_dependencies() {
     echo "🔍 检查系统依赖..."
@@ -27,20 +94,13 @@ check_dependencies() {
         missing_deps+=("bash")
     fi
 
-    # 检查find命令
-    if ! command -v find >/dev/null 2>&1; then
-        missing_deps+=("find")
-    fi
-
-    # 检查grep命令
-    if ! command -v grep >/dev/null 2>&1; then
-        missing_deps+=("grep")
-    fi
-
-    # 检查sed命令
-    if ! command -v sed >/dev/null 2>&1; then
-        missing_deps+=("sed")
-    fi
+    local base_cmds=(find grep sed)
+    local cmd=""
+    for cmd in "${base_cmds[@]}"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_deps+=("$cmd")
+        fi
+    done
 
     if [ ${#missing_deps[@]} -ne 0 ]; then
         echo "❌ 缺少必要依赖: ${missing_deps[*]}"
@@ -90,27 +150,31 @@ check_dependencies() {
     local optional_missing=()
 
     # 必需包
-    for pkg in yaml numpy pandas gemmi; do
+    local required_packages=(yaml numpy pandas gemmi)
+    local pkg=""
+    for pkg in "${required_packages[@]}"; do
+        if [ "$pkg" = "yaml" ]; then
+            # yaml 包实际名为 PyYAML
+            if $PYTHON_CMD -c "import yaml" 2>/dev/null; then
+                echo "  ✅ yaml"
+            else
+                missing_packages+=("PyYAML")
+                echo "  ❌ PyYAML (yaml) - 必需"
+            fi
+            continue
+        fi
+
         if $PYTHON_CMD -c "import $pkg" 2>/dev/null; then
             echo "  ✅ $pkg"
         else
-            if [ "$pkg" = "yaml" ]; then
-                # yaml 包实际名为 PyYAML
-                if $PYTHON_CMD -c "import yaml" 2>/dev/null; then
-                    echo "  ✅ PyYAML (yaml)"
-                else
-                    missing_packages+=("PyYAML")
-                    echo "  ❌ PyYAML (yaml) - 必需"
-                fi
-            else
-                missing_packages+=("$pkg")
-                echo "  ❌ $pkg - 必需"
-            fi
+            missing_packages+=("$pkg")
+            echo "  ❌ $pkg - 必需"
         fi
     done
 
     # 可选包
-    for pkg in tqdm openpyxl matplotlib; do
+    local optional_packages=(tqdm openpyxl matplotlib)
+    for pkg in "${optional_packages[@]}"; do
         if $PYTHON_CMD -c "import $pkg" 2>/dev/null; then
             echo "  ✅ $pkg (可选)"
         else
@@ -178,9 +242,8 @@ check_dependencies() {
     else
         # 尝试在 conda 环境中查找
         for env_name in raspa3 RASPA3 raspa; do
-            CONDA_BASE="${CONDA_PREFIX:-$HOME/anaconda3}"
-            if [ -x "$CONDA_BASE/envs/$env_name/bin/raspa3" ]; then
-                echo "  ✅ RASPA3 (conda $env_name): $CONDA_BASE/envs/$env_name/bin/raspa3"
+            if [ -x "$conda_base/envs/$env_name/bin/raspa3" ]; then
+                echo "  ✅ RASPA3 (conda $env_name): $conda_base/envs/$env_name/bin/raspa3"
                 raspa3_found=true
                 break
             fi
@@ -321,50 +384,48 @@ mkdir -p "$TOOL_DIR"
 
 # 复制所有项目文件到工具目录（排除.git和安装脚本本身）
 echo "复制项目文件..."
-echo "正在复制 bin/ 目录..."
-cp -r "$SCRIPT_DIR/bin" "$TOOL_DIR/" 2>/dev/null && echo "✅ bin/ 复制完成" || echo "⚠️  bin/ 复制失败或不存在"
+copy_dir_with_header "bin/" "$SCRIPT_DIR/bin"
 
-# 更新main.sh为支持配置文件的版本
-cat > "$TOOL_DIR/bin/main.sh" << 'EOF'
-#!/bin/bash
+# 清理已整合的 main.sh
+if [ -f "$TOOL_DIR/bin/main.sh" ]; then
+    rm -f "$TOOL_DIR/bin/main.sh"
+    echo "✅ 已移除旧的 main.sh (已整合到 raspa-calc)"
+fi
 
-# 获取工具安装目录
-TOOL_DIR="$HOME/raspa2-calc/.raspa_tools"
-# 获取当前工作目录
-WORK_DIR="$PWD"
+copy_dir_with_header "job_templates/" "$SCRIPT_DIR/job_templates"
 
-# 设置工作目录环境变量
-export RASPA_WORK_DIR="$WORK_DIR"
+copy_dir_with_header "scripts/" "$SCRIPT_DIR/scripts"
 
-# 调用Python主程序，支持配置文件功能
-exec python "$TOOL_DIR/scripts/python/raspa_calc.py"
-EOF
-echo "✅ main.sh 已更新为配置文件版本"
+# 清理已改为包入口的旧脚本
+OLD_ALGO_FILES=(
+    "scripts/python/auto_mser_raspa2.py"
+    "scripts/python/auto_mser_raspa3.py"
+    "scripts/python/calculate_params.py"
+    "scripts/python/raspa3_generator.py"
+    "scripts/python/cluster_info.py"
+)
+for old_file in "${OLD_ALGO_FILES[@]}"; do
+    if [ -f "$TOOL_DIR/$old_file" ]; then
+        rm -f "$TOOL_DIR/$old_file"
+        echo "✅ 已移除旧脚本: $old_file"
+    fi
+done
 
-echo "正在复制 job_templates/ 目录..."
-cp -r "$SCRIPT_DIR/job_templates" "$TOOL_DIR/" 2>/dev/null && echo "✅ job_templates/ 复制完成" || echo "⚠️  job_templates/ 复制失败或不存在"
+copy_dir_with_header "raspa3json/" "$SCRIPT_DIR/raspa3json" "✅ raspa3json/ 复制完成（RASPA3 模板与分子库）"
 
-echo "正在复制 scripts/ 目录..."
-cp -r "$SCRIPT_DIR/scripts" "$TOOL_DIR/" 2>/dev/null && echo "✅ scripts/ 复制完成" || echo "⚠️  scripts/ 复制失败或不存在"
+copy_dir_with_header "raspa2-3/" "$SCRIPT_DIR/raspa2-3"
 
-echo "正在复制 raspa3json/ 目录..."
-cp -r "$SCRIPT_DIR/raspa3json" "$TOOL_DIR/" 2>/dev/null && echo "✅ raspa3json/ 复制完成（RASPA3 模板与分子库）" || echo "⚠️  raspa3json/ 复制失败或不存在"
-
-echo "正在复制 raspa2-3/ 目录..."
-cp -r "$SCRIPT_DIR/raspa2-3" "$TOOL_DIR/" 2>/dev/null && echo "✅ raspa2-3/ 复制完成" || echo "⚠️  raspa2-3/ 复制失败或不存在"
-
-echo "正在复制 nfs/ 目录..."
-cp -r "$SCRIPT_DIR/nfs" "$TOOL_DIR/" 2>/dev/null && echo "✅ nfs/ 复制完成（NFS 挂载/修复脚本）" || echo "⚠️  nfs/ 复制失败或不存在"
+copy_dir_with_header "nfs/" "$SCRIPT_DIR/nfs" "✅ nfs/ 复制完成（NFS 挂载/修复脚本）"
 
 echo "正在复制其他文件..."
-cp "$SCRIPT_DIR/README.md" "$TOOL_DIR/" 2>/dev/null && echo "✅ README.md 复制完成" || echo "⚠️  README.md 复制失败或不存在"
-cp "$SCRIPT_DIR/qdel.sh" "$TOOL_DIR/" 2>/dev/null && echo "✅ qdel.sh 复制完成" || echo "⚠️  qdel.sh 复制失败或不存在"
-cp "$SCRIPT_DIR/environment.yml" "$TOOL_DIR/" 2>/dev/null && echo "✅ environment.yml 复制完成（pymser 环境定义）" || echo "⚠️  environment.yml 复制失败或不存在"
-cp -r "$SCRIPT_DIR/docs" "$TOOL_DIR/" 2>/dev/null && echo "✅ docs/ 复制完成（说明文档）" || echo "⚠️  docs/ 复制失败或不存在"
+copy_file_quiet "README.md" "$SCRIPT_DIR/README.md"
+copy_file_quiet "qdel.sh" "$SCRIPT_DIR/qdel.sh"
+copy_file_quiet "environment.yml" "$SCRIPT_DIR/environment.yml" "✅ environment.yml 复制完成（pymser 环境定义）"
+copy_dir_quiet "docs/" "$SCRIPT_DIR/docs" "✅ docs/ 复制完成（说明文档）"
 
 echo "正在复制配置文件..."
-cp "$SCRIPT_DIR/config.yaml" "$TOOL_DIR/" 2>/dev/null && echo "✅ config.yaml 复制完成" || echo "⚠️  config.yaml 复制失败或不存在"
-cp "$SCRIPT_DIR/requirements.txt" "$TOOL_DIR/" 2>/dev/null && echo "✅ requirements.txt 复制完成" || echo "⚠️  requirements.txt 复制失败或不存在"
+copy_file_quiet "config.yaml" "$SCRIPT_DIR/config.yaml"
+copy_file_quiet "requirements.txt" "$SCRIPT_DIR/requirements.txt"
 
 # 设置脚本权限
 echo ""
@@ -376,39 +437,18 @@ find "$TOOL_DIR" -name "*.sh" -type f -exec chmod 755 {} \; 2>/dev/null
 echo "✅ 所有 .sh 文件权限设置完成"
 
 # 给bin目录下的所有文件执行权限
-if [ -d "$TOOL_DIR/bin" ]; then
-    echo "正在设置 bin/ 目录文件权限..."
-    find "$TOOL_DIR/bin" -type f -exec chmod 755 {} \; 2>/dev/null
-    echo "✅ bin/ 目录文件权限设置完成"
-fi
-
-# 给job_templates目录下的所有文件执行权限
-if [ -d "$TOOL_DIR/job_templates" ]; then
-    echo "正在设置 job_templates/ 目录文件权限..."
-    find "$TOOL_DIR/job_templates" -type f -exec chmod 755 {} \; 2>/dev/null
-    echo "✅ job_templates/ 目录文件权限设置完成"
-fi
-
-# 给scripts目录下的所有脚本文件执行权限
-if [ -d "$TOOL_DIR/scripts" ]; then
-    echo "正在设置 scripts/ 目录文件权限..."
-    find "$TOOL_DIR/scripts" -name "*.sh" -type f -exec chmod 755 {} \; 2>/dev/null
-    find "$TOOL_DIR/scripts" -name "*.py" -type f -exec chmod 755 {} \; 2>/dev/null
-    echo "✅ scripts/ 目录文件权限设置完成"
-fi
+set_exec_for_dir "$TOOL_DIR/bin" "bin/"
+set_exec_for_dir "$TOOL_DIR/job_templates" "job_templates/"
+set_exec_for_dir "$TOOL_DIR/scripts" "scripts/" "*.sh" "*.py"
 
 # 特别确保关键可执行文件的权限
 echo "正在设置关键可执行文件权限..."
 EXECUTABLES=(
     "qdel.sh"
-    "bin/main.sh"
-    "bin/chmod.sh"
     "bin/raspa-scale"
     "bin/raspa-calc"
     "bin/raspa-status"
-    "bin/recheck-failed"
     "bin/raspa-diagnose"
-    "bin/raspa-scale-pbs"
     "bin/raspa-plot-isotherm"
 
     "job_templates/pbs.sh"
@@ -436,16 +476,7 @@ done
 # 检查并添加PATH环境变量
 echo ""
 echo "配置环境变量..."
-SHELL_RC=""
-
-# 安全地检测shell类型（避免set -u导致的unbound variable错误）
-if [ "${ZSH_VERSION:-}" ]; then
-    SHELL_RC="$HOME/.zshrc"
-elif [ "${BASH_VERSION:-}" ]; then
-    SHELL_RC="$HOME/.bashrc"
-else
-    SHELL_RC="$HOME/.profile"
-fi
+detect_shell_config
 
 # 检查PATH是否已配置 (更精确的检查)
 if ! grep -q "^export PATH=.*raspa2-calc/.raspa_tools/bin.*PATH" "$SHELL_RC" 2>/dev/null; then
@@ -505,13 +536,7 @@ echo "      - raspa2: conda create --name raspa2 && conda activate raspa2 && con
 echo "      - raspa3: conda create --name raspa3 && conda activate raspa3 && conda install -c conda-forge raspa3"
 echo "      - pymser: conda env create -f \$HOME/raspa2-calc/.raspa_tools/environment.yml"
 echo "   2. 重新加载shell环境:"
-if [ "${ZSH_VERSION:-}" ]; then
-    echo "      source ~/.zshrc"
-elif [ "${BASH_VERSION:-}" ]; then
-    echo "      source ~/.bashrc"
-else
-    echo "      source ~/.profile"
-fi
+echo "      $SHELL_SOURCE"
 echo "   3. 进入工作目录: cd /path/to/your/project"
 echo "   4. 开始计算: raspa-calc 或 raspa-status"
 echo ""

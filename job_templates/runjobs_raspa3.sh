@@ -82,7 +82,9 @@ if ! command -v raspa3 &> /dev/null; then
     exit 1
 fi
 
-MSER_SCRIPT="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}/scripts/python/auto_mser_raspa3.py"
+MSER_MODULE="raspa_calc.algorithms.auto_mser_raspa3"
+MSER_PYTHONPATH="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}/scripts/python"
+export PYTHONPATH="${MSER_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}"
 
 # ============ 目录检测 ============
 detect_subdir() {
@@ -156,6 +158,14 @@ Q_NEXT="$QDIR/next_id"
 Q_LAST="$QDIR/last_id"
 Q_RETRY="$QDIR/retry.list"
 Q_LOCK="$QDIR/next.lock"
+TASK_LIST="$QDIR/tasks.list"
+LIST_MODE=0
+if [ -f "$TASK_LIST" ]; then
+    LIST_MODE=1
+fi
+CLAIMED_TASK_DIR=""
+CLAIMED_TASK_ID=""
+CLAIMED_TASK_REL=""
 mkdir -p "$QDIR"
 LOCK_STALE_SECONDS="${RASPA_LOCK_STALE_SECONDS:-30}"
 QUEUE_RESCAN_INTERVAL_SECONDS="${RASPA_QUEUE_RESCAN_INTERVAL_SECONDS:-5}"
@@ -180,16 +190,43 @@ cleanup_lock_if_stale() {
     fi
 }
 
+get_task_rel() {
+    local id="$1"
+    [ -z "$id" ] && return 1
+    sed -n "${id}p" "$TASK_LIST" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+task_base_dir() {
+    local id="$1"
+    if [ "$LIST_MODE" -eq 1 ]; then
+        local rel
+        rel="$(get_task_rel "$id")"
+        [ -z "$rel" ] && return 1
+        rel="${rel%/}"
+        echo "$topdir/$subdir/$rel"
+    else
+        echo "$topdir/$subdir/mc${id}"
+    fi
+}
+
 ensure_queue() {
     if [ ! -f "$Q_NEXT" ] || [ ! -f "$Q_LAST" ]; then
-        local ids
-        mapfile -t ids < <(find "$topdir/$subdir" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%f\n' 2>/dev/null | sed 's/^mc//' | sort -n)
-        if [ ${#ids[@]} -eq 0 ]; then
+        if [ "$LIST_MODE" -eq 1 ] && [ -f "$TASK_LIST" ]; then
+            local total
+            total=$(awk 'END{print NR+0}' "$TASK_LIST" 2>/dev/null)
+            [ -z "$total" ] && total=0
             echo 1 > "$Q_NEXT"
-            echo 0 > "$Q_LAST"
+            echo "$total" > "$Q_LAST"
         else
-            echo "${ids[0]}" > "$Q_NEXT"
-            echo "${ids[-1]}" > "$Q_LAST"
+            local ids
+            mapfile -t ids < <(find "$topdir/$subdir" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%f\n' 2>/dev/null | sed 's/^mc//' | sort -n)
+            if [ ${#ids[@]} -eq 0 ]; then
+                echo 1 > "$Q_NEXT"
+                echo 0 > "$Q_LAST"
+            else
+                echo "${ids[0]}" > "$Q_NEXT"
+                echo "${ids[-1]}" > "$Q_LAST"
+            fi
         fi
     fi
     [ -f "$Q_RETRY" ] || : > "$Q_RETRY"
@@ -204,7 +241,13 @@ claim_from_retry() {
     local -a pending_ids=()
     while IFS= read -r id; do
         [ -z "$id" ] && continue
-        local workdir="${topdir}/${subdir}/mc${id}"
+        local workdir
+        workdir="$(task_base_dir "$id")" || continue
+        local task_rel=""
+        if [ "$LIST_MODE" -eq 1 ]; then
+            task_rel="$(get_task_rel "$id")"
+            [ -z "$task_rel" ] && continue
+        fi
         # 已完成的任务不再写回重试队列
         if [ -d "${workdir}__done" ] || [ -d "${workdir}__failed" ] || [ -d "${workdir}__running" ]; then
             continue
@@ -219,7 +262,9 @@ claim_from_retry() {
                     if mv "$workdir" "${workdir}__running"; then
                         rm -f "$lock_file"
                         CURRENT_LOCK_FILE=""
-                        echo "${workdir}__running"
+                        CLAIMED_TASK_DIR="${workdir}__running"
+                        CLAIMED_TASK_ID="$id"
+                        CLAIMED_TASK_REL="$task_rel"
                         claimed="yes"
                         # 将剩余未处理的 pending_ids 写回
                         for pid in "${pending_ids[@]}"; do
@@ -278,7 +323,13 @@ claim_from_pointer() {
             continue
         fi
 
-        local workdir="${topdir}/${subdir}/mc${id}"
+        local workdir
+        workdir="$(task_base_dir "$id")" || continue
+        local task_rel=""
+        if [ "$LIST_MODE" -eq 1 ]; then
+            task_rel="$(get_task_rel "$id")"
+            [ -z "$task_rel" ] && continue
+        fi
         if [ ! -d "$workdir" ]; then
             continue
         fi
@@ -294,7 +345,9 @@ claim_from_pointer() {
                 if mv "$workdir" "${workdir}__running"; then
                     rm -f "$lock_file"
                     CURRENT_LOCK_FILE=""
-                    echo "${workdir}__running"
+                    CLAIMED_TASK_DIR="${workdir}__running"
+                    CLAIMED_TASK_ID="$id"
+                    CLAIMED_TASK_REL="$task_rel"
                     return 0
                 else
                     rm -f "$lock_file"
@@ -309,6 +362,45 @@ claim_from_pointer() {
 }
 
 rescan_pending() {
+    if [ "$LIST_MODE" -eq 1 ]; then
+        [ -f "$TASK_LIST" ] || return 1
+        local existing_ids=()
+        if [ -f "$Q_RETRY" ] && [ -s "$Q_RETRY" ]; then
+            mapfile -t existing_ids < "$Q_RETRY"
+        fi
+        exec 8>>"$Q_RETRY"
+        if ! flock -n 8; then
+            exec 8>&-
+            return 1
+        fi
+        local added=0
+        local line_id=0
+        while IFS= read -r rel || [ -n "$rel" ]; do
+            line_id=$((line_id + 1))
+            rel="$(printf '%s' "$rel" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+            [ -z "$rel" ] && continue
+            local base="$topdir/$subdir/${rel%/}"
+            if [ -d "$base" ] && [ ! -d "${base}__running" ] && [ ! -d "${base}__done" ] && [ ! -d "${base}__failed" ]; then
+                local duplicate=0
+                for eid in "${existing_ids[@]}"; do
+                    if [ "$eid" = "$line_id" ]; then
+                        duplicate=1
+                        break
+                    fi
+                done
+                if [ "$duplicate" -eq 1 ]; then
+                    continue
+                fi
+                echo "$line_id" >&8
+                existing_ids+=("$line_id")
+                added=1
+            fi
+        done < "$TASK_LIST"
+        flock -u 8
+        exec 8>&-
+        [ "$added" -gt 0 ]
+        return
+    fi
     local pending_dirs=()
     mapfile -t pending_dirs < <(find "$topdir/$subdir" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%f\n' 2>/dev/null | sort -n)
     if [ ${#pending_dirs[@]} -eq 0 ]; then
@@ -360,6 +452,7 @@ mark_start() {
     {
         echo "jobid=$WORKER_ID"
         echo "mc=$idx"
+        [ -n "$CLAIMED_TASK_REL" ] && echo "task=$CLAIMED_TASK_REL"
         echo "start=$epoch"
         echo "host=$(hostname)"
         echo "cpu=$CPU"
@@ -385,9 +478,12 @@ cleanup_trap() {
         cd "$topdir" 2>/dev/null || true
         local back="${CURRENT_TASK_DIR%__running}"
         mv "$CURRENT_TASK_DIR" "$back" 2>/dev/null || true
-        local bn
-        bn="$(basename "$back")"
-        local id="${bn#mc}"
+        local id="$CLAIMED_TASK_ID"
+        if [ -z "$id" ]; then
+            local bn
+            bn="$(basename "$back")"
+            id="${bn#mc}"
+        fi
         [ -n "$id" ] && echo "$id" >> "$Q_RETRY"
     fi
     mark_clear
@@ -409,7 +505,11 @@ ensure_queue
 if [ -f "$Q_LAST" ]; then
     last_show=$(cat "$Q_LAST")
 else
-    last_show=$(find "$topdir/$subdir" -maxdepth 1 -type d -name "mc[0-9]*" ! -name "*__*" 2>/dev/null | wc -l)
+    if [ "$LIST_MODE" -eq 1 ]; then
+        last_show=$(awk 'END{print NR+0}' "$TASK_LIST" 2>/dev/null)
+    else
+        last_show=$(find "$topdir/$subdir" -maxdepth 1 -type d -name "mc[0-9]*" ! -name "*__*" 2>/dev/null | wc -l)
+    fi
 fi
 echo "总任务上限(编号最大值): ${last_show}"
 
@@ -423,12 +523,14 @@ while :; do
         echo "检测到并发上限降低，工人(${CPU})停止领取新任务并退出"
         exit 0
     fi
-    task_running_dir=""
-    task_running_dir=$(claim_from_retry) || true
-    if [ -z "$task_running_dir" ]; then
-        task_running_dir=$(claim_from_pointer) || true
+    CLAIMED_TASK_DIR=""
+    CLAIMED_TASK_ID=""
+    CLAIMED_TASK_REL=""
+    claim_from_retry || true
+    if [ -z "$CLAIMED_TASK_DIR" ]; then
+        claim_from_pointer || true
     fi
-    if [ -z "$task_running_dir" ]; then
+    if [ -z "$CLAIMED_TASK_DIR" ]; then
         curr=$(awk 'NR==1{print $1; exit}' "$Q_NEXT" 2>/dev/null)
         last=$(awk 'NR==1{print $1; exit}' "$Q_LAST" 2>/dev/null)
         [ -z "$curr" ] && curr=0
@@ -449,11 +551,18 @@ while :; do
         continue
     fi
 
+    task_running_dir="$CLAIMED_TASK_DIR"
+    task_id="$CLAIMED_TASK_ID"
+    task_rel="$CLAIMED_TASK_REL"
     cd "$task_running_dir" || { cd "$topdir"; continue; }
     bn=$(basename "$task_running_dir")
-    mcid="${bn%__running}"
-    mid=${mcid#mc}
-    mark_start "$task_running_dir" "mc${mid}"
+    if [ -n "$task_rel" ]; then
+        display_name="$task_rel"
+    else
+        mcid="${bn%__running}"
+        display_name="mc${mcid#mc}"
+    fi
+    mark_start "$task_running_dir" "$display_name"
 
     # ============ RASPA3 执行命令 ============
     # RASPA3 直接执行 raspa3 命令（不需要参数，会自动读取 simulation.json）
@@ -467,8 +576,8 @@ while :; do
     if [ -d "output" ] && [ "$OUTPUT_FILES_COUNT" -gt 0 ]; then
         # 有输出文件，视为成功；如启用 pyMSER 则先自动续跑判定平衡
         mser_status=0
-        if [ "${RASPA_MSER_ENABLE}" = "true" ] && [ -f "$MSER_SCRIPT" ]; then
-            echo " ==> 运行 pyMSER 自动平衡: mc${mid}"
+        if [ "${RASPA_MSER_ENABLE}" = "true" ] && [ -d "$MSER_PYTHONPATH/raspa_calc/algorithms" ]; then
+            echo " ==> 运行 pyMSER 自动平衡: ${display_name}"
             MSER_ARGS=()
             if [ -n "${RASPA_MSER_LLM:-}" ]; then
                 case "${RASPA_MSER_LLM}" in
@@ -478,7 +587,7 @@ while :; do
             fi
             [ -n "${RASPA_MSER_BATCH_SIZE:-}" ] && MSER_ARGS+=("--batch-size" "${RASPA_MSER_BATCH_SIZE}")
             if command -v conda >/dev/null 2>&1; then
-                conda run -n "${RASPA_MSER_CONDA_ENV:-pymser}" python "$MSER_SCRIPT" \
+                conda run -n "${RASPA_MSER_CONDA_ENV:-pymser}" python -m "$MSER_MODULE" \
                   --workdir "$(pwd)" \
                   --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \
                   --add-cycles "${RASPA_MSER_ADD_CYCLES:-500}" \
@@ -488,7 +597,7 @@ while :; do
                   --raspa3-conda-env "${RASPA3_CONDA_ENV:-raspa3}" \
                   "${MSER_ARGS[@]}"
             else
-                python3 "$MSER_SCRIPT" \
+                python3 -m "$MSER_MODULE" \
                   --workdir "$(pwd)" \
                   --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \
                   --add-cycles "${RASPA_MSER_ADD_CYCLES:-500}" \
@@ -502,26 +611,26 @@ while :; do
             if [ -f "mser_status.txt" ]; then
                 mser_note=$(head -n 1 "mser_status.txt" | tr -d '\r')
                 if [ -n "$mser_note" ]; then
-                    echo " ==> < pyMSER 状态 > mc${mid}: ${mser_note}" >> ${LOGFILE}
+                    echo " ==> < pyMSER 状态 > ${display_name}: ${mser_note}" >> ${LOGFILE}
                 fi
             fi
             if [ $mser_status -ne 0 ]; then
-                echo " ==> < pyMSER 平衡失败 > in directory mc${mid} on core (${thiscore}) (标记失败，查看auto_mser.log)" >> ${LOGFILE}
+                echo " ==> < pyMSER 平衡失败 > in directory ${display_name} on core (${thiscore}) (标记失败，查看auto_mser.log)" >> ${LOGFILE}
             fi
         fi
 
         if [ $mser_status -ne 0 ]; then
-            mv "${task_running_dir}" "${topdir}/${subdir}/mc${mid}__failed"
+            mv "${task_running_dir}" "${task_running_dir%__running}__failed"
         else
-            mv "${task_running_dir}" "${topdir}/${subdir}/mc${mid}__done"
+            mv "${task_running_dir}" "${task_running_dir%__running}__done"
             FRAMEWORK_NAME=$(python3 -c "import json; print(json.load(open('simulation.json'))['Systems'][0]['Name'].split('/')[-1])" 2>/dev/null)
-            [ -z "$FRAMEWORK_NAME" ] && FRAMEWORK_NAME="mc${mid}"
+            [ -z "$FRAMEWORK_NAME" ] && FRAMEWORK_NAME="${display_name}"
             echo " ==> < ${FRAMEWORK_NAME} > is just done on core (${thiscore})." >> ${LOGFILE}
         fi
     else
         # 没有输出文件，视为失败
-        mv "${task_running_dir}" "${topdir}/${subdir}/mc${mid}__failed"
-        echo " ==> < RASPA3 模拟失败 > in directory mc${mid} on core (${thiscore}). Exit code: ${RASPA3_EXIT_CODE}" >> ${LOGFILE}
+        mv "${task_running_dir}" "${task_running_dir%__running}__failed"
+        echo " ==> < RASPA3 模拟失败 > in directory ${display_name} on core (${thiscore}). Exit code: ${RASPA3_EXIT_CODE}" >> ${LOGFILE}
     fi
 
     CURRENT_TASK_DIR=""

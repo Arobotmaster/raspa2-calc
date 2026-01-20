@@ -10,9 +10,9 @@ RASPA3 高通量计算输入文件生成器
 - 自动计算 NumberOfUnitCells
 
 用法:
-    python raspa3_generator.py --config config.yaml
+    python -m raspa_calc.algorithms.raspa3_generator --config config.yaml
     或
-    python raspa3_generator.py --csv data.csv --framework-column coreid --output-dir output
+    python -m raspa_calc.algorithms.raspa3_generator --csv data.csv --framework-column coreid --output-dir output
 """
 
 import os
@@ -22,11 +22,12 @@ import shutil
 import logging
 import argparse
 import traceback
-import yaml
 import pandas as pd
 
-# 复用现有的 calculate_params.py 中的功能
-from calculate_params import (
+from common import config as common_config
+
+# 复用 calculate_params 模块的功能
+from .calculate_params import (
     calculate_perpendicular_widths,
     calculate_UnitCells,
     get_cif_cell_parameters
@@ -65,11 +66,10 @@ logger = setup_logging()
 
 def load_config(config_path):
     """加载配置文件"""
-    if not os.path.exists(config_path):
+    try:
+        return common_config.load_config_file(config_path)
+    except FileNotFoundError:
         raise FileNotFoundError(f"配置文件不存在: {config_path}")
-
-    with open(config_path, 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f)
 
 
 def get_frameworks_from_csv(csv_path, framework_column):

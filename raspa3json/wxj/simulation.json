@@ -11,7 +11,7 @@
       "Name" : "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif/UIO-66_ASR_pacman.cif",
       "NumberOfUnitCells" : [2, 2, 2],
       "ExternalTemperature" : 298.0,
-      "ExternalPressure" : 100000,
+      "ExternalPressure" : 10000,
       "ChargeMethod" : "Ewald",
       "HeliumVoidFraction": 0.5
     }
@@ -20,15 +20,26 @@
   "Components" : [ 
     {
       "Name" : "methylcyclohexane",
-      "FugacityCoefficient" : 1.0,
+      "MolFraction" : 0.9,
       "IdealGasRosenbluthWeight" : 1.0,
       "TranslationProbability" : 0.5,
+      "RotationProbability" : 0.5,
       "ReinsertionProbability" : 0.5,
       "SwapProbability" : 1.0,
       "WidomProbability" : 1.0,
-      "CreateNuMberofmolecules" : 0
+      "CreateNumberOfMolecules" : 0
+    },
+    {
+      "Name" : "toluene",
+      "MolFraction" : 0.1,
+      "IdealGasRosenbluthWeight" : 1.0,
+      "TranslationProbability" : 0.5,
+      "RotationProbability" : 0.5,
+      "ReinsertionProbability" : 0.5,
+      "SwapProbability" : 1.0,
+      "WidomProbability" : 1.0,
+      "CreateNumberOfMolecules" : 0
     }
-
 
   ]
 }

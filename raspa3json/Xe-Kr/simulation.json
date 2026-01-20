@@ -3,13 +3,14 @@
   "NumberOfCycles": 2000,
   "NumberOfInitializationCycles": 0,
   "NumberOfEquilibrationCycles": 0,
-  "PrintEvery": 2000,
+  "PrintEvery": 1,
   "Systems": [
     {
       "Type": "Framework",
       "Name": "/home/zjp/test-1/all-mil47/MIL-47_pacman-zjp.cif",
       "NumberOfUnitCells": [4,2,2],
       "CutOff": 12.8,
+      "UseChargesFrom": "CIF_File",
       "ExternalTemperature": 298,
       "ExternalPressure": 100000,
       "HeliumVoidFraction": 0.5

@@ -44,8 +44,8 @@ calculation:
 
 ## 3) 运行流程（自动）
 
-- RASPA2 高通量：`job_templates/runjobs.sh` 在模拟成功后调用 `scripts/python/auto_mser_raspa2.py`
-- RASPA3 高通量：`job_templates/runjobs_raspa3.sh` 在检测到 `output/` 输出后调用 `scripts/python/auto_mser_raspa3.py`
+- RASPA2 高通量：`job_templates/runjobs.sh` 在模拟成功后调用 `raspa_calc.algorithms.auto_mser_raspa2`
+- RASPA3 高通量：`job_templates/runjobs_raspa3.sh` 在检测到 `output/` 输出后调用 `raspa_calc.algorithms.auto_mser_raspa3`
 
 脚本会在任务目录下写出：
 - `auto_mser.log`: 每次迭代的 `t0`、样本数与续跑信息
@@ -55,10 +55,9 @@ calculation:
 ## 4) 手动复跑/排查
 
 若想对某个 `mc*` 目录单独复跑（以 RASPA3 为例）：
-- `conda run -n pymser python $HOME/raspa2-calc/.raspa_tools/scripts/python/auto_mser_raspa3.py --workdir /path/to/mcXXX`
+- `PYTHONPATH=$HOME/raspa2-calc/.raspa_tools/scripts/python conda run -n pymser python -m raspa_calc.algorithms.auto_mser_raspa3 --workdir /path/to/mcXXX`
 
 常见排查点：
 - 看 `auto_mser.log`：是否一直是 “平衡后样本不足”，需要提高 `NumberOfCycles` 或调大 `add_cycles/max_iter/target_cycles`
 - 看 `auto_mser_raspa.log`（RASPA3）：续跑时 `raspa3` 是否真的执行成功
 - 若启用 pyMSER，`failed_mser`/`__failed` 通常表示自动平衡脚本退出码非 0（先看日志再决定是否重跑）
-

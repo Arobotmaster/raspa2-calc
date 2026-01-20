@@ -26,16 +26,16 @@ so callers (e.g. raspa-scale) can consume a unified shape:
 }
 
 Usage:
-  python cluster_info.py            # prints JSON to stdout
+  python -m raspa_calc.algorithms.cluster_info  # prints JSON to stdout
 """
 import json
 import os
 import sys
 
 # Make task_runner importable
-HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
+PY_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PY_ROOT not in sys.path:
+    sys.path.insert(0, PY_ROOT)
 
 def _which(cmd: str) -> bool:
     from shutil import which

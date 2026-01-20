@@ -2,8 +2,8 @@
 
 ## Project Structure & Module Organization
 - `bin/`: shims (`raspa-calc`, `raspa-diagnose`, `raspa-status`, `raspa-scale`, `raspa-plot-isotherm`) forwarding to Python; keep names stable.
-- `scripts/python/`: main logic (`raspa_calc.py` orchestrator; `parameter_screening.py`/`calculate_params.py`/`task_runner.py` for batch runs; `data_extractor*.py`, `warning_processor.py`, `isotherm_plotter.py`, `raspa3_generator.py`, `cluster_info.py`).
-- `scripts/shell/`: helper workflows (`auto.sh`, `simulate_workflow.sh`, `recheck_failed.sh`).
+- `scripts/python/`: main logic (`raspa_calc.py` thin entry + `raspa_calc/` package; `task_runner.py` thin entry + `task_runner/` modules; `parameter_screening.py` for batch runs; `data_extractor*.py`, `warning_processor.py`, `isotherm_plotter.py`; `raspa_calc/algorithms/` for auto_mser/calculate_params/raspa3_generator/cluster_info).
+- `scripts/shell/`: helper workflows (`auto.sh`, `simulate_workflow.sh`, `recheck_failed.sh`) + `raspa_scale/` shared libs.
 - `job_templates/`: SLURM/PBS/local submission templates used by runners and `raspa-scale`; keep placeholder vars intact.
 - `config.yaml` and `config/raspa3/`: runtime defaults and sample RASPA3 JSON; `raspa3json/` packaged templates; `raspa2-3/` converters; `figure/` docs assets.
 
@@ -12,7 +12,7 @@
 - `./install.sh` — install CLI shims under `$HOME/raspa2-calc/.raspa_tools`.
 - `RASPA_WORK_DIR=/path/to/work raspa-diagnose` — verify Python deps, scheduler tools, RASPA2/3 paths.
 - `RASPA_WORK_DIR=/path/to/work raspa-calc` — main entry; respects `config.yaml`.
-- `raspa-status -d output` — check queues; `raspa-scale -i work/output` — tune concurrency; `raspa-plot-isotherm` — plot outputs.
+- `raspa-status -d output` / `raspa-scale status -d output` — check queues; `raspa-scale -i work/output` — tune concurrency; `raspa-plot-isotherm` — plot outputs.
 - `python scripts/python/parameter_screening.py --help` / `data_extractor.py --help` — quick CLI sanity after edits.
 
 ## Coding Style & Naming Conventions
@@ -23,7 +23,7 @@
 
 ## Testing Guidelines
 - No automated suite; validate changes with `raspa-diagnose` plus a small local run in a disposable `work/` (e.g., `job_templates/local.sh` or `scripts/shell/simulate_workflow.sh`).
-- When touching parsers (`data_extractor*`, `raspa3_generator`), rerun against a tiny `output/` fixture and confirm expected rows/columns.
+- When touching parsers (`data_extractor*`, `raspa_calc/algorithms/raspa3_generator.py`), rerun against a tiny `output/` fixture and confirm expected rows/columns.
 - For scheduler/template edits, dry-run with `bash -x job_templates/<script>.sh` and ensure required env vars and paths resolve.
 
 ## Commit & Pull Request Guidelines

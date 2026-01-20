@@ -25,6 +25,7 @@ raspa-diagnose  # Verify installation
 ```bash
 raspa-calc            # Main program (5 modes: parameter screening, high-throughput, data extraction, warning processing, isotherm plotting)
 raspa-status          # Task status monitoring (-d for details, -r to reset failed, -m for real-time)
+raspa-scale status    # Same status view via raspa-scale subcommand
 raspa-scale -i <dir>  # Interactive concurrency scaling
 raspa-diagnose        # Environment diagnostics
 ```
@@ -37,7 +38,8 @@ pip install numpy pandas gemmi openpyxl tqdm PyYAML
 ### Running Tests
 ```bash
 # Test CIF parameter extraction
-python .raspa_tools/scripts/python/calculate_params.py /path/to/structure.cif --cutoff 12.8
+PYTHONPATH=$HOME/raspa2-calc/.raspa_tools/scripts/python \
+  python -m raspa_calc.algorithms.calculate_params /path/to/structure.cif --cutoff 12.8
 
 # Test data extraction (auto-detects RASPA version)
 python .raspa_tools/scripts/python/data_extractor.py
@@ -53,14 +55,18 @@ python .raspa_tools/scripts/python/parameter_screening.py
 .raspa_tools/
 ├── bin/                    # CLI tools (raspa-calc, raspa-status, raspa-scale, raspa-diagnose)
 ├── scripts/python/         # Core Python modules
-│   ├── raspa_calc.py       # Main entry point - mode selection and environment check
-│   ├── task_runner.py      # High-throughput task orchestration (RASPA2/RASPA3)
-│   ├── calculate_params.py # CIF parsing and UnitCells calculation using gemmi
+│   ├── raspa_calc.py       # Thin entry point - mode selection and environment check
+│   ├── raspa_calc/         # raspa-calc modules (config/env/menu/commands)
+│   ├── task_runner.py      # Thin entry point for high-throughput orchestration
+│   ├── task_runner/        # task runner modules (cli/scheduler/framework/etc.)
+│   ├── raspa_calc/algorithms/ # auto_mser/calculate_params/raspa3_generator/cluster_info
 │   ├── data_extractor.py   # RASPA2 output parsing and Excel/CSV export
 │   ├── data_extractor_raspa3.py  # RASPA3 output parsing
 │   ├── parameter_screening.py    # Parameter combination generation
 │   ├── warning_processor.py      # Failed task recovery
 │   └── isotherm_plotter.py       # Visualization
+├── scripts/shell/          # Helper shell workflows
+│   └── raspa_scale/        # raspa-scale shared shell modules
 ├── job_templates/          # Job submission scripts
 │   ├── tasksrun.sh         # Main task submission (detects SLURM/PBS/local)
 │   ├── runjobs.sh          # RASPA2 worker script with atomic task queue
@@ -103,6 +109,7 @@ High-throughput mode uses **atomic file-based task queues** with POSIX `noclobbe
 - `.raspa_queue/next_id`: Pointer to next task ID to process
 - `.raspa_queue/last_id`: Pointer to last task ID in queue
 - `.raspa_queue/retry.list`: Failed tasks for retry (atomic move operations)
+- `.raspa_queue/tasks.list`: Optional task path list for list-mode (parameter screening)
 - `.raspa_worker_limit`: Dynamic concurrency limit (modified by `raspa-scale`)
 - `.workers/`: Worker registration directory (tracks active workers)
 
@@ -111,6 +118,12 @@ High-throughput mode uses **atomic file-based task queues** with POSIX `noclobbe
 2. `mc<N>__running`: Currently executing (renamed during execution)
 3. `mc<N>__done`: Completed successfully (final state)
 4. `mc<N>__failed`: Failed execution (moved to retry list)
+
+List-mode (e.g., parameter screening):
+- `framework/param_dir`: Pending task directory
+- `framework/param_dir__running`: Running
+- `framework/param_dir__done`: Done
+- `framework/param_dir__failed`: Failed
 
 **Concurrency Control Flow:**
 1. Worker reads `.raspa_worker_limit` to check if it should continue
@@ -147,7 +160,7 @@ High-throughput mode uses **atomic file-based task queues** with POSIX `noclobbe
 
 ### Key Python Functions & Architecture
 
-**calculate_params.py** - CIF Processing & Unit Cell Calculation
+**raspa_calc.algorithms.calculate_params** - CIF Processing & Unit Cell Calculation
 - `get_cif_cell_parameters(cif_file, cutoff)`: Uses gemmi library to parse CIF files and calculate unit cells
 - `process_structure_file(cif_file, cutoff)`: Main pipeline for CIF processing
 - **Algorithm**: Perpendicular width method using vector cross products to ensure cutoff radius is satisfied in all directions
@@ -160,7 +173,7 @@ High-throughput mode uses **atomic file-based task queues** with POSIX `noclobbe
   - Falls back to `sinfo -h -o %C` for cluster-wide summary
 - `process_framework(framework, molecules, ...)`: Generates RASPA2 simulation.input files
   - Copies template and performs text substitution
-  - Calculates UnitCells using calculate_params
+  - Calculates UnitCells using raspa_calc.algorithms.calculate_params
 - `process_framework_raspa3(framework, molecules, ...)`: Generates RASPA3 simulation.json files
   - Loads JSON template and updates fields
   - Copies force_field.json and molecule .json files to task directory
@@ -252,6 +265,8 @@ export RASPA3_CONDA_ENV=raspa3             # RASPA3 conda environment name
 ```bash
 # Check task status
 raspa-status -d output/
+# Or use raspa-scale status
+raspa-scale status -d output/
 
 # Find failed tasks
 find output/ -type d -name "mc*__failed"
@@ -271,8 +286,9 @@ for dir in output/mc*__failed; do
     mv "$dir" "${dir%__failed}"
 done
 
-# Or use raspa-status
+# Or use raspa-status / raspa-scale status
 raspa-status -r output/
+raspa-scale status -r output/
 
 # Then resubmit
 raspa-calc  # Choose mode 2 (high-throughput)
@@ -281,7 +297,8 @@ raspa-calc  # Choose mode 2 (high-throughput)
 **Testing individual components:**
 ```bash
 # Test CIF parameter extraction with specific cutoff
-python .raspa_tools/scripts/python/calculate_params.py /path/to/structure.cif --cutoff 12.8
+PYTHONPATH=$HOME/raspa2-calc/.raspa_tools/scripts/python \
+  python -m raspa_calc.algorithms.calculate_params /path/to/structure.cif --cutoff 12.8
 
 # Test data extraction (auto-detects RASPA version)
 cd work/output
@@ -298,6 +315,7 @@ python -c "from task_runner import get_slurm_cluster_resources; import json; pri
 ```bash
 # Real-time task status
 raspa-status -m output/
+raspa-scale status -m output/
 
 # SLURM job status
 squeue -u $USER

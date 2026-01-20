@@ -19,7 +19,7 @@
 | **六大计算模式** | 参数筛选、高通量、数据提取、警告处理、等温线、CSV/CIF筛选 | 覆盖全周期 |
 | **原子文件锁** | 基于 POSIX `noclobber` 的并发安全 | NFS友好，无race condition |
 | **智能环境检测** | 自动检测 SLURM/PBS/LOCAL 并适配 | 零配置部署 |
-| **实时任务监控** | `raspa-status` 基于当前目录统计 | 精确进度报告 |
+| **实时任务监控** | `raspa-status` / `raspa-scale status` 基于当前目录统计 | 精确进度报告 |
 
 > **推荐配置**：SLURM 集群（多节点）+ NFS 共享存储 + 960+ CPU 核心
 
@@ -49,8 +49,8 @@
 ## 核心功能
 
 ### 六大计算模式
-- *参数筛选* (`parameter_screening.py`)：快速测试参数组合，生成等温线
-- *高通量计算* (`calculate_params.py`)：批量处理框架结构，支持960+核心并行
+- *参数筛选* (`parameter_screening.py`)：快速测试参数组合，高通量调度提交，可用 `raspa-scale` 动态扩缩容
+- *高通量计算* (`raspa_calc.algorithms.calculate_params`)：批量处理框架结构，支持960+核心并行
 - *数据提取* (`data_extractor.py`)：解析RASPA输出，生成Excel/CSV报表，自动检测版本
 - *警告处理* (`warning_processor.py`)：提取失败任务、CSV数据替换
 - *等温线绘制* (`isotherm_plotter.py`)：可视化吸附数据
@@ -67,7 +67,7 @@
 ### 系统特性
 - *多节点集群*：SLURM + NFS 共享存储，支持异构节点和960+ CPU核心
 - *零配置检测*: /PBS/LOCAL，环境适配即插即用
-- *实时监控*：`raspa-status` 精确统计任务状态，支持按子目录查看
+- *实时监控*：`raspa-status` / `raspa-scale status` 精确统计任务状态，支持按子目录查看
 - *配置灵活*：YAML配置 + 交互式参数设置，支持多种气体分子
 - *完整诊断*：`raspa-diagnose` 检查环境、依赖、工具链
 - *智能恢复*：失败任务自动检查、标记和重试
@@ -114,16 +114,18 @@ raspa-calc
 ```
 **功能**：主程序入口，支持6种计算模式，自动检测 RASPA 版本
 
-### 任务监控：raspa-status
+### 任务监控：raspa-status / raspa-scale status
 ```bash
 raspa-status           # 查看任务状态统计
 raspa-status -d output # 显示详细任务列表
 raspa-status -r        # 重置失败任务状态
 raspa-status -m        # 实时监控任务进度
+raspa-scale status -d output
 ```
 
 ### 动态缩放：raspa-scale
 ```bash
+raspa-scale           # 默认进入交互菜单（含状态查看）
 raspa-scale -i 核心数    # 交互式
 raspa-scale -y 核心数    # 自动采用建议并发
 raspa-scale kill -n worker-node-01:10,worker-node-02:5  # 按节点终止指定数量作业

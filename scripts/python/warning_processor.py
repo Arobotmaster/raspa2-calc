@@ -8,7 +8,8 @@ import shutil
 import subprocess
 from typing import List, Dict, Tuple, Set
 import re
-import yaml
+
+from common import config as common_config
 
 class WarningProcessor:
     def __init__(self):
@@ -464,11 +465,11 @@ class WarningProcessor:
     def get_framework_column_from_config(self):
         """从配置文件获取framework_column设置"""
         try:
-            import yaml
-            config_file = os.path.join(os.path.dirname(self.current_dir), 'config.yaml')
-            if os.path.exists(config_file):
-                with open(config_file, 'r', encoding='utf-8') as f:
-                    config = yaml.safe_load(f)
+            config, _ = common_config.load_config(
+                search_mode="upward",
+                start_dir=self.current_dir,
+            )
+            if config:
                 return config.get('calculation', {}).get('framework_column', 'coreid')
         except Exception as e:
             print(f"读取配置文件失败: {e}")

@@ -3,7 +3,7 @@
 Auto-extend a RASPA2 GCMC run until pyMSER reports enough equilibrated samples.
 
 Usage:
-    python auto_mser_raspa2.py --workdir <task_dir> --target-cycles 1000 --add-cycles 500
+    python -m raspa_calc.algorithms.auto_mser_raspa2 --workdir <task_dir> --target-cycles 1000 --add-cycles 500
 
 Assumptions:
     - workdir contains a valid RASPA2 run (simulation.input, Output/, Restart/ as produced by simulate).

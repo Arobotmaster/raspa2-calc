@@ -236,12 +236,28 @@ PY
 SUBDIR=$(detect_subdir)
 echo "检测到子目录: $SUBDIR"
 
+# 任务清单检测（list-mode）
+QDIR="$WORK_DIR/$SUBDIR/.raspa_queue"
+TASK_LIST="$QDIR/tasks.list"
+LIST_MODE=false
+if [ -f "$TASK_LIST" ]; then
+    LIST_MODE=true
+fi
+
 # 统计总任务数
-TOTAL_TASKS=$(find "$topdir/$SUBDIR" -maxdepth 1 -type d -name "mc[0-9]*" ! -name "*__*" 2>/dev/null | wc -l)
+if [ "$LIST_MODE" = true ]; then
+    TOTAL_TASKS=$(awk 'END{print NR+0}' "$TASK_LIST" 2>/dev/null)
+else
+    TOTAL_TASKS=$(find "$topdir/$SUBDIR" -maxdepth 1 -type d -name "mc[0-9]*" ! -name "*__*" 2>/dev/null | wc -l)
+fi
 echo "检测到总任务数: $TOTAL_TASKS"
 
-if [ $TOTAL_TASKS -eq 0 ]; then
-    echo "警告：未找到待处理的mc*目录"
+if [ "$TOTAL_TASKS" -eq 0 ]; then
+    if [ "$LIST_MODE" = true ]; then
+        echo "警告：未找到有效任务清单或清单为空"
+    else
+        echo "警告：未找到待处理的mc*目录"
+    fi
     exit 1
 fi
 
@@ -458,7 +474,6 @@ else
 fi
 
 # 初始化指针队列（仅首次创建时进行一次快速扫描）
-QDIR="$WORK_DIR/$SUBDIR/.raspa_queue"
 Q_NEXT="$QDIR/next_id"
 Q_LAST="$QDIR/last_id"
 Q_RETRY="$QDIR/retry.list"
@@ -466,12 +481,19 @@ if [ ! -d "$QDIR" ]; then
   mkdir -p "$QDIR"
 fi
 if [ ! -f "$Q_NEXT" ] || [ ! -f "$Q_LAST" ]; then
-  FIRST_ID=$(find "$WORK_DIR/$SUBDIR" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%f\n' 2>/dev/null | sed 's/^mc//' | sort -n | head -n1)
-  LAST_ID=$(find "$WORK_DIR/$SUBDIR" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%f\n' 2>/dev/null | sed 's/^mc//' | sort -n | tail -n1)
-  [ -z "$FIRST_ID" ] && FIRST_ID=1
-  [ -z "$LAST_ID" ] && LAST_ID=0
-  echo "$FIRST_ID" > "$Q_NEXT"
-  echo "$LAST_ID" > "$Q_LAST"
+  if [ "$LIST_MODE" = true ] && [ -f "$TASK_LIST" ]; then
+    TASK_TOTAL=$(awk 'END{print NR+0}' "$TASK_LIST" 2>/dev/null)
+    [ -z "$TASK_TOTAL" ] && TASK_TOTAL=0
+    echo 1 > "$Q_NEXT"
+    echo "$TASK_TOTAL" > "$Q_LAST"
+  else
+    FIRST_ID=$(find "$WORK_DIR/$SUBDIR" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%f\n' 2>/dev/null | sed 's/^mc//' | sort -n | head -n1)
+    LAST_ID=$(find "$WORK_DIR/$SUBDIR" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -printf '%f\n' 2>/dev/null | sed 's/^mc//' | sort -n | tail -n1)
+    [ -z "$FIRST_ID" ] && FIRST_ID=1
+    [ -z "$LAST_ID" ] && LAST_ID=0
+    echo "$FIRST_ID" > "$Q_NEXT"
+    echo "$LAST_ID" > "$Q_LAST"
+  fi
 fi
 # 不清空重试队列，若不存在则创建
 [ -f "$Q_RETRY" ] || : > "$Q_RETRY"

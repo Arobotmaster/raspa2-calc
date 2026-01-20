@@ -17,8 +17,9 @@ import re
 import sys
 import traceback
 from datetime import datetime
-import yaml
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
+from common import config as common_config
 
 try:
     from tqdm import tqdm  # 用于显示进度条
@@ -30,7 +31,7 @@ except ImportError:
 
 
 # ============ 常用正则（预编译） ============
-_MC_DIR_NAME_RE = re.compile(r'^mc(\d+)(?:__(done|failed|running))?$')
+_MC_DIR_NAME_RE = re.compile(r'^mc(\d+)(?:__(done|failed|running))?(?:__.+)?$')
 _MC_NUMBER_RE = re.compile(r'mc(\d+)')
 
 _FRAMEWORK_NAME_PATTERNS = (
@@ -451,19 +452,6 @@ def process_output_file(file_path, mc_number, selected_items, temperature=None, 
         }
 
         # 根据选择的项目提取数据
-        if 'pressure' in selected_items:
-            result['pressure'] = raspa_data.get_pressure()
-
-        if 'He_void_fraction' in selected_items:
-            result['He_void_fraction'] = raspa_data.get_He_void_fraction()
-
-        if 'Framework_density' in selected_items:
-            result['Framework_density'] = raspa_data.get_Framework_density()
-
-        if 'Surface_Area' in selected_items:
-            result['Surface_Area_m2_g'] = raspa_data.get_Surface_Area('m^2/g')
-            result['Surface_Area_m2_cm3'] = raspa_data.get_Surface_Area('m^2/cm^3')
-
         if 'absolute_adsorption' in selected_items:
             # 仅提取用户选择的单位，默认使用 cm^3/g
             units = [selected_units.get('absolute_adsorption', 'cm^3/g')] if selected_units else ['cm^3/g']
@@ -488,10 +476,8 @@ def process_output_file(file_path, mc_number, selected_items, temperature=None, 
         if 'adsorption_heat_infinite_dilution' in selected_items:
             infinite_dilution_data = raspa_data.get_adsorption_heat_infinite_dilution(temperature)
             if infinite_dilution_data:
-                result['total_energy_value'] = infinite_dilution_data['energy_value']
                 result['adsorption_heat_infinite_dilution'] = infinite_dilution_data['adsorption_heat']
             else:
-                result['total_energy_value'] = None
                 result['adsorption_heat_infinite_dilution'] = None
 
         if 'henry_coefficient' in selected_items:
@@ -644,16 +630,12 @@ def _process_single_mc_dir(mc_dir, selected_items, temperature, selected_units, 
 
         # 为选择的数据项添加空值
         for item in selected_items:
-            if item == 'Surface_Area':
-                result['Surface_Area_m2_g'] = ''
-                result['Surface_Area_m2_cm3'] = ''
-            elif item == 'adsorption_heat_infinite_dilution':
-                result['total_energy_value'] = ''
+            if item == 'adsorption_heat_infinite_dilution':
                 result['adsorption_heat_infinite_dilution'] = ''
-            elif item in ['absolute_adsorption', 'excess_adsorption']:
-                pass
-            else:
-                result[item] = ''
+                continue
+            if item in ['absolute_adsorption', 'excess_adsorption']:
+                continue
+            result[item] = ''
 
         return result
     except Exception as e:
@@ -847,18 +829,7 @@ def find_and_process_files_aligned_to_csv(base_path, selected_items, output_form
     csv_file = None
     framework_col = None
     try:
-        cfg = None
-        if config_path and os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf-8') as f:
-                cfg = yaml.safe_load(f) or {}
-        if not cfg:
-            # 尝试默认位置
-            for p in [os.path.join(os.getcwd(), '.raspa_tools', 'config.yaml'), os.path.join(os.getcwd(), 'config.yaml')]:
-                if os.path.exists(p):
-                    with open(p, 'r', encoding='utf-8') as f:
-                        cfg = yaml.safe_load(f) or {}
-                        config_path = p
-                        break
+        cfg, config_path = _load_config(config_path)
         calc = (cfg or {}).get('calculation', {})
         csv_file = calc.get('csv_file_path')
         framework_col = calc.get('framework_column')
@@ -967,16 +938,12 @@ def find_and_process_files_aligned_to_csv(base_path, selected_items, output_form
             row['warnings'] = ['no_output']
 
         for item in selected_items:
-            if item == 'Surface_Area':
-                row['Surface_Area_m2_g'] = ''
-                row['Surface_Area_m2_cm3'] = ''
-            elif item == 'adsorption_heat_infinite_dilution':
-                row['total_energy_value'] = ''
+            if item == 'adsorption_heat_infinite_dilution':
                 row['adsorption_heat_infinite_dilution'] = ''
-            elif item in ['absolute_adsorption', 'excess_adsorption']:
-                pass
-            else:
-                row[item] = ''
+                continue
+            if item in ['absolute_adsorption', 'excess_adsorption']:
+                continue
+            row[item] = ''
 
         results.append(row)
         if pbar:
@@ -1083,19 +1050,7 @@ def find_and_process_files_by_csv_template(base_path, selected_items, output_for
     csv_file = None
     framework_col = None
     try:
-        cfg = None
-        # 显式配置优先
-        if config_path and os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf-8') as f:
-                cfg = yaml.safe_load(f) or {}
-        # CWD向上搜索
-        if not cfg:
-            for p in _config_search_paths(os.getcwd()):
-                if os.path.exists(p):
-                    with open(p, 'r', encoding='utf-8') as f:
-                        cfg = yaml.safe_load(f) or {}
-                        config_path = p
-                        break
+        cfg, config_path = _load_config(config_path)
         calc = (cfg or {}).get('calculation', {})
         csv_file = calc.get('csv_file_path')
         framework_col = calc.get('framework_column')
@@ -1202,16 +1157,12 @@ def find_and_process_files_by_csv_template(base_path, selected_items, output_for
                 row['warnings'] = ['not_started']
 
         for item in selected_items:
-            if item == 'Surface_Area':
-                row['Surface_Area_m2_g'] = ''
-                row['Surface_Area_m2_cm3'] = ''
-            elif item == 'adsorption_heat_infinite_dilution':
-                row['total_energy_value'] = ''
+            if item == 'adsorption_heat_infinite_dilution':
                 row['adsorption_heat_infinite_dilution'] = ''
-            elif item in ['absolute_adsorption', 'excess_adsorption']:
-                pass
-            else:
-                row[item] = ''
+                continue
+            if item in ['absolute_adsorption', 'excess_adsorption']:
+                continue
+            row[item] = ''
 
         results.append(row)
         if pbar:
@@ -1335,26 +1286,25 @@ def save_results_to_file(results, selected_items=None, output_file='extracted_da
         # 重新排列列顺序，按照要求的顺序
         columns = ['File Path', 'Framework Name', 'Warnings']
 
-        # 添加基本参数列
-        basic_columns = ['pressure', 'He_void_fraction', 'Framework_density']
-        for col in basic_columns:
-            if col in df.columns:
-                columns.append(col)
-
-        # 添加表面积列
-        surface_area_columns = [col for col in df.columns if 'Surface_Area' in col]
-        columns.extend(sorted(surface_area_columns))
-
         # 添加吸附量列
         adsorption_columns = [col for col in df.columns if '_absolute_' in col or '_excess_' in col]
         columns.extend(sorted(adsorption_columns))
 
-        # 添加能量值列
-        energy_columns = [col for col in df.columns if 'total_energy_value' in col]
-        columns.extend(sorted(energy_columns))
+        # pyMSER 平均吸附量列
+        pymser_columns = [
+            col for col in df.columns
+            if 'pymser_average' in col or 'pymser_uncertainty' in col
+        ]
+        columns.extend(sorted(pymser_columns))
 
         # 添加吸附热和亨利系数列
-        other_columns = [col for col in df.columns if '_adsorption_heat' in col or '_henry_coefficient' in col]
+        other_columns = [
+            col for col in df.columns
+            if '_adsorption_heat' in col
+            or 'adsorption_heat_infinite_dilution' in col
+            or '_henry_coefficient' in col
+            or '_rosenbluth_weight' in col
+        ]
         columns.extend(sorted(other_columns))
 
         # 添加其他列
@@ -1476,32 +1426,48 @@ def update_existing_results(original_excel, supplement_excel, output_file='updat
         return False
 
 def _config_search_paths(start_dir: str):
-    """从 start_dir 向上逐级搜索可能的配置路径。"""
+    """从 start_dir 向上逐级搜索可能的配置路径，优先 .raspa_config.yaml。"""
     paths = []
-    cur = os.path.abspath(start_dir)
-    # 向上搜索 .raspa_tools/config.yaml 和 config.yaml
+    cur = os.path.abspath(start_dir or os.getcwd())
     while True:
-        paths.append(os.path.join(cur, '.raspa_tools', 'config.yaml'))
-        paths.append(os.path.join(cur, 'config.yaml'))
+        paths.append(os.path.join(cur, ".raspa_config.yaml"))
+        paths.append(os.path.join(cur, ".raspa_tools", "config.yaml"))
+        paths.append(os.path.join(cur, "config.yaml"))
         parent = os.path.dirname(cur)
         if parent == cur:
             break
         cur = parent
-    return paths
+    paths.append(os.path.join(common_config.tool_dir(), "config.yaml"))
 
-def _load_config(config_path=None):
-    """加载配置，返回 (config_dict, used_path)。优先顺序：显式 -> 从CWD向上搜索。"""
-    candidates = []
+    seen = set()
+    ordered = []
+    for path in paths:
+        norm = os.path.abspath(os.path.expanduser(path))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        ordered.append(norm)
+    return ordered
+
+def _load_config(config_path=None, start_dir=None):
+    """加载配置，返回 (config_dict, used_path)。优先顺序：显式 -> .raspa_config.yaml -> 向上搜索。"""
+    if not common_config.HAS_YAML:
+        return {}, None
+
     if config_path:
-        candidates.append(config_path)
-    candidates.extend(_config_search_paths(os.getcwd()))
-    for p in candidates:
         try:
-            if os.path.exists(p):
-                with open(p, 'r', encoding='utf-8') as f:
-                    return yaml.safe_load(f) or {}, p
+            return common_config.load_config_file(config_path), config_path
+        except Exception:
+            return {}, None
+
+    for path in _config_search_paths(start_dir or os.getcwd()):
+        if not os.path.exists(path):
+            continue
+        try:
+            return common_config.load_config_file(path), path
         except Exception:
             continue
+
     return {}, None
 
 def _default_base_path_from_config(cfg: dict):
@@ -1541,9 +1507,41 @@ def main():
     print("=== RASPA数据提取工具 (支持 RASPA2/RASPA3) ===")
     print("该工具将从指定目录中提取所有output文件的数据")
 
-    # 预加载配置
+    # 预加载配置（用于默认路径提示）
     cfg, cfg_path = _load_config()
     suggested_base_from_cfg = _default_base_path_from_config(cfg)
+
+    # 选择输出格式
+    print("\n选择输出格式:")
+    print("1. CSV格式 (.csv)")
+    print("2. Excel格式 (.xlsx)")
+    format_choice = input("请选择输出格式 (1/2, 默认为csv): ").strip()
+
+    if format_choice == '2':
+        output_format = 'xlsx'
+        default_filename = 'raspa3_results.xlsx'
+    else:
+        output_format = 'csv'
+        default_filename = 'raspa3_results.csv'
+
+    # 获取目录路径（默认使用配置中的 work_dir/output_directory）
+    if output_format == 'csv':
+        suggested_base = os.getcwd()
+    else:
+        suggested_base = suggested_base_from_cfg
+    base_path = input(f"\n请输入要提取数据的目录路径 (默认: {suggested_base}): ").strip()
+    if not base_path:
+        base_path = suggested_base
+
+    if not os.path.exists(base_path):
+        print(f"错误: 目录 '{base_path}' 不存在")
+        return
+
+    # 重新加载配置，优先读取当前项目目录的 .raspa_config.yaml
+    cfg_project, cfg_project_path = _load_config(start_dir=base_path)
+    if cfg_project_path:
+        cfg, cfg_path = cfg_project, cfg_project_path
+
     csv_file, framework_col = _get_csv_settings(cfg)
 
     # 选择提取模式（高通量/普通）
@@ -1564,32 +1562,6 @@ def main():
             use_high_throughput = False
     else:
         print("将使用普通模式扫描output文件。")
-
-    # 选择输出格式
-    print("\n选择输出格式:")
-    print("1. Excel格式 (.xlsx)")
-    print("2. CSV格式 (.csv)")
-    format_choice = input("请选择输出格式 (1/2, 默认为Excel): ").strip()
-    
-    if format_choice == '2':
-        output_format = 'csv'
-        default_filename = 'raspa_results.csv'
-    else:
-        output_format = 'excel'
-        default_filename = 'raspa_results.xlsx'
-
-    # 获取目录路径（默认使用配置中的 work_dir/output_directory）
-    if output_format == 'csv':
-        suggested_base = os.getcwd()
-    else:
-        suggested_base = suggested_base_from_cfg
-    base_path = input(f"\n请输入要提取数据的目录路径 (默认: {suggested_base}): ").strip()
-    if not base_path:
-        base_path = suggested_base
-
-    if not os.path.exists(base_path):
-        print(f"错误: 目录 '{base_path}' 不存在")
-        return
 
     # ============ RASPA 版本检测与选择 ============
     print("\n检测 RASPA 版本...")
@@ -1657,6 +1629,7 @@ def main():
         '4': 'adsorption_heat_infinite_dilution',
         '5': 'henry_coefficient',
         '6': 'rosenbluth_weight',
+        '7': 'pymser_average_adsorption',
     }
 
     # 默认选择所有项
@@ -1674,6 +1647,7 @@ def main():
             print("4. Adsorption Heat at Infinite Dilution (无限稀释吸附热)")
             print("5. Henry Coefficient (亨利系数)")
             print("6. Rosenbluth Weight (Rosenbluth权重)")
+            print("7. pyMSER Average Adsorption (pyMSER平均吸附量)")
             selected_numbers = input("您的选择：").strip()
 
             if not selected_numbers:  # 如果用户没有输入，默认选择所有项
@@ -1710,22 +1684,26 @@ def main():
             '3': 'mg/g',
             '4': 'cm^3/cm^3',
         }
-        if 'absolute_adsorption' in selected_items:
-            print("\n绝对吸附量单位选择:")
-            print("1. mol/kg    2. cm^3/g    3. mg/g    4. cm^3/cm^3")
-            choice = input("请选择绝对吸附量单位 (默认: 2): ").strip()
-            selected_units['absolute_adsorption'] = unit_options.get(choice, 'cm^3/g')
-        if 'excess_adsorption' in selected_items:
-            print("\n超额吸附量单位选择:")
-            print("1. mol/kg    2. cm^3/g    3. mg/g    4. cm^3/cm^3")
-            choice = input("请选择超额吸附量单位 (默认: 2): ").strip()
-            selected_units['excess_adsorption'] = unit_options.get(choice, 'cm^3/g')
+        
+        # 定义需要单位选择的项目
+        adsorption_items = {
+            'absolute_adsorption': '绝对吸附量',
+            'excess_adsorption': '超额吸附量'
+        }
+        
+        # 统一处理吸附量单位选择
+        for item_key, item_name in adsorption_items.items():
+            if item_key in selected_items:
+                print(f"\n{item_name}单位选择:")
+                print("1. mol/kg    2. cm^3/g    3. mg/g    4. cm^3/cm^3")
+                choice = input(f"请选择{item_name}单位 (默认: 1 mol/kg): ").strip()
+                selected_units[item_key] = unit_options.get(choice, 'mol/kg')
 
     # 设置温度（如果选择了无限稀释吸附热）
     temperature = None
     if 'adsorption_heat_infinite_dilution' in selected_items:
         print("\n检测到选择了无限稀释吸附热计算")
-        print("注意：将会提取Total energy的原始值，并根据您设置的温度计算吸附热")
+        print("注意：将使用 Total energy 计算吸附热，并根据您设置的温度换算")
         temp_input = input("请输入计算温度 (K，默认为300): ").strip()
         
         if temp_input:

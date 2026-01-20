@@ -15,18 +15,23 @@ import traceback
 import itertools
 import subprocess
 import re
+import multiprocessing
 from pathlib import Path
+from contextlib import contextmanager
+from tqdm import tqdm
 from force_field_utils import write_filtered_force_field
+from task_runner.scheduler import build_node_plan, get_slurm_cluster_resources
+
+# 配置读取
+from common import config as common_config
 
 # 导入calculate_params模块中的必要函数
-from calculate_params import process_structure_file, get_cif_cell_parameters, load_cache, save_cache
-
-# 尝试导入yaml处理配置文件
-try:
-    import yaml
-    HAS_YAML = True
-except ImportError:
-    HAS_YAML = False
+from raspa_calc.algorithms.calculate_params import (
+    process_structure_file,
+    get_cif_cell_parameters,
+    load_cache,
+    save_cache,
+)
 
 # 配置日志
 logging.basicConfig(
@@ -35,28 +40,68 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def load_config():
-    """加载配置文件"""
-    if not HAS_YAML:
+@contextmanager
+def suppress_info_logs():
+    """临时屏蔽 INFO 日志，保留 WARNING/ERROR 以减少噪声。"""
+    prev_disable = logging.root.manager.disable
+    logging.disable(logging.INFO)
+    try:
+        yield
+    finally:
+        logging.disable(prev_disable)
+
+def _parse_submit_index(line):
+    match = re.search(r"正在提交第(\d+)个任务", line)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
         return None
 
-    config_paths = [
-        "config.yaml",
-        ".raspa_tools/config.yaml",
-        os.path.join(os.path.dirname(__file__), "../../config.yaml"),
-        os.path.join(os.path.expanduser("~"), "raspa2-calc", ".raspa_tools", "config.yaml")
-    ]
+def _should_print_submit_line(line):
+    important_markers = (
+        "错误",
+        "失败",
+        "⚠️",
+        "❌",
+        "警告",
+        "WARNING",
+        "Error",
+        "ERROR",
+        "开始提交计算任务",
+        "使用CPU核心数",
+        "提交模式",
+        "开始逐个提交作业",
+        "job array",
+        "Job array",
+        "节点分配计划",
+        "提交汇总",
+        "所有作业已提交完成",
+        "提示",
+        "检测到",
+    )
+    return any(marker in line for marker in important_markers)
 
-    for config_file in config_paths:
-        if os.path.exists(config_file):
-            try:
-                with open(config_file, 'r', encoding='utf-8') as f:
-                    config = yaml.safe_load(f)
-                    logger.info(f"配置文件已加载: {config_file}")
-                    return config
-            except Exception as e:
-                logger.warning(f"配置文件加载失败: {e}")
+def _positive_int(raw, default):
+    try:
+        value = int(raw)
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
 
+def load_config(config_path=None):
+    """加载配置文件"""
+    if not common_config.HAS_YAML:
+        return None
+
+    config, used_path = common_config.load_config(config_path=config_path)
+    if used_path:
+        if config_path:
+            logger.info(f"使用指定的配置文件: {used_path}")
+        else:
+            logger.info(f"配置文件已加载: {used_path}")
+        return config
     return None
 
 def get_mser_settings(config):
@@ -106,6 +151,92 @@ def detect_job_system():
         return "pbs"
     else:
         return "local"
+
+def get_ht_cpu_cores(total_tasks, output_base_dir):
+    """高通量模式的 CPU 核心选择与节点计划生成"""
+    if total_tasks <= 0:
+        return 0
+
+    system_cores = multiprocessing.cpu_count()
+    logger.info(f"当前节点CPU核心数: {system_cores}")
+
+    cluster_info = get_slurm_cluster_resources()
+    if cluster_info.get("available"):
+        logger.info(f"SLURM集群总 CPU核心数: {cluster_info.get('total_cpus')}")
+        logger.info(f"SLURM集群已分配 CPU核心数: {cluster_info.get('allocated_cpus')}")
+        logger.info(f"SLURM集群当前可用 CPU核心数: {cluster_info.get('available_cpus')}")
+
+        if cluster_info.get("nodes"):
+            logger.info("节点资源详情（线程总数/负载/建议可用线程）：")
+            for node in cluster_info["nodes"]:
+                load_txt = f"{node['load']:.2f}" if node.get("load") is not None else "未知"
+                topo_txt = node.get("topology") or "?"
+                free_cpus = node.get("free_cpus", 0)
+                physical = node.get("physical_cpus")
+                if physical:
+                    logger.info(
+                        f"  {node['node']}: 总{node['total_cpus']}线程 (物理{physical}, 拓扑{topo_txt}), "
+                        f"已分配{node['allocated_cpus']}, CPULoad={load_txt}, 估计可用={free_cpus}"
+                    )
+                else:
+                    logger.info(
+                        f"  {node['node']}: 总{node['total_cpus']}线程, 已分配{node['allocated_cpus']}, "
+                        f"CPULoad={load_txt}, 估计可用={free_cpus}"
+                    )
+
+        recommended_cores = min(int(cluster_info.get("available_cpus") or 0), total_tasks)
+        if recommended_cores > 0:
+            logger.info(f"建议使用CPU核心数: {recommended_cores} (基于集群空闲资源)")
+        else:
+            logger.info("集群当前无空闲CPU资源，请谨慎选择使用数量")
+    else:
+        logger.info("未检测到SLURM集群环境，使用当前节点信息")
+
+    while True:
+        try:
+            cpu_cores = int(input(f"\n请输入需要运行的CPU核心数 (1-{total_tasks}): "))
+            if 1 <= cpu_cores <= total_tasks:
+                break
+            logger.warning(f"CPU核心数必须在1到{total_tasks}之间")
+        except ValueError:
+            logger.warning("请输入有效的数字")
+        except KeyboardInterrupt:
+            logger.info("用户取消操作")
+            sys.exit(130)
+
+    plan_path = os.path.join(output_base_dir, ".raspa_node_plan")
+    if cluster_info.get("available"):
+        plan_string, plan_pairs = build_node_plan(cluster_info, cpu_cores)
+        if plan_string:
+            os.environ["RASPA_NODE_PLAN"] = plan_string
+            logger.info(f"节点分配计划: {plan_string}")
+            if plan_pairs:
+                summary = ", ".join(f"{n}:{c}" for n, c in plan_pairs)
+                logger.info(f"节点任务分配总览: {summary}")
+            try:
+                with open(plan_path, "w", encoding="utf-8") as pf:
+                    pf.write(plan_string + "\n")
+                logger.info(f"节点分配计划已写入: {plan_path}")
+            except Exception as exc:
+                logger.warning(f"写入节点分配计划失败: {exc}")
+        else:
+            os.environ.pop("RASPA_NODE_PLAN", None)
+            if os.path.exists(plan_path):
+                try:
+                    os.remove(plan_path)
+                    logger.info(f"已清理旧的节点分配计划: {plan_path}")
+                except Exception as exc:
+                    logger.warning(f"删除节点分配计划失败: {exc}")
+    else:
+        os.environ.pop("RASPA_NODE_PLAN", None)
+        if os.path.exists(plan_path):
+            try:
+                os.remove(plan_path)
+                logger.info(f"已清理旧的节点分配计划: {plan_path}")
+            except Exception as exc:
+                logger.warning(f"删除节点分配计划失败: {exc}")
+
+    return cpu_cores
 
 def get_job_templates(job_system):
     """根据作业系统类型获取对应的作业模板和提交命令"""
@@ -533,7 +664,9 @@ def create_job_script_raspa3(param_dir, job_name, scheduler_type="slurm", conda_
     if mser_enable:
         mser_env_block = f"""
 # pyMSER 设置
-MSER_SCRIPT="${{RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}}/scripts/python/auto_mser_raspa3.py"
+MSER_MODULE="raspa_calc.algorithms.auto_mser_raspa3"
+MSER_PYTHONPATH="${{RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}}/scripts/python"
+export PYTHONPATH="${{MSER_PYTHONPATH}}${{PYTHONPATH:+:$PYTHONPATH}}"
 export RASPA_MSER_ENABLE=true
 export RASPA_MSER_TARGET_CYCLES={mser_target_cycles}
 export RASPA_MSER_ADD_CYCLES={mser_add_cycles}
@@ -549,10 +682,10 @@ if [ $raspa3_exit_code -eq 0 ] && [ -d "output" ]; then
 else
     output_count=0
 fi
-if [ $output_count -gt 0 ] && [ -f "$MSER_SCRIPT" ]; then
+if [ $output_count -gt 0 ] && [ -d "$MSER_PYTHONPATH/raspa_calc/algorithms" ]; then
     echo " ==> 运行 pyMSER 自动平衡"
     if command -v conda >/dev/null 2>&1; then
-        conda run -n "{mser_conda_env}" python "$MSER_SCRIPT" \\
+        conda run -n "{mser_conda_env}" python -m "$MSER_MODULE" \\
           --workdir "$(pwd)" \\
           --target-cycles "{mser_target_cycles}" \\
           --add-cycles "{mser_add_cycles}" \\
@@ -561,7 +694,7 @@ if [ $output_count -gt 0 ] && [ -f "$MSER_SCRIPT" ]; then
           --conda-env "{mser_conda_env}" \\
           --raspa3-conda-env "{conda_env}"
     else
-        python "$MSER_SCRIPT" \\
+        python -m "$MSER_MODULE" \\
           --workdir "$(pwd)" \\
           --target-cycles "{mser_target_cycles}" \\
           --add-cycles "{mser_add_cycles}" \\
@@ -755,7 +888,8 @@ fi
 
 def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, template_path,
                                           output_dir, job_system, config=None,
-                                          void_fraction_csv=None, json_dir=None, mser_config=None, result_cache=None):
+                                          void_fraction_csv=None, json_dir=None, mser_config=None,
+                                          result_cache=None, progress=None):
     """处理 RASPA3 所有参数组合并创建作业
 
     Args:
@@ -770,6 +904,7 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
         json_dir: RASPA3 JSON 文件目录
         mser_config: pyMSER 配置
         result_cache: 计算结果缓存字典
+        progress: 可选的进度回调
     """
     # 生成所有参数组合
     combinations = generate_parameter_combinations(param_ranges)
@@ -783,11 +918,6 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
     framework_dir = os.path.join(output_base_dir, framework)
     os.makedirs(framework_dir, exist_ok=True)
 
-    # 获取 conda 环境名称
-    conda_env = "raspa3"
-    if config:
-        conda_env = config.get('environment', {}).get('raspa3_conda_env', 'raspa3')
-
     # 获取模板中的组件名称（用于复制分子文件的默认值）
     template_component_names = None
     try:
@@ -799,7 +929,7 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
         pass
 
     # 处理每个参数组合
-    jobs = []
+    tasks = []
     for combo in combinations:
         # 生成参数组合目录名
         param_dir_name = generate_directory_name(combo)
@@ -833,22 +963,23 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
         # 创建 simulation.json 文件
         sim_json_path = os.path.join(param_dir, "simulation.json")
 
-        if create_simulation_json(template_path, sim_params, cif_path, sim_json_path, config, void_fraction_csv, mser_config, result_cache=result_cache):
-            # 创建作业脚本
-            job_name = f"{framework}_{param_dir_name}"[:63]  # SLURM 作业名限制
-            job_script_path = create_job_script_raspa3(param_dir, job_name, job_system, conda_env, mser_config)
+        try:
+            if create_simulation_json(
+                template_path,
+                sim_params,
+                cif_path,
+                sim_json_path,
+                config,
+                void_fraction_csv,
+                mser_config,
+                result_cache=result_cache,
+            ):
+                tasks.append(param_dir)
+        finally:
+            if progress:
+                progress()
 
-            # 提交作业
-            job_id = submit_job(job_script_path, job_system)
-            if job_id:
-                jobs.append({
-                    'param_dir': param_dir,
-                    'job_id': job_id,
-                    'params': combo
-                })
-                print(f"  ✓ 作业已提交: {job_name} (ID: {job_id})")
-
-    return jobs
+    return tasks
 
 # ============================================================
 #                    RASPA2 参数筛选 (原有功能)
@@ -1104,7 +1235,9 @@ def create_job_script(param_dir, job_name, scheduler_type="pbs", mser_config=Non
     if mser_enable:
         mser_env_block = f"""
 # pyMSER 设置
-MSER_SCRIPT="${{RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}}/scripts/python/auto_mser_raspa2.py"
+MSER_MODULE="raspa_calc.algorithms.auto_mser_raspa2"
+MSER_PYTHONPATH="${{RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}}/scripts/python"
+export PYTHONPATH="${{MSER_PYTHONPATH}}${{PYTHONPATH:+:$PYTHONPATH}}"
 export RASPA_MSER_ENABLE=true
 export RASPA_MSER_TARGET_CYCLES={mser_target_cycles}
 export RASPA_MSER_ADD_CYCLES={mser_add_cycles}
@@ -1113,11 +1246,11 @@ export RASPA_MSER_UNCERTAINTY={mser_uncertainty}
 export RASPA_MSER_CONDA_ENV={mser_conda_env}
 """
         mser_run_block = f"""
-if [ $sim_exit_code -eq 0 ] && [ -f "$MSER_SCRIPT" ]; then
+if [ $sim_exit_code -eq 0 ] && [ -d "$MSER_PYTHONPATH/raspa_calc/algorithms" ]; then
   echo " ==> 运行 pyMSER 自动平衡"
   mser_status=0
   if command -v conda >/dev/null 2>&1; then
-    conda run -n "{mser_conda_env}" python "$MSER_SCRIPT" \\
+    conda run -n "{mser_conda_env}" python -m "$MSER_MODULE" \\
       --workdir "$(pwd)" \\
       --target-cycles "{mser_target_cycles}" \\
       --add-cycles "{mser_add_cycles}" \\
@@ -1125,7 +1258,7 @@ if [ $sim_exit_code -eq 0 ] && [ -f "$MSER_SCRIPT" ]; then
       --uncertainty "{mser_uncertainty}" \\
       --conda-env "{mser_conda_env}"
   else
-    python "$MSER_SCRIPT" \\
+    python -m "$MSER_MODULE" \\
       --workdir "$(pwd)" \\
       --target-cycles "{mser_target_cycles}" \\
       --add-cycles "{mser_add_cycles}" \\
@@ -1620,7 +1753,9 @@ def interactive_parameter_selection(framework_name, cif_dir=None, reuse_params=N
     
     return params
 
-def process_parameter_combinations(framework, cif_path, param_ranges, template_path, output_dir, job_system, config=None, void_fraction_csv=None, mser_config=None, result_cache=None):
+def process_parameter_combinations(framework, cif_path, param_ranges, template_path, output_dir,
+                                   job_system, config=None, void_fraction_csv=None,
+                                   mser_config=None, result_cache=None, progress=None):
     """处理所有参数组合并创建作业
 
     Args:
@@ -1634,6 +1769,7 @@ def process_parameter_combinations(framework, cif_path, param_ranges, template_p
         void_fraction_csv: 孔隙率数据字典
         mser_config: pyMSER 配置
         result_cache: 计算结果缓存字典
+        progress: 可选的进度回调
     """
     # 生成所有参数组合
     combinations = generate_parameter_combinations(param_ranges)
@@ -1648,7 +1784,7 @@ def process_parameter_combinations(framework, cif_path, param_ranges, template_p
     os.makedirs(framework_dir, exist_ok=True)
 
     # 处理每个参数组合
-    jobs = []
+    tasks = []
     for combo in combinations:
         # 生成参数组合目录名
         param_dir_name = generate_directory_name(combo)
@@ -1669,22 +1805,23 @@ def process_parameter_combinations(framework, cif_path, param_ranges, template_p
         # 创建simulation.input文件
         sim_input_path = os.path.join(param_dir, "simulation.input")
 
-        if create_simulation_input(template_path, sim_params, cif_path, sim_input_path, config, void_fraction_csv, mser_config, result_cache=result_cache):
-            # 创建作业脚本
-            job_name = f"{framework}_{param_dir_name}"
-            job_script_path = create_job_script(param_dir, job_name, job_system, mser_config)
+        try:
+            if create_simulation_input(
+                template_path,
+                sim_params,
+                cif_path,
+                sim_input_path,
+                config,
+                void_fraction_csv,
+                mser_config,
+                result_cache=result_cache,
+            ):
+                tasks.append(param_dir)
+        finally:
+            if progress:
+                progress()
 
-            # 提交作业
-            job_id = submit_job(job_script_path, job_system)
-            if job_id:
-                jobs.append({
-                    'param_dir': param_dir,
-                    'job_id': job_id,
-                    'params': combo
-                })
-                print(f"  ✓ 作业已提交: {job_name} (ID: {job_id})")
-
-    return jobs
+    return tasks
 
 def main():
     """主函数 - 纯配置模式"""
@@ -1694,20 +1831,13 @@ def main():
         args = parser.parse_args()
 
         # 加载配置文件
-        config = load_config()
+        config = load_config(args.config)
         if not config:
-            logger.error("无法加载配置文件,请检查config.yaml是否存在")
+            if args.config:
+                logger.error(f"无法加载配置文件 {args.config}: 请检查路径")
+            else:
+                logger.error("无法加载配置文件,请检查config.yaml是否存在")
             return 1
-
-        # 如果指定了配置文件,使用指定的配置
-        if args.config:
-            try:
-                with open(args.config, 'r', encoding='utf-8') as f:
-                    config = yaml.safe_load(f)
-                    logger.info(f"使用指定的配置文件: {args.config}")
-            except Exception as e:
-                logger.error(f"无法加载配置文件 {args.config}: {e}")
-                return 1
 
         # 从配置文件获取参数
         env_config = config.get('environment', {})
@@ -1716,7 +1846,7 @@ def main():
 
         # 检测 RASPA 版本
         raspa_version = env_config.get('raspa_version', 'raspa2').lower()
-        print(f"🔧 RASPA 版本: {raspa_version.upper()}")
+        print(f"\n步骤1：初始化设置 (RASPA版本: {raspa_version.upper()})")
 
         # RASPA3 JSON 目录（用于复制 force_field.json 和分子文件）
         json_dir = None
@@ -1822,37 +1952,92 @@ def main():
         if 'PYTHONPATH' in os.environ:
             del os.environ['PYTHONPATH']
 
+        print("\n步骤2：处理CSV文件")
         # 读取CSV文件中的框架名称
         framework_names = read_csv_data(csv_file, column_number)
         if not framework_names:
             logger.error("没有从CSV文件中读取到有效的框架名称")
             return 1
+        framework_names = [name for name in framework_names if str(name).strip()]
+        if not framework_names:
+            logger.error("CSV中没有有效框架名称")
+            return 1
 
-        # 显示配置摘要
+        print("\n步骤3：检查CIF文件")
+        framework_cif_paths = {}
+        missing_cifs = []
+        for framework in framework_names:
+            cif_path = find_cif_file(framework, cif_dir)
+            if cif_path:
+                framework_cif_paths[framework] = cif_path
+            else:
+                missing_cifs.append(framework)
+
+        if missing_cifs:
+            logger.warning(f"以下 {len(missing_cifs)} 个框架缺少CIF文件，将自动跳过：")
+            for i, missing in enumerate(missing_cifs[:10], 1):
+                logger.warning(f"  {i}. {missing}")
+            if len(missing_cifs) > 10:
+                logger.warning(f"  ... 及其他 {len(missing_cifs) - 10} 个")
+
+        framework_names = list(framework_cif_paths.keys())
+        if not framework_names:
+            logger.error("所有框架均缺少CIF文件，无法继续计算。")
+            return 1
+
+        # 计算组合数
+        combo_count = 1
+        if param_ranges:
+            for values in param_ranges.values():
+                combo_count *= len(values)
+        total_jobs_est = len(framework_names) * combo_count
+
+        output_base_dir = os.path.join(os.getcwd(), output_dir)
+        os.makedirs(output_base_dir, exist_ok=True)
+
+        print("\n步骤4：集群资源与并发设置")
+        cpu_cores = get_ht_cpu_cores(total_jobs_est, output_base_dir)
+        if cpu_cores <= 0:
+            print("❌ 无有效CPU核心数，任务未提交")
+            return 1
+
+        # 加载孔隙率数据(如果配置启用)
+        void_fraction_csv = None
+        use_void_csv = config.get('calculation', {}).get('use_void_csv', False)
+        void_csv_file = None
+        void_column = None
+        if use_void_csv:
+            void_csv_file = config.get('calculation', {}).get('void_csv_file', csv_file)
+            void_column = config.get('calculation', {}).get('void_column', 'VF')
+            void_fraction_csv = load_void_fraction_from_csv(void_csv_file, framework_col, void_column)
+
+        print("\n步骤5：simulation文件预览与任务简介")
         print("\n" + "="*60)
-        print("📋 参数筛选配置摘要")
+        print("📋 参数筛选任务简介")
         print("="*60)
         print(f"CSV文件: {csv_file}")
         print(f"框架列: {framework_col} (第{column_number}列)")
-        print(f"框架数量: {len(framework_names)}")
+        print(f"有效框架数量: {len(framework_names)}")
         print(f"CIF目录: {cif_dir}")
         print(f"模板文件: {template_path}")
         print(f"输出目录: {output_dir}")
+        print(f"CPU核心数: {cpu_cores}")
         print(f"作业系统: {job_system}")
+        print("提交方式: 高通量调度")
 
         if param_ranges:
             print(f"\n🔧 筛选参数:")
             for param, values in param_ranges.items():
                 print(f"  {param}: {values}")
-
-            # 计算组合数
-            combo_count = 1
-            for values in param_ranges.values():
-                combo_count *= len(values)
             print(f"\n📊 每个框架将生成 {combo_count} 种参数组合")
-            print(f"📊 总计将提交 {len(framework_names) * combo_count} 个作业")
+            print(f"📊 总计将提交 {total_jobs_est} 个作业")
         else:
             print(f"\n⚠️  未配置筛选参数,将使用模板默认值")
+
+        if use_void_csv:
+            print(f"\n📊 孔隙率CSV: {void_csv_file} (列: {void_column})")
+            if void_fraction_csv:
+                print(f"📊 已从CSV加载 {len(void_fraction_csv)} 个框架的孔隙率数据")
 
         print("="*60)
 
@@ -1868,123 +2053,212 @@ def main():
         try:
             import tempfile
             preview_fw = framework_names[0]
-            preview_cif = find_cif_file(preview_fw, cif_dir)
+            preview_cif = framework_cif_paths.get(preview_fw)
             preview_combo = next(iter(generate_parameter_combinations(param_ranges))) if param_ranges else {}
             sim_params = preview_combo.copy(); sim_params['framework'] = preview_fw
             with tempfile.TemporaryDirectory() as td:
-                if raspa_version == 'raspa3':
-                    # RASPA3: 预览 simulation.json
-                    preview_path = os.path.join(td, 'simulation.json')
-                    if preview_cif and create_simulation_json(template_path, sim_params, preview_cif, preview_path, config, None, mser_config):
-                        print("\n=== 示例 simulation.json 预览（首个框架 + 首个参数组合）===\n")
-                        try:
-                            with open(preview_path, 'r', encoding='utf-8') as pf:
-                                content = pf.read()
-                            print(content)
-                        except Exception:
-                            pass
-                else:
-                    # RASPA2: 预览 simulation.input
-                    preview_path = os.path.join(td, 'simulation.input')
-                    if preview_cif and create_simulation_input(template_path, sim_params, preview_cif, preview_path, config, None, mser_config):
-                        print("\n=== 示例 simulation.input 预览（首个框架 + 首个参数组合）===\n")
-                        try:
-                            with open(preview_path, 'r', encoding='utf-8') as pf:
-                                content = pf.read()
-                            # 打印前若干行，避免刷屏
-                            lines = content.splitlines()
-                            head = lines[:80]
-                            print("\n".join(head))
-                            if len(lines) > len(head):
-                                print("\n... (已截断预览，仅展示前80行) ...\n")
-                        except Exception:
-                            pass
+                with suppress_info_logs():
+                    if raspa_version == 'raspa3':
+                        # RASPA3: 预览 simulation.json
+                        preview_path = os.path.join(td, 'simulation.json')
+                        if preview_cif and create_simulation_json(template_path, sim_params, preview_cif, preview_path, config, None, mser_config):
+                            print("\n=== 示例 simulation.json 预览（首个框架 + 首个参数组合）===\n")
+                            try:
+                                with open(preview_path, 'r', encoding='utf-8') as pf:
+                                    content = pf.read()
+                                print(content)
+                            except Exception:
+                                pass
+                    else:
+                        # RASPA2: 预览 simulation.input
+                        preview_path = os.path.join(td, 'simulation.input')
+                        if preview_cif and create_simulation_input(template_path, sim_params, preview_cif, preview_path, config, None, mser_config):
+                            print("\n=== 示例 simulation.input 预览（首个框架 + 首个参数组合）===\n")
+                            try:
+                                with open(preview_path, 'r', encoding='utf-8') as pf:
+                                    content = pf.read()
+                                # 打印前若干行，避免刷屏
+                                lines = content.splitlines()
+                                head = lines[:80]
+                                print("\n".join(head))
+                                if len(lines) > len(head):
+                                    print("\n... (已截断预览，仅展示前80行) ...\n")
+                            except Exception:
+                                pass
         except Exception:
             # 预览失败不影响流程
             pass
 
         # 最终仅保留一次“是否提交作业？”确认
-        total_jobs_est = len(framework_names) * (combo_count if param_ranges else 1)
         if not ask_yes_no(f"确认继续提交作业? 预计数量: {total_jobs_est}", default_yes=True):
             print("已取消")
             return 0
 
-        # 加载孔隙率数据(如果配置启用)
-        void_fraction_csv = None
-        use_void_csv = config.get('calculation', {}).get('use_void_csv', False)
-        if use_void_csv:
-            void_csv_file = config.get('calculation', {}).get('void_csv_file', csv_file)
-            void_column = config.get('calculation', {}).get('void_column', 'VF')
-            void_fraction_csv = load_void_fraction_from_csv(void_csv_file, framework_col, void_column)
-            if void_fraction_csv:
-                print(f"\n📊 已从CSV加载 {len(void_fraction_csv)} 个框架的孔隙率数据")
+        print("\n步骤6：生成VF和UnitCells")
+        all_tasks = []
+        pbar = tqdm(total=total_jobs_est, desc="生成进度", unit="任务")
 
-        # 处理每个框架
-        all_jobs = []
-        for i, framework in enumerate(framework_names, 1):
-            print(f"\n[{i}/{len(framework_names)}] 处理框架: {framework}")
+        def progress_update():
+            pbar.update(1)
 
-            # 查找CIF文件
-            cif_path = find_cif_file(framework, cif_dir)
-            if not cif_path:
-                logger.error(f"  ✗ 未找到框架 {framework} 的CIF文件,跳过")
-                continue
+        try:
+            with suppress_info_logs():
+                for framework in framework_names:
+                    cif_path = framework_cif_paths.get(framework)
+                    if not cif_path:
+                        continue
 
-            logger.info(f"  ✓ CIF文件: {cif_path}")
-
-            # 根据 RASPA 版本选择处理函数
-            if raspa_version == 'raspa3':
-                # RASPA3: 使用 JSON 格式
-                jobs = process_parameter_combinations_raspa3(
-                    framework=framework,
-                    cif_path=cif_path,
-                    param_ranges=param_ranges,
-                    template_path=template_path,
-                    output_dir=output_dir,
-                    job_system=job_system,
-                    config=config,
-                    void_fraction_csv=void_fraction_csv,
-                    json_dir=json_dir,
-                    mser_config=mser_config,
-                    result_cache=result_cache
-                )
-            else:
-                # RASPA2: 使用文本格式
-                jobs = process_parameter_combinations(
-                    framework=framework,
-                    cif_path=cif_path,
-                    param_ranges=param_ranges,
-                    template_path=template_path,
-                    output_dir=output_dir,
-                    job_system=job_system,
-                    config=config,
-                    void_fraction_csv=void_fraction_csv,
-                    mser_config=mser_config,
-                    result_cache=result_cache
-                )
-            all_jobs.extend(jobs)
-
-            # 将作业信息写入文件
-            jobs_file = os.path.join(os.getcwd(), output_dir, framework, "jobs.json")
-            with open(jobs_file, 'w') as f:
-                json.dump(jobs, f, indent=2)
-
-            logger.info(f"  ✓ 框架 {framework} 的作业信息已保存到: {jobs_file}")
+                    # 根据 RASPA 版本选择处理函数
+                    if raspa_version == 'raspa3':
+                        # RASPA3: 使用 JSON 格式
+                        task_dirs = process_parameter_combinations_raspa3(
+                            framework=framework,
+                            cif_path=cif_path,
+                            param_ranges=param_ranges,
+                            template_path=template_path,
+                            output_dir=output_dir,
+                            job_system=job_system,
+                            config=config,
+                            void_fraction_csv=void_fraction_csv,
+                            json_dir=json_dir,
+                            mser_config=mser_config,
+                            result_cache=result_cache,
+                            progress=progress_update,
+                        )
+                    else:
+                        # RASPA2: 使用文本格式
+                        task_dirs = process_parameter_combinations(
+                            framework=framework,
+                            cif_path=cif_path,
+                            param_ranges=param_ranges,
+                            template_path=template_path,
+                            output_dir=output_dir,
+                            job_system=job_system,
+                            config=config,
+                            void_fraction_csv=void_fraction_csv,
+                            mser_config=mser_config,
+                            result_cache=result_cache,
+                            progress=progress_update,
+                        )
+                    all_tasks.extend(task_dirs)
+        finally:
+            pbar.close()
 
         # 保存缓存
         if use_cif_cache and result_cache is not None:
             save_cache(result_cache, cif_cache_path)
 
-        # 总结
+        # 总结 & 高通量提交
         print("\n" + "="*60)
-        if all_jobs:
-            print(f"✅ 成功提交了 {len(all_jobs)} 个作业")
-            print(f"📁 结果将保存在: {output_dir}/")
+        if not all_tasks:
+            print("❌ 没有成功生成任何任务")
             print("="*60)
-            return 0
-        else:
-            print("❌ 没有成功提交任何作业")
-            print("="*60)
+            return 1
+
+        output_base_dir = os.path.join(os.getcwd(), output_dir)
+        queue_dir = os.path.join(output_base_dir, ".raspa_queue")
+        if os.path.isdir(queue_dir):
+            shutil.rmtree(queue_dir)
+        os.makedirs(queue_dir, exist_ok=True)
+        tasks_list_path = os.path.join(queue_dir, "tasks.list")
+        with open(tasks_list_path, "w", encoding="utf-8") as f:
+            for task_dir in all_tasks:
+                rel_path = os.path.relpath(task_dir, output_base_dir)
+                f.write(rel_path + "\n")
+
+        # 保存配置快照
+        try:
+            snap_path = os.path.join(output_base_dir, ".raspa_config.yaml")
+            if common_config.HAS_YAML:
+                with open(snap_path, "w", encoding="utf-8") as fh:
+                    yaml.safe_dump(config or {}, fh, allow_unicode=True)
+            else:
+                with open(snap_path, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(config or {}, ensure_ascii=False, indent=2))
+            logger.info(f"配置快照已保存: {snap_path}")
+        except Exception as e:
+            logger.warning(f"保存配置快照失败: {e}")
+
+        actual_cores = min(cpu_cores, len(all_tasks))
+        if actual_cores <= 0:
+            print("❌ 无有效CPU核心数，任务未提交")
+            return 1
+
+        print(f"✅ 已生成 {len(all_tasks)} 个任务")
+        print(f"📁 结果目录: {output_dir}/")
+        if actual_cores < cpu_cores:
+            print(f"提示: 实际任务数少于CPU设置，提交 worker 数量调整为 {actual_cores}")
+        print("🚀 提交方式: 高通量调度")
+        print("="*60)
+
+        print("\n步骤7：提交任务")
+        try:
+            tool_dir = os.path.expanduser("~/raspa2-calc/.raspa_tools")
+            tasksrun_script = os.path.join(tool_dir, "job_templates", "tasksrun.sh")
+
+            if not os.path.exists(tasksrun_script):
+                logger.error(f"找不到任务提交脚本: {tasksrun_script}")
+                logger.info(f"请手动运行以下命令提交任务: bash {tasksrun_script} {actual_cores}")
+                return 1
+
+            env = os.environ.copy()
+            env["RASPA_WORK_DIR"] = os.getcwd()
+            env["RASPA_OUTPUT_DIR"] = output_dir
+            env["RASPA_SUBDIR"] = output_dir
+            env["RASPA_VERSION"] = raspa_version
+
+            raspa_dir = env_config.get("raspa_dir")
+            if raspa_dir and "RASPA_DIR" not in env:
+                env["RASPA_DIR"] = raspa_dir
+
+            print(f"将提交 {actual_cores} 个并行作业")
+            with subprocess.Popen(
+                [tasksrun_script, str(actual_cores)],
+                cwd=os.getcwd(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+            ) as proc:
+                submit_verbose = os.environ.get("RASPA_SUBMIT_VERBOSE", "").strip().lower() in ("1", "true", "yes", "y", "on")
+                submit_every = _positive_int(os.environ.get("RASPA_SUBMIT_LOG_EVERY"), 10)
+                submit_every = min(submit_every, max(1, actual_cores))
+                if not submit_verbose and submit_every > 1:
+                    print(f"提交中... 每 {submit_every} 个任务提示一次 (完整输出可设 RASPA_SUBMIT_VERBOSE=1)")
+
+                submitted = 0
+                for line in proc.stdout:
+                    line_strip = line.strip()
+                    if not line_strip:
+                        continue
+                    if submit_verbose:
+                        print(line_strip)
+                        continue
+
+                    idx = _parse_submit_index(line_strip)
+                    if idx is not None:
+                        submitted = max(submitted, idx)
+                        if submitted == 1 or submitted == actual_cores or submitted % submit_every == 0:
+                            print(f"正在提交第{submitted}个任务…")
+                        continue
+
+                    if _should_print_submit_line(line_strip):
+                        print(line_strip)
+                ret = proc.wait()
+
+            if ret == 0:
+                logger.info(f"✅ 任务提交完成，共提交 {actual_cores} 个任务")
+                print(f"总计提交 {actual_cores} 个任务")
+                return 0
+
+            logger.error("任务提交失败")
+            logger.info(f"请手动运行以下命令提交任务: bash {tasksrun_script} {actual_cores}")
+            return 1
+
+        except Exception as e:
+            logger.error(f"提交任务时出错: {e}")
+            logger.info(f"请手动运行以下命令提交任务: bash {tasksrun_script} {actual_cores}")
             return 1
 
     except KeyboardInterrupt:

@@ -181,6 +181,35 @@ def _get_adsorption(raspa, ads_type: str, unit: str):
         raise ValueError("ads_type must be 'absolute' or 'excess'")
 
 
+_STP_CM3_PER_MOL = 22414.0
+
+
+def _has_numeric_adsorption(ads_map: dict) -> bool:
+    if not ads_map:
+        return False
+    for v in ads_map.values():
+        if _to_float(v) is not None:
+            return True
+    return False
+
+
+def _convert_from_molkg(molkg_map: dict, target_unit: str, framework_density: float | None):
+    if target_unit == 'cm^3/g':
+        factor = _STP_CM3_PER_MOL / 1000.0
+    elif target_unit == 'cm^3/cm^3':
+        if framework_density is None:
+            return {}
+        factor = (_STP_CM3_PER_MOL / 1e6) * framework_density
+    else:
+        return {}
+
+    converted = {}
+    for comp, val in molkg_map.items():
+        v = _to_float(val)
+        converted[comp] = (v * factor) if v is not None else None
+    return converted
+
+
 def collect_isotherm_points(base_dir: str,
                             component: str | None,
                             ads_type: str,
@@ -216,6 +245,16 @@ def collect_isotherm_points(base_dir: str,
             p = _convert_pressure(p_pa, pressure_unit)
 
             ads_map = _get_adsorption(raspa, ads_type, unit)
+            if not _has_numeric_adsorption(ads_map) and unit in {'cm^3/g', 'cm^3/cm^3'}:
+                molkg_map = _get_adsorption(raspa, ads_type, 'mol/kg')
+                if _has_numeric_adsorption(molkg_map):
+                    density = None
+                    if unit == 'cm^3/cm^3' and hasattr(raspa, 'get_Framework_density'):
+                        try:
+                            density = _to_float(raspa.get_Framework_density())
+                        except Exception:
+                            density = None
+                    ads_map = _convert_from_molkg(molkg_map, unit, density)
             if not ads_map:
                 continue
 

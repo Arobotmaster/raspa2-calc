@@ -30,8 +30,9 @@ except ImportError:
     print("请运行: pip install tqdm pandas")
     sys.exit(1)
 
-_MC_DIR_NAME_RE = re.compile(r'^mc(\d+)(?:__(done|failed|running))?$')
+_MC_DIR_NAME_RE = re.compile(r'^mc(\d+)(?:__(done|failed|running))?(?:__.+)?$')
 _MC_NUMBER_RE = re.compile(r'mc(\d+)')
+_PYMSER_STAT_KEY_RE = re.compile(r'^(.+?)_\[(.+)\]$')
 _UNSET = object()
 
 
@@ -61,6 +62,33 @@ def setup_logging(log_file="raspa3_data_extraction.log"):
 
 
 logger = setup_logging()
+
+
+def _sanitize_unit_for_key(unit):
+    return (
+        unit.replace("/", "_per_")
+        .replace("^", "")
+        .replace("(", "")
+        .replace(")", "")
+        .replace(" ", "")
+    )
+
+
+def _safe_float(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and value != value:
+            return None
+        return float(value)
+    if isinstance(value, str):
+        if value.strip().lower() in ("-nan", "nan"):
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
 
 
 class RASPA3_Output_Data:
@@ -409,6 +437,36 @@ class RASPA3_Output_Data:
 
         return result
 
+    def get_adsorption_heat_infinite_dilution(self, temperature=None):
+        """
+        获取无限稀释吸附热 [kJ/mol]
+
+        Returns:
+            dict: {组分名: 吸附热值}
+        """
+        result = {}
+        components = self.get_components()
+        if temperature is None:
+            temperature = self.get_temperature()
+
+        for component in components:
+            comp_pattern = re.escape(component)
+            energy_pattern = (
+                r'Framework-molecule\s+energy/kB\s+\d+-\d+\s+[\(\[]' + comp_pattern +
+                r'[\)\]]:[\s\S]+?Average\s+([\d.eE+-]+|\-nan)\s+\+/-\s+[\d.eE+-]+\s+\[K\]'
+            )
+            energy_match = re.search(energy_pattern, self.output_string)
+            if energy_match and energy_match.group(1) != "-nan" and temperature is not None:
+                try:
+                    energy_value = float(energy_match.group(1))
+                    result[component] = (energy_value - temperature) * 8.314462618 / 1000
+                except ValueError:
+                    result[component] = None
+            else:
+                result[component] = None
+
+        return result
+
     def get_henry_coefficient(self):
         """
         获取亨利系数 [mol/kg/Pa]
@@ -477,6 +535,56 @@ def extract_framework_name_from_simulation_json(mc_dir):
     except Exception as e:
         logger.debug(f"从 simulation.json 提取框架名失败: {e}")
         return None
+
+
+def extract_pymser_average_adsorption(mc_dir):
+    """
+    从 stats.json 中提取 pyMSER 计算出的平均吸附量与不确定度
+
+    Returns:
+        dict: {列名: 平均吸附量/不确定度}
+    """
+    stats_path = os.path.join(mc_dir, 'stats.json')
+    if not os.path.exists(stats_path):
+        return {}
+
+    try:
+        with open(stats_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.debug(f"读取 stats.json 失败: {e}")
+        return {}
+
+    stats = data.get('stats', {})
+    if not isinstance(stats, dict):
+        return {}
+
+    result = {}
+    for label, payload in stats.items():
+        if not isinstance(payload, dict):
+            continue
+        avg_val = _safe_float(payload.get('average'))
+        unc_val = _safe_float(payload.get('uncertainty'))
+
+        comp = label.strip() if isinstance(label, str) else str(label)
+        unit = ''
+        match = _PYMSER_STAT_KEY_RE.match(comp)
+        if match:
+            comp = match.group(1).strip()
+            unit = match.group(2).strip()
+
+        if unit:
+            unit_key = _sanitize_unit_for_key(unit)
+            avg_key = f'{comp}_pymser_average_{unit_key}'
+            unc_key = f'{comp}_pymser_uncertainty_{unit_key}'
+        else:
+            avg_key = f'{comp}_pymser_average'
+            unc_key = f'{comp}_pymser_uncertainty'
+
+        result[avg_key] = avg_val
+        result[unc_key] = unc_val
+
+    return result
 
 
 def find_output_file_in_mc_dir(mc_dir):
@@ -700,18 +808,6 @@ def process_output_file(file_path, mc_number, selected_items, selected_units=Non
             result['warnings'].append('not_finished')
 
         # 根据选择的项目提取数据
-        if 'pressure' in selected_items:
-            result['pressure'] = raspa_data.get_pressure()
-
-        if 'temperature' in selected_items:
-            result['temperature'] = raspa_data.get_temperature()
-
-        if 'He_void_fraction' in selected_items:
-            result['He_void_fraction'] = raspa_data.get_He_void_fraction()
-
-        if 'Framework_density' in selected_items:
-            result['Framework_density'] = raspa_data.get_Framework_density()
-
         if 'absolute_adsorption' in selected_items:
             unit = (selected_units or {}).get('absolute_adsorption', 'mol/kg')
             data = raspa_data.get_absolute_adsorption(unit)
@@ -731,6 +827,11 @@ def process_output_file(file_path, mc_number, selected_items, selected_units=Non
             for comp, value in data.items():
                 result[f'{comp}_adsorption_heat'] = value
 
+        if 'adsorption_heat_infinite_dilution' in selected_items:
+            data = raspa_data.get_adsorption_heat_infinite_dilution()
+            for comp, value in data.items():
+                result[f'{comp}_adsorption_heat_infinite_dilution'] = value
+
         if 'henry_coefficient' in selected_items:
             data = raspa_data.get_henry_coefficient()
             for comp, value in data.items():
@@ -740,6 +841,11 @@ def process_output_file(file_path, mc_number, selected_items, selected_units=Non
             data = raspa_data.get_rosenbluth_weight()
             for comp, value in data.items():
                 result[f'{comp}_rosenbluth_weight'] = value
+
+        if 'pymser_average_adsorption' in selected_items:
+            data = extract_pymser_average_adsorption(mc_dir)
+            for key, value in data.items():
+                result[key] = value
 
         return result
 
@@ -1081,15 +1187,16 @@ def save_results_to_file(results, output_file='raspa3_results.xlsx', format_type
         # 重新排列列顺序
         columns = ['File Path', 'Framework Name', 'Warnings']
 
-        # 基本参数列
-        basic_columns = ['pressure', 'temperature', 'He_void_fraction', 'Framework_density']
-        for col in basic_columns:
-            if col in df.columns:
-                columns.append(col)
-
         # 吸附量列
         adsorption_columns = [col for col in df.columns if '_absolute_' in col or '_excess_' in col]
         columns.extend(sorted(adsorption_columns))
+
+        # pyMSER 平均吸附量列
+        pymser_columns = [
+            col for col in df.columns
+            if 'pymser_average' in col or 'pymser_uncertainty' in col
+        ]
+        columns.extend(sorted(pymser_columns))
 
         # 吸附热和亨利系数列
         other_columns = [col for col in df.columns if '_adsorption_heat' in col or '_henry_coefficient' in col or '_rosenbluth_weight' in col]
@@ -1132,28 +1239,26 @@ def main():
 
     # 选择输出格式
     print("\n选择输出格式:")
-    print("1. Excel格式 (.xlsx)")
-    print("2. CSV格式 (.csv)")
-    format_choice = input("请选择输出格式 (1/2, 默认为Excel): ").strip()
+    print("1. CSV格式 (.csv)")
+    print("2. Excel格式 (.xlsx)")
+    format_choice = input("请选择输出格式 (1/2, 默认为csv): ").strip()
 
     if format_choice == '2':
+        output_format = 'xlsx'
+        default_filename = 'raspa3_results.xlsx'
+    else:
         output_format = 'csv'
         default_filename = 'raspa3_results.csv'
-    else:
-        output_format = 'excel'
-        default_filename = 'raspa3_results.xlsx'
 
     # 选择要提取的数据项
     options_dict = {
-        '1': 'pressure',
-        '2': 'temperature',
-        '3': 'He_void_fraction',
-        '4': 'Framework_density',
-        '5': 'absolute_adsorption',
-        '6': 'excess_adsorption',
-        '7': 'adsorption_heat',
-        '8': 'henry_coefficient',
-        '9': 'rosenbluth_weight'
+        '1': 'absolute_adsorption',
+        '2': 'excess_adsorption',
+        '3': 'adsorption_heat',
+        '4': 'adsorption_heat_infinite_dilution',
+        '5': 'henry_coefficient',
+        '6': 'rosenbluth_weight',
+        '7': 'pymser_average_adsorption',
     }
 
     # 默认选择所有项
@@ -1164,15 +1269,13 @@ def main():
 
     if custom_select == 'y':
         print("\n请选择要提取的数据项（输入对应的数字，用逗号分隔）：")
-        print("1. Pressure (压力)")
-        print("2. Temperature (温度)")
-        print("3. He Void Fraction (氦孔隙率)")
-        print("4. Framework Density (框架密度)")
-        print("5. Absolute Adsorption (绝对吸附量)")
-        print("6. Excess Adsorption (超额吸附量)")
-        print("7. Adsorption Heat (吸附热)")
-        print("8. Henry Coefficient (亨利系数)")
-        print("9. Rosenbluth Weight (Rosenbluth权重)")
+        print("1. Absolute Adsorption (绝对吸附量)")
+        print("2. Excess Adsorption (超额吸附量)")
+        print("3. Adsorption Heat (吸附热)")
+        print("4. Adsorption Heat at Infinite Dilution (无限稀释吸附热)")
+        print("5. Henry Coefficient (亨利系数)")
+        print("6. Rosenbluth Weight (Rosenbluth权重)")
+        print("7. pyMSER Average Adsorption (pyMSER平均吸附量)")
 
         selected_numbers = input("您的选择：").strip()
 
@@ -1187,7 +1290,7 @@ def main():
     for item in selected_items:
         print(f"- {item}")
 
-    # 选择单位
+    # 选择单位（简化版 - 两种吸附量使用相同单位）
     selected_units = {}
     if 'absolute_adsorption' in selected_items or 'excess_adsorption' in selected_items:
         unit_options = {
@@ -1197,18 +1300,17 @@ def main():
             '4': 'cm^3/g',
             '5': 'cm^3/cm^3',
         }
-
+        
+        print("\n吸附量单位选择:")
+        print("1. molecules/cell  2. mol/kg  3. mg/g  4. cm^3/g  5. cm^3/cm^3")
+        choice = input("请选择吸附量单位 (默认: 2 mol/kg): ").strip()
+        common_unit = unit_options.get(choice, 'mol/kg')
+        
+        # 为所有选中的吸附量类型设置相同单位
         if 'absolute_adsorption' in selected_items:
-            print("\n绝对吸附量单位选择:")
-            print("1. molecules/cell  2. mol/kg  3. mg/g  4. cm^3/g  5. cm^3/cm^3")
-            choice = input("请选择绝对吸附量单位 (默认: 2): ").strip()
-            selected_units['absolute_adsorption'] = unit_options.get(choice, 'mol/kg')
-
+            selected_units['absolute_adsorption'] = common_unit
         if 'excess_adsorption' in selected_items:
-            print("\n超额吸附量单位选择:")
-            print("1. molecules/cell  2. mol/kg  3. mg/g  4. cm^3/g  5. cm^3/cm^3")
-            choice = input("请选择超额吸附量单位 (默认: 2): ").strip()
-            selected_units['excess_adsorption'] = unit_options.get(choice, 'mol/kg')
+            selected_units['excess_adsorption'] = common_unit
 
     # 设置输出文件名
     output_file = input(f"\n请输入输出文件名 (默认为 '{default_filename}'): ").strip()
