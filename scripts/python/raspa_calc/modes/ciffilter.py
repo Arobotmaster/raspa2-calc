@@ -17,7 +17,7 @@ def run_ciffilter_tool():
                 sys.path.insert(0, path)
 
         try:
-            from ciffilter import MOFFilterTool
+            from ..tools.ciffilter import MOFFilterTool
         except ImportError as e:
             print(f"错误: 无法导入 CSV/CIF 筛选工具: {e}")
             print(f"请确认 ciffilter.py 位于 {tool_dir}，并已安装 pandas 等依赖")

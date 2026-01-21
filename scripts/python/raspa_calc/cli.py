@@ -3,12 +3,12 @@ import sys
 from . import config as config_module
 from . import env_check
 from . import menu
-from .commands import auto as auto_cmd
-from .commands import ciffilter as ciffilter_cmd
-from .commands import data_extractor as data_extractor_cmd
-from .commands import isotherm_plotter as isotherm_plotter_cmd
-from .commands import task_runner as task_runner_cmd
-from .commands import warning_processor as warning_processor_cmd
+from .modes import parameter_screening as parameter_screening_cmd
+from .modes import ciffilter as ciffilter_cmd
+from .modes import data_extractor as data_extractor_cmd
+from .modes import isotherm_plotter as isotherm_plotter_cmd
+from .modes import high_throughput as high_throughput_cmd
+from .modes import warning_processor as warning_processor_cmd
 
 
 def main():
@@ -67,9 +67,9 @@ def main():
         choice = input("请选择运行模式 (1/2/3/4/5/6): ").strip()
 
         if choice == "1":
-            auto_cmd.run_auto_sh()
+            parameter_screening_cmd.run_parameter_screening()
         elif choice == "2":
-            task_runner_cmd.run_task_runner()
+            high_throughput_cmd.run_high_throughput()
         elif choice == "3":
             data_extractor_cmd.run_data_extractor()
         elif choice == "4":

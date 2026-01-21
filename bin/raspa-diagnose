@@ -83,12 +83,32 @@ command -v raspa-calc >/dev/null 2>&1 && echo "✅ raspa-calc 命令可用" || e
 command -v raspa-status >/dev/null 2>&1 && echo "✅ raspa-status 命令可用" || echo "❌ raspa-status 命令不可用"
 echo
 
-# 找到包含 job_templates 的根目录（用于诊断脚本是否齐全）
-BASE_DIR="$TARGET_DIR"
-while [ "$BASE_DIR" != "/" ] && [ ! -d "$BASE_DIR/job_templates" ]; do
-  BASE_DIR="$(dirname "$BASE_DIR")"
-done
-[ -d "$BASE_DIR/job_templates" ] || BASE_DIR=""
+# 找到工作根目录（用于诊断脚本是否齐全）
+has_work_marker() {
+  local dir="$1"
+  if [ -d "$dir/job_templates" ]; then
+    return 0
+  fi
+  if [ -d "$dir/.raspa_queue" ] || [ -f "$dir/.raspa_worker_limit" ] || [ -f "$dir/.raspa_config.yaml" ]; then
+    return 0
+  fi
+  local has_tasks
+  has_tasks=$(find "$dir" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -print -quit 2>/dev/null)
+  [ -n "$has_tasks" ]
+}
+
+BASE_DIR=""
+if [ -n "${RASPA_WORK_DIR:-}" ] && [ -d "$RASPA_WORK_DIR" ]; then
+  BASE_DIR="$(cd "$RASPA_WORK_DIR" && pwd -P)"
+else
+  BASE_DIR="$TARGET_DIR"
+  while [ "$BASE_DIR" != "/" ] && ! has_work_marker "$BASE_DIR"; do
+    BASE_DIR="$(dirname "$BASE_DIR")"
+  done
+  if ! has_work_marker "$BASE_DIR"; then
+    BASE_DIR=""
+  fi
+fi
 
 # 统计任务
 echo "🔍 检查任务文件..."
@@ -201,29 +221,39 @@ else
 fi
 echo
 
-# 检查脚本文件（在包含 job_templates 的根目录）
+# 检查脚本文件（优先工作目录，其次工具目录）
 echo "🔍 检查脚本文件..."
-if [ -n "$BASE_DIR" ]; then
+SCRIPT_BASE="$BASE_DIR"
+if [ -z "$SCRIPT_BASE" ] || [ ! -d "$SCRIPT_BASE/job_templates" ]; then
+  TOOL_DIR="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}"
+  if [ -d "$TOOL_DIR/job_templates" ]; then
+    SCRIPT_BASE="$TOOL_DIR"
+  fi
+fi
+if [ -n "$SCRIPT_BASE" ] && [ -d "$SCRIPT_BASE/job_templates" ]; then
+  if [ "$SCRIPT_BASE" != "$BASE_DIR" ]; then
+    echo "ℹ️  使用工具目录检查脚本: $SCRIPT_BASE"
+  fi
   for script in job_templates/tasksrun.sh job_templates/runjobs.sh; do
-    if [ -f "$BASE_DIR/$script" ]; then
+    if [ -f "$SCRIPT_BASE/$script" ]; then
       echo "✅ ${script} 存在"
       if [ "$script" = "job_templates/runjobs.sh" ]; then
         # 显示关键环境变量读取，而不是旧版 shell 变量（新版依赖环境变量）
-        if grep -q "RASPA_DIR" "$BASE_DIR/$script"; then
+        if grep -q "RASPA_DIR" "$SCRIPT_BASE/$script"; then
           echo "   ✅ 脚本使用环境变量驱动 (RASPA_DIR/RASPA_SUBDIR 等)"
         fi
       fi
       if [ "$script" = "job_templates/tasksrun.sh" ]; then
-        if grep -q "延迟" "$BASE_DIR/$script" 2>/dev/null; then
+        if grep -q "延迟" "$SCRIPT_BASE/$script" 2>/dev/null; then
           echo "   ✅ 含延迟优化"
         fi
       fi
     else
-      echo "❌ ${script} 不存在 (根目录: $BASE_DIR)"
+      echo "❌ ${script} 不存在 (根目录: $SCRIPT_BASE)"
     fi
   done
 else
-  echo "⚠️  未找到包含 job_templates 的根目录，略过脚本完整性检查"
+  echo "⚠️  未找到 job_templates 目录，略过脚本完整性检查"
 fi
 echo
 

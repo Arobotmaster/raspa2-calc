@@ -1,12 +1,28 @@
 prepare_target_dir() {
-  # 尝试在当前路径向上寻找 job_templates 目录
-  BASE_DIR="$ABS_PWD"
-  while [ "$BASE_DIR" != "/" ] && [ ! -d "$BASE_DIR/job_templates" ]; do
-    BASE_DIR="$(dirname "$BASE_DIR")"
-  done
-  if [ ! -d "$BASE_DIR/job_templates" ]; then
-    echo "错误: 未在当前路径及其父目录中找到 job_templates，请在项目工作目录下执行" >&2
-    exit 1
+  has_work_marker() {
+    local dir="$1"
+    if [ -d "$dir/job_templates" ]; then
+      return 0
+    fi
+    if [ -d "$dir/.raspa_queue" ] || [ -f "$dir/.raspa_worker_limit" ] || [ -f "$dir/.raspa_config.yaml" ]; then
+      return 0
+    fi
+    local has_tasks
+    has_tasks=$(find "$dir" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -print -quit 2>/dev/null)
+    [ -n "$has_tasks" ]
+  }
+
+  # 尝试在当前路径向上寻找工作根目录（job_templates 或任务标记）
+  if [ -n "${RASPA_WORK_DIR:-}" ] && [ -d "$RASPA_WORK_DIR" ]; then
+    BASE_DIR="$(cd "$RASPA_WORK_DIR" && pwd -P)"
+  else
+    BASE_DIR="$ABS_PWD"
+    while [ "$BASE_DIR" != "/" ] && ! has_work_marker "$BASE_DIR"; do
+      BASE_DIR="$(dirname "$BASE_DIR")"
+    done
+    if ! has_work_marker "$BASE_DIR"; then
+      BASE_DIR="$ABS_PWD"
+    fi
   fi
 
   # 计算当前目录相对于 BASE_DIR 的子路径

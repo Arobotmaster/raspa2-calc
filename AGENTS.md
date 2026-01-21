@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `bin/`: shims (`raspa-calc`, `raspa-diagnose`, `raspa-status`, `raspa-scale`, `raspa-plot-isotherm`) forwarding to Python; keep names stable.
-- `scripts/python/`: main logic (`raspa_calc.py` thin entry + `raspa_calc/` package; `task_runner.py` thin entry + `task_runner/` modules; `parameter_screening.py` for batch runs; `data_extractor*.py`, `warning_processor.py`, `isotherm_plotter.py`; `raspa_calc/algorithms/` for auto_mser/calculate_params/raspa3_generator/cluster_info).
+- `scripts/python/`: main logic (`raspa_calc.py` thin entry + `raspa_calc/` package with `modes/`, `common/`, `task_runner/`; `task_runner.py` thin entry + `task_runner/` shim; `parameter_screening.py` for batch runs; `data_extractor*.py`, `warning_processor.py`, `isotherm_plotter.py`; `raspa_calc/algorithms/` for auto_mser/calculate_params/raspa3_generator/cluster_info).
 - `scripts/shell/`: helper workflows (`auto.sh`, `simulate_workflow.sh`, `recheck_failed.sh`) + `raspa_scale/` shared libs.
 - `job_templates/`: SLURM/PBS/local submission templates used by runners and `raspa-scale`; keep placeholder vars intact.
 - `config.yaml` and `config/raspa3/`: runtime defaults and sample RASPA3 JSON; `raspa3json/` packaged templates; `raspa2-3/` converters; `figure/` docs assets.

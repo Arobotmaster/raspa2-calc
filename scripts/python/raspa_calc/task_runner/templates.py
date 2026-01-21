@@ -15,35 +15,7 @@ def update_all_files(topdir, total_tasks, subdir, cpu_cores):
         logger.info(f"工作目录: {topdir}")
         logger.info(f"RASPA 版本: {raspa_version.upper()}")
 
-        job_templates_dir = os.path.join(topdir, "job_templates")
-        os.makedirs(job_templates_dir, exist_ok=True)
-
-        template_files = ["job_submit_ht.sh", "job_submit.sh", "tasksrun.sh", "pbs.sh", "sbatch.sh", "local.sh"]
-
-        if raspa_version == "raspa3":
-            template_files.append("runjobs_raspa3.sh")
-        else:
-            template_files.append("runjobs.sh")
-
-        logger.info(f"准备复制 {len(template_files)} 个模板文件到 {job_templates_dir}")
-        for file in template_files:
-            src = os.path.join(tool_dir, "job_templates", file)
-            dst = os.path.join(job_templates_dir, file)
-
-            if file == "runjobs_raspa3.sh":
-                dst = os.path.join(job_templates_dir, "runjobs.sh")
-                logger.info(f"复制 {file} -> runjobs.sh (RASPA3模式)")
-            else:
-                logger.info(f"复制 {file}: {src} -> {dst}")
-
-            if os.path.exists(src):
-                shutil.copy2(src, dst)
-                os.chmod(dst, 0o755)
-                logger.info(f"已复制并设置权限: {os.path.basename(dst)}")
-            else:
-                logger.warning(f"Warning: Template file {file} not found in installation directory")
-
-        logger.info("模板脚本已复制到工作目录，运行时将通过环境变量注入参数，无需额外重写。")
+        logger.info("模板脚本将直接从工具目录使用，不再复制到工作目录。")
 
         try:
             queue_path = os.path.join(topdir, subdir, ".raspa_task_queue")

@@ -47,6 +47,12 @@
 
 ### 4.1 `job_templates/tasksrun.sh`
 
+脚本位置约定（新版）：
+
+- 提交脚本默认在 `RASPA_TOOL_DIR/job_templates`（未设置时为 `~/raspa2-calc/.raspa_tools/job_templates`）。
+- 不再复制 `job_templates` 到工作目录；任务目录仅保存队列与 `mc*` 任务目录。
+- `tasksrun.sh` 会把 `RASPA_TOOL_DIR` 传入作业环境，供提交脚本/worker 定位 `runjobs*.sh`。
+
 主要做了三件事：
 
 1) **检测调度器是否为 `CR_CORE`**
@@ -68,6 +74,7 @@
 
 新增对 `RASPA_WORKER_IDS` 的解析：
 
+- **脚本来源**：优先从 `RASPA_TOOL_DIR/job_templates` 读取 `runjobs.sh` / `runjobs_raspa3.sh`，仅在工具目录不可用时回退到工作目录同名脚本。
 - **单 worker**：沿用 `srun --ntasks=1 --cpus-per-task=1` 启动 1 个 `runjobs.sh`
 - **多 worker**：在同一个 batch step 里后台启动多个 `runjobs.sh` 并 `wait`
   - 这里刻意 **不使用多个 `srun` step**，因为在 `CR_CORE` 下多个 step 可能会按 core 串行分配资源，导致同一作业内无法并发跑满超线程
@@ -105,6 +112,23 @@ scontrol show job <jobid> | egrep 'ReqTRES|AllocTRES|NumCPUs|NodeList'
 ## 7. 高通量模式任务分配逻辑（raspa-calc 高通量）
 
 这一部分解释“高通量模式到底如何给每个节点分配任务”，以及日志里“节点计划/worker/job”的含义。
+
+### 7.0 提交/分配/排队流程图（通用）
+
+```
+raspa-calc / parameter_screening
+  -> RASPA_TOOL_DIR/job_templates/tasksrun.sh
+     - 检测调度系统: SLURM / PBS / LOCAL
+     - 选择提交模式:
+         * SLURM array (无节点计划)
+         * loop (有节点计划或 PBS/LOCAL)
+     - 提交 job_submit.sh / pbs.sh / local.sh
+        (注入 RASPA_WORK_DIR / RASPA_SUBDIR / RASPA_WORKER_IDS ...)
+          -> RASPA_TOOL_DIR/job_templates/runjobs*.sh
+             - 读取 .raspa_queue/ (next_id/last_id/next.lock/retry.list/tasks.list)
+             - 认领任务: mcX -> mcX__running -> __done/__failed
+             - 并发上限: .raspa_worker_limit
+```
 
 ### 7.1 核心概念（非常重要）
 
@@ -146,7 +170,7 @@ scontrol show job <jobid> | egrep 'ReqTRES|AllocTRES|NumCPUs|NodeList'
 
 ### 7.3 提交层：节点计划如何变成实际的 sbatch 提交
 
-提交由 `job_templates/tasksrun.sh` 完成：
+提交由 `RASPA_TOOL_DIR/job_templates/tasksrun.sh` 完成（不再复制 `job_templates` 到工作目录）：
 
 - **如果存在节点计划**：必须逐个提交（loop），因为需要对每个 job 写 `#SBATCH --nodelist=<node>`；这时会自动禁用 job array。
 - **如果不存在节点计划**：可用 job array（由 SLURM 自己调度到各节点）。
@@ -169,14 +193,26 @@ scontrol show job <jobid> | egrep 'ReqTRES|AllocTRES|NumCPUs|NodeList'
 
 ### 7.4 任务层：mc* 目录到底怎么分给 worker（不是按节点硬分配）
 
-每个 worker 运行 `job_templates/runjobs.sh`（RASPA3 则用 `runjobs_raspa3.sh`），它们不会提前拿到“属于本节点的任务列表”，而是通过共享队列动态领取：
+每个 worker 运行 `RASPA_TOOL_DIR/job_templates/runjobs.sh`（RASPA3 则用 `runjobs_raspa3.sh`），它们不会提前拿到“属于本节点的任务列表”，而是通过共享队列动态领取：
 
 - 输出目录下有一个共享队列：`<output_dir>/.raspa_queue/`
   - `next_id` / `last_id`：指针队列（全局递增领取）
   - `retry.list`：失败或中断回滚的重试列表
   - `next.lock`：文件锁，保证多 worker 并发领取不冲突
+  - `tasks.list`：list-mode 任务清单（参数筛选/批量任务会生成）
 - worker 领取到一个 `mcX` 后，会把目录原子地重命名为 `mcX__running`，运行结束再改为 `__done` 或 `__failed`。
 
 因此：
 - “给节点分配任务”在实现上是 **给节点分配 worker 数量**；
 - 真正的 `mc*` 任务分配是 **worker 之间抢队列**，天然实现负载均衡。
+
+### 7.5 队列与提交文件速查
+
+- `<output_dir>/.raspa_queue/next_id`：下一个可领取的任务编号
+- `<output_dir>/.raspa_queue/last_id`：当前队列的最大编号
+- `<output_dir>/.raspa_queue/next.lock`：指针锁（避免并发冲突）
+- `<output_dir>/.raspa_queue/retry.list`：回滚/失败任务的重试队列
+- `<output_dir>/.raspa_queue/tasks.list`：list-mode 任务清单（按相对路径）
+- `<output_dir>/.raspa_worker_limit`：并发上限（raspa-scale 动态调整）
+- `<output_dir>/.raspa_jobs.list`：JobId 与 worker 编号映射（供扩缩容追踪）
+- `<output_dir>/mcX__running`：已被 worker 领取的任务目录（完成后变为 `__done`/`__failed`）

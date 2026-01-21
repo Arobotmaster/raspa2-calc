@@ -95,13 +95,30 @@ kill_list_jobs() {
 resolve_kill_target_dir() {
   local abs_pwd base_dir subdir target_dir has_tasks
   abs_pwd="$(pwd -P)"
-  base_dir="$abs_pwd"
-  while [ "$base_dir" != "/" ] && [ ! -d "$base_dir/job_templates" ]; do
-    base_dir="$(dirname "$base_dir")"
-  done
-  if [ ! -d "$base_dir/job_templates" ]; then
-    echo "$abs_pwd"
-    return
+  has_work_marker() {
+    local dir="$1"
+    if [ -d "$dir/job_templates" ]; then
+      return 0
+    fi
+    if [ -d "$dir/.raspa_queue" ] || [ -f "$dir/.raspa_worker_limit" ] || [ -f "$dir/.raspa_config.yaml" ]; then
+      return 0
+    fi
+    local has_tasks
+    has_tasks=$(find "$dir" -maxdepth 1 -type d -name 'mc[0-9]*' ! -name '*__*' -print -quit 2>/dev/null)
+    [ -n "$has_tasks" ]
+  }
+
+  if [ -n "${RASPA_WORK_DIR:-}" ] && [ -d "$RASPA_WORK_DIR" ]; then
+    base_dir="$(cd "$RASPA_WORK_DIR" && pwd -P)"
+  else
+    base_dir="$abs_pwd"
+    while [ "$base_dir" != "/" ] && ! has_work_marker "$base_dir"; do
+      base_dir="$(dirname "$base_dir")"
+    done
+    if ! has_work_marker "$base_dir"; then
+      echo "$abs_pwd"
+      return
+    fi
   fi
   if [ "$abs_pwd" = "$base_dir" ]; then
     subdir="."

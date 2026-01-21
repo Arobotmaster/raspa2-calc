@@ -149,7 +149,8 @@ warning:
 
 ### 运行时环境
 ```bash
-WARNING_MODE=true  # 传递给tasksrun.sh
+WARNING_MODE=true  # 传递给 RASPA_TOOL_DIR/job_templates/tasksrun.sh
+RASPA_TOOL_DIR=/path/to/raspa2-calc/.raspa_tools  # 非默认安装路径时设置
 ```
 
 ## 总结

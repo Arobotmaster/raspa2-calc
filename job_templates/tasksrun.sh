@@ -1,20 +1,8 @@
 #!/bin/bash 
 
-# 获取工具安装目录 - 优先使用环境变量
-if [ -n "$RASPA_WORK_DIR" ]; then
-    TOOL_DIR="$RASPA_WORK_DIR/.raspa_tools"
-else
-    # 获取脚本所在目录的父目录
-    SCRIPT_DIR_BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    PARENT_DIR="$(dirname "$SCRIPT_DIR_BASE")"
-    TOOL_DIR="$PARENT_DIR/.raspa_tools"
-fi
 # 获取当前工作目录（从环境变量）
-WORK_DIR="$RASPA_WORK_DIR"
-
-# 设置顶部目录为当前工作目录（规范化去除 /./ 等）
-if [ -n "$WORK_DIR" ]; then
-    topdir="$(cd "$WORK_DIR" && pwd -P)"
+if [ -n "$RASPA_WORK_DIR" ]; then
+    topdir="$(cd "$RASPA_WORK_DIR" && pwd -P)"
 else
     topdir="$(pwd -P)"
 fi
@@ -23,7 +11,18 @@ WORK_DIR="$topdir"
 # 获取脚本所在目录的绝对路径
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 注：脚本在安装/复制阶段已设置为可执行；避免在 NFS 上频繁 chmod 造成额外延迟
+# 识别工具目录（优先环境变量，其次脚本路径，最后默认安装位置）
+if [ -z "${RASPA_TOOL_DIR:-}" ]; then
+    script_parent="$(dirname "$SCRIPT_DIR")"
+    if [ -d "$script_parent/job_templates" ] && [ -d "$script_parent/scripts/python" ]; then
+        RASPA_TOOL_DIR="$script_parent"
+    elif [ -d "$HOME/raspa2-calc/.raspa_tools/job_templates" ]; then
+        RASPA_TOOL_DIR="$HOME/raspa2-calc/.raspa_tools"
+    fi
+fi
+export RASPA_TOOL_DIR
+
+# 注：脚本在安装阶段已设置为可执行；避免在 NFS 上频繁 chmod 造成额外延迟
 
 # 检查RASPA_DIR是否设置
 if [ -z "$RASPA_DIR" ]; then
@@ -34,7 +33,6 @@ fi
 
 # 获取CPU核心数参数，默认为2
 CPU_CORES=${1:-2}
-fname="mc"  # 固定使用mc前缀
 
 get_space_policy() {
     python3 - <<'PY' 2>/dev/null || true
@@ -116,13 +114,12 @@ check_disk_space() {
     local min_free_gb="${RASPA_MIN_FREE_GB:-}"
     local action="${RASPA_MIN_FREE_ACTION:-}"
     if [ -z "$min_free_gb" ] || [ -z "$action" ]; then
-        local policy
+        local policy policy_min policy_action
         policy="$(get_space_policy)"
-        if [ -z "$min_free_gb" ] && [ -n "$policy" ]; then
-            min_free_gb="$(printf "%s" "$policy" | awk '{print $1}')"
-        fi
-        if [ -z "$action" ] && [ -n "$policy" ]; then
-            action="$(printf "%s" "$policy" | awk '{print $2}')"
+        if [ -n "$policy" ]; then
+            read -r policy_min policy_action <<< "$policy"
+            [ -z "$min_free_gb" ] && min_free_gb="$policy_min"
+            [ -z "$action" ] && action="$policy_action"
         fi
     fi
 
@@ -230,6 +227,13 @@ with path.open("w", encoding="utf-8") as fh:
     for line in rest:
         fh.write(line + "\n")
 PY
+}
+
+prepare_job_submit_script() {
+    local target="$1"
+    shift
+    cp -rf "$JOB_TEMPLATE" "$target"
+    insert_exports_after_sbatch "$target" "$@"
 }
 
 
@@ -519,20 +523,6 @@ START_ID=${RASPA_START_ID:-1}
 
 if [ "$JOB_SYSTEM" = "SLURM" ] && [ "$SUBMIT_MODE" = "array" ]; then
     ARRAY_END=$((START_ID + CPU_CORES - 1))
-    # 确保 job array 模式下也使用正确的 runjobs 脚本
-    mkdir -p "$WORK_DIR/job_templates"
-    RASPA_VERSION_LOWER="$(echo "${RASPA_VERSION:-raspa2}" | tr '[:upper:]' '[:lower:]')"
-    if [ "$RASPA_VERSION_LOWER" = "raspa3" ]; then
-        if [ -f "$SCRIPT_DIR/runjobs_raspa3.sh" ]; then
-            cp -f "$SCRIPT_DIR/runjobs_raspa3.sh" "$WORK_DIR/job_templates/runjobs.sh"
-            echo "使用 RASPA3 执行脚本 (job array 模式)"
-        else
-            cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_DIR/job_templates/runjobs.sh"
-        fi
-    else
-        cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_DIR/job_templates/runjobs.sh"
-    fi
-    chmod 755 "$WORK_DIR/job_templates/runjobs.sh"
     echo "正在以 job array 提交 worker 范围 ${START_ID}-${ARRAY_END}..."
     if [ "$LOG_ENABLE" = true ]; then
         JOB_OUT="$LOG_DIR/%A_%a.out"
@@ -541,7 +531,7 @@ if [ "$JOB_SYSTEM" = "SLURM" ] && [ "$SUBMIT_MODE" = "array" ]; then
         JOB_OUT="/dev/null"
         JOB_ERR="/dev/null"
     fi
-    EXPORTS="ALL,RASPA_TOTAL_CPUS=${CPU_CORES},RASPA_WORK_DIR=${topdir},RASPA_OUTPUT_DIR=${SUBDIR},RASPA_SUBDIR=${SUBDIR},RASPA_VERSION=${RASPA_VERSION:-raspa2}"
+    EXPORTS="ALL,RASPA_TOTAL_CPUS=${CPU_CORES},RASPA_WORK_DIR=${topdir},RASPA_OUTPUT_DIR=${SUBDIR},RASPA_SUBDIR=${SUBDIR},RASPA_VERSION=${RASPA_VERSION:-raspa2},RASPA_TOOL_DIR=${RASPA_TOOL_DIR:-}"
     submit_result=$($SUBMIT_CMD --array="${START_ID}-${ARRAY_END}" --job-name="raspa_array" -o "$JOB_OUT" -e "$JOB_ERR" --export="$EXPORTS" "$JOB_TEMPLATE_LOCAL" 2>&1)
     echo "$submit_result"
     if [[ "$submit_result" =~ Submitted\ batch\ job\ ([0-9]+) ]]; then
@@ -556,23 +546,6 @@ fi
 
 COUNTER=$START_ID
 echo "开始逐个提交作业...（兼容模式）"
-# 确保工作目录下拥有最新的 runjobs.sh（job_sub 会从 $RASPA_WORK_DIR/job_templates 读取）
-mkdir -p "$WORK_DIR/job_templates"
-# 根据 RASPA 版本选择正确的 runjobs 脚本
-RASPA_VERSION_LOWER="$(echo "${RASPA_VERSION:-raspa2}" | tr '[:upper:]' '[:lower:]')"
-if [ "$RASPA_VERSION_LOWER" = "raspa3" ]; then
-    if [ -f "$SCRIPT_DIR/runjobs_raspa3.sh" ]; then
-        cp -f "$SCRIPT_DIR/runjobs_raspa3.sh" "$WORK_DIR/job_templates/runjobs.sh"
-        echo "使用 RASPA3 执行脚本"
-    else
-        echo "警告：找不到 runjobs_raspa3.sh，回退到 runjobs.sh"
-        cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_DIR/job_templates/runjobs.sh"
-    fi
-else
-    cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_DIR/job_templates/runjobs.sh"
-    echo "使用 RASPA2 执行脚本"
-fi
-chmod 755 "$WORK_DIR/job_templates/runjobs.sh"
 while [ $COUNTER -le $CPU_CORES ]
 do
     TARGET_NODE=""
@@ -615,6 +588,16 @@ do
 
     last_wid="${WORKER_IDS[$(( WORKER_COUNT - 1 ))]}"
     echo "正在提交第${last_wid}个任务…"
+    EXPORT_LINES=(
+        "export RASPA_TOTAL_CPUS=\"${CPU_CORES}\""
+        "export RASPA_WORK_DIR=\"${topdir}\""
+        "export RASPA_OUTPUT_DIR=\"${SUBDIR}\""
+        "export RASPA_SUBDIR=\"${SUBDIR}\""
+        "export RASPA_WORKER_ID=\"${NAMENEW}\""
+        "export RASPA_WORKER_IDS=\"${WORKER_IDS_CSV}\""
+        "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
+        "export RASPA_TOOL_DIR=\"${RASPA_TOOL_DIR:-}\""
+    )
     if [ "$JOB_SYSTEM" = "SLURM" ]; then
         if [ "$LOG_ENABLE" = true ]; then
             JOB_OUT="$LOG_DIR/${NAMENEW}.out"
@@ -623,7 +606,7 @@ do
             JOB_OUT="/dev/null"
             JOB_ERR="/dev/null"
         fi
-        EXPORTS="ALL,RASPA_TOTAL_CPUS=${CPU_CORES},RASPA_WORK_DIR=${topdir},RASPA_OUTPUT_DIR=${SUBDIR},RASPA_SUBDIR=${SUBDIR},RASPA_WORKER_ID_START=${NAMENEW},RASPA_WORKER_COUNT=${WORKER_COUNT},RASPA_VERSION=${RASPA_VERSION:-raspa2}"
+        EXPORTS="ALL,RASPA_TOTAL_CPUS=${CPU_CORES},RASPA_WORK_DIR=${topdir},RASPA_OUTPUT_DIR=${SUBDIR},RASPA_SUBDIR=${SUBDIR},RASPA_WORKER_ID_START=${NAMENEW},RASPA_WORKER_COUNT=${WORKER_COUNT},RASPA_VERSION=${RASPA_VERSION:-raspa2},RASPA_TOOL_DIR=${RASPA_TOOL_DIR:-}"
         if [ -n "$TARGET_NODE" ]; then
             submit_result=$($SUBMIT_CMD --nodelist="$TARGET_NODE" --job-name="$NAMENEW" -o "$JOB_OUT" -e "$JOB_ERR" --export="$EXPORTS" "$JOB_TEMPLATE_LOCAL" 2>&1)
         else
@@ -631,15 +614,7 @@ do
         fi
     elif [ "$JOB_SYSTEM" = "PBS" ]; then
         cd "$WORK_DIR" || exit 1
-        cp -rf "$JOB_TEMPLATE" "$SCRIPT_DIR/job_submit_ht.sh"
-        insert_exports_after_sbatch "$SCRIPT_DIR/job_submit_ht.sh" \
-            "export RASPA_TOTAL_CPUS=\"${CPU_CORES}\"" \
-            "export RASPA_WORK_DIR=\"${topdir}\"" \
-            "export RASPA_OUTPUT_DIR=\"${SUBDIR}\"" \
-            "export RASPA_SUBDIR=\"${SUBDIR}\"" \
-            "export RASPA_WORKER_ID=\"${NAMENEW}\"" \
-            "export RASPA_WORKER_IDS=\"${WORKER_IDS_CSV}\"" \
-            "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
+        prepare_job_submit_script "$SCRIPT_DIR/job_submit_ht.sh" "${EXPORT_LINES[@]}"
         sed -i -e "s|#PBS -N .*|#PBS -N ${NAMENEW}|" "$SCRIPT_DIR/job_submit_ht.sh"
         if [ "$LOG_ENABLE" = true ]; then
             submit_result=$($SUBMIT_CMD -N "$NAMENEW" -o "$LOG_DIR/${NAMENEW}.out" -e "$LOG_DIR/${NAMENEW}.err" "$SCRIPT_DIR/job_submit_ht.sh" 2>&1)
@@ -648,15 +623,7 @@ do
         fi
     else
         cd "$WORK_DIR" || exit 1
-        cp -rf "$JOB_TEMPLATE" "$SCRIPT_DIR/job_submit_ht.sh"
-        insert_exports_after_sbatch "$SCRIPT_DIR/job_submit_ht.sh" \
-            "export RASPA_TOTAL_CPUS=\"${CPU_CORES}\"" \
-            "export RASPA_WORK_DIR=\"${topdir}\"" \
-            "export RASPA_OUTPUT_DIR=\"${SUBDIR}\"" \
-            "export RASPA_SUBDIR=\"${SUBDIR}\"" \
-            "export RASPA_WORKER_ID=\"${NAMENEW}\"" \
-            "export RASPA_WORKER_IDS=\"${WORKER_IDS_CSV}\"" \
-            "export RASPA_VERSION=\"${RASPA_VERSION:-raspa2}\""
+        prepare_job_submit_script "$SCRIPT_DIR/job_submit_ht.sh" "${EXPORT_LINES[@]}"
         submit_result=$($SUBMIT_CMD 2>&1)
     fi
     echo "$submit_result"

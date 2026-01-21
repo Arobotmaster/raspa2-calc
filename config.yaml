@@ -7,10 +7,6 @@
 environment:
   # 工作目录（所有计算任务、输入文件、输出文件都在此目录下执行和存储）
   work_dir: "/home/zjp/raspa2-calc/work"
-  # 工作目录最小剩余空间（GB）。低于该值会提醒或阻断提交。
-  # work_dir_min_free_gb: 50
-  # 空间不足时的动作：warn 或 abort
-  # work_dir_min_free_action: "warn"
 
   # ============ RASPA 版本选择 ============
   # 选择使用的 RASPA 版本: "raspa2" 或 "raspa3"
@@ -42,14 +38,14 @@ environment:
   # RASPA3 JSON 文件目录
   # 包含: force_field.json 和分子定义文件 (如 CO2.json, CH4.json 等)
   # 高通量计算时会自动复制到每个任务目录
-  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/wxj"
+  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/Rn"
 
   # RASPA3 CIF 文件基础路径
   # 框架名会追加到此路径，例如: {raspa3_cif_base_path}/{框架名}.cif
-  raspa3_cif_base_path: "/home/zjp/raspa2-calc/filter/wxj-3442"
+  raspa3_cif_base_path: "/home/zjp/raspa2-calc/work/Rncif/1000"
 
   # RASPA3 simulation.json 模板路径
-  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/wxj/simulation.json"
+  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/Rn/simulation.json"
 
 # ============================================================
 #                    计算参数 (通用)
@@ -61,38 +57,31 @@ calculation:
   # 默认分子 (支持多种气体分子，用空格分隔)
   # RASPA2 示例: "CO2" 或 "CO2 CH4 N2"
   # RASPA3 示例: "p-xylene" 或 "CO2"
-  default_molecules: "methylcyclohexane toluene"
+  default_molecules: "N2 Rn"
 
   # CSV 文件路径 (用于批量处理，指定框架列表)
-  csv_file_path: "/home/zjp/raspa2-calc/filter/wxj-3442.csv"
+  csv_file_path: "/home/zjp/raspa2-calc/work/1000Rn-adsorption.csv"
 
   # 框架名称列名（必须与 CSV 文件中的列名完全一致）
-  framework_column: "refcode"
+  framework_column: "Framework Name"
 
   # 输出目录名
-  output_directory: "wxj-3442-Sdes"
-
-  # 是否启用 CIF 参数缓存 (避免重复计算 UnitCells/VoidFraction)
-  # 缓存文件: params_cache.json
-  use_cif_cache: true
-  
-  # CIF 参数缓存文件路径 (如果不设置，默认为工作目录下的 params_cache.json)
-  cif_cache_path: "/home/zjp/raspa2-calc/.raspa_tools/params_cache.json"
+  output_directory: "1000-test2"
 
   # 是否从 CSV 文件读取孔隙率
-  use_void_csv: true
+  use_void_csv: false
 
   # 孔隙率 CSV 文件路径
-  void_csv_file: "/home/zjp/raspa2-calc/filter/wxj-3442.csv"
+  void_csv_file: ""
 
   # 孔隙率列名
-  void_column: "VF"
+  void_column: ""
 
   # pyMSER 自动平衡
   mser:
     enable: true
     target_cycles: 1000
-    add_cycles: 200
+    add_cycles: 400
     max_iter: 20
     uncertainty: "uSD"   # SD, SE, uSD, uSE
     conda_env: "pymser"  # 包含 pymser 的 conda 环境
@@ -101,10 +90,10 @@ calculation:
 
   # 节点优先级（可选），格式: 节点名: 权重；数字越大优先级越高
   node_priorities:
-    master-node: 1
+    master-node: 4
     worker-node-01: 3
     worker-node-02: 2
-    worker-node-03: 4
+    worker-node-03: 1
 
 # ============================================================
 #              参数筛选配置（模式1：小批量运算）
@@ -114,7 +103,7 @@ calculation:
 # - RASPA3: 修改 simulation.json JSON 文件
 parameter_screening:
   # 输出目录名
-  output_directory: "HH"
+  output_directory: "Xenew2"
 
   # 是否自动计算 UnitCells
   auto_unit_cells: true
@@ -140,7 +129,7 @@ parameter_screening:
     CutOffVDW: [12.8]
 
     # 压力点 (Pa)
-    ExternalPressure: [0, 5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000, 55000, 60000, 65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000]
+    ExternalPressure: [100000]
 
     # 温度点 (K) - 可选
     # ExternalTemperature: [323.0]
@@ -151,7 +140,7 @@ parameter_screening:
     # 其他可选参数示例:
     # ForceField: [UFF, Dreiding]
     # ChargeMethod: [Ewald, None]
-    # Name: [Xe] # 仅 RASPA3
+    Name: [Xe] # 仅 RASPA3
     # MoleculeName: [CO2, CH4, N2]  # 仅 RASPA2
 
 # ============================================================

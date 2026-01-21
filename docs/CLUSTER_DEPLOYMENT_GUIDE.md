@@ -319,9 +319,9 @@ RASPA3 使用 conda 环境执行，作业脚本会自动：
 source ~/anaconda3/etc/profile.d/conda.sh
 conda activate raspa3
 
-# 执行任务
+# 执行任务（脚本位于 RASPA_TOOL_DIR/job_templates）
 cd $WORK_DIR
-./runjobs.sh $SLURM_ARRAY_TASK_ID $SLURM_ARRAY_TASK_COUNT
+bash "$RASPA_TOOL_DIR/job_templates/runjobs_raspa3.sh" "$SLURM_ARRAY_TASK_ID" "$SLURM_ARRAY_TASK_COUNT"
 ```
 
 ### 5.3 PBS 作业模板示例
@@ -336,9 +336,9 @@ cd $WORK_DIR
 source ~/anaconda3/etc/profile.d/conda.sh
 conda activate raspa3
 
-# 执行任务
+# 执行任务（脚本位于 RASPA_TOOL_DIR/job_templates）
 cd $PBS_O_WORKDIR
-./runjobs.sh $CPU $TOTAL_CPUS
+bash "$RASPA_TOOL_DIR/job_templates/runjobs_raspa3.sh" "$CPU" "$TOTAL_CPUS"
 ```
 
 ---
@@ -352,6 +352,7 @@ cd $PBS_O_WORKDIR
 ```bash
 # RASPA 通用环境变量
 export RASPA_WORK_DIR="/home/zjp/raspa2-calc/work"
+export RASPA_TOOL_DIR="/home/zjp/raspa2-calc/.raspa_tools"
 
 # RASPA2 专用环境变量
 export RASPA_DIR="/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0"

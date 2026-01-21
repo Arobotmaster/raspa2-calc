@@ -411,6 +411,31 @@ for old_file in "${OLD_ALGO_FILES[@]}"; do
     fi
 done
 
+# 清理已调整结构的旧模块/目录（避免旧文件残留）
+LEGACY_PATHS=(
+    "scripts/python/raspa_calc/commands"
+    "scripts/python/raspa_calc/modes/auto.py"
+    "scripts/python/raspa_calc/modes/task_runner.py"
+    "scripts/python/task_runner/cif.py"
+    "scripts/python/task_runner/cli.py"
+    "scripts/python/task_runner/env.py"
+    "scripts/python/task_runner/framework.py"
+    "scripts/python/task_runner/inputs.py"
+    "scripts/python/task_runner/logging_utils.py"
+    "scripts/python/task_runner/scheduler.py"
+    "scripts/python/task_runner/state.py"
+    "scripts/python/task_runner/templates.py"
+    "scripts/python/task_runner/__pycache__"
+    "scripts/python/common/config.py"
+    "scripts/python/common/__pycache__"
+)
+for legacy_path in "${LEGACY_PATHS[@]}"; do
+    if [ -e "$TOOL_DIR/$legacy_path" ]; then
+        rm -rf "$TOOL_DIR/$legacy_path"
+        echo "✅ 已移除旧结构: $legacy_path"
+    fi
+done
+
 copy_dir_with_header "raspa3json/" "$SCRIPT_DIR/raspa3json" "✅ raspa3json/ 复制完成（RASPA3 模板与分子库）"
 
 copy_dir_with_header "raspa2-3/" "$SCRIPT_DIR/raspa2-3"
@@ -473,23 +498,36 @@ for exe in "${EXECUTABLES[@]}"; do
     fi
 done
 
-# 检查并添加PATH环境变量
+# 检查并添加环境变量
 echo ""
 echo "配置环境变量..."
 detect_shell_config
 
-# 检查PATH是否已配置 (更精确的检查)
-if ! grep -q "^export PATH=.*raspa2-calc/.raspa_tools/bin.*PATH" "$SHELL_RC" 2>/dev/null; then
-    echo "" >> "$SHELL_RC"
-    echo "# RASPA2高通量计算工具" >> "$SHELL_RC"
-    echo "export PATH=\"\$HOME/raspa2-calc/.raspa_tools/bin:\$PATH\"" >> "$SHELL_RC"
-    echo "已添加PATH配置到 $SHELL_RC"
-else
-    echo "PATH配置已存在"
+need_env_update=0
+if ! grep -q "^export RASPA_TOOL_DIR=" "$SHELL_RC" 2>/dev/null; then
+    need_env_update=1
+fi
+if ! grep -Fq "raspa2-calc/.raspa_tools/bin" "$SHELL_RC" 2>/dev/null; then
+    need_env_update=1
 fi
 
-# 立即生效PATH配置
-export PATH="$HOME/raspa2-calc/.raspa_tools/bin:$PATH"
+if [ "$need_env_update" -eq 1 ]; then
+    echo "" >> "$SHELL_RC"
+    echo "# RASPA2高通量计算工具" >> "$SHELL_RC"
+    if ! grep -q "^export RASPA_TOOL_DIR=" "$SHELL_RC" 2>/dev/null; then
+        echo "export RASPA_TOOL_DIR=\"$TOOL_DIR\"" >> "$SHELL_RC"
+    fi
+    if ! grep -Fq "raspa2-calc/.raspa_tools/bin" "$SHELL_RC" 2>/dev/null; then
+        echo "export PATH=\"\$RASPA_TOOL_DIR/bin:\$PATH\"" >> "$SHELL_RC"
+    fi
+    echo "已添加环境变量配置到 $SHELL_RC"
+else
+    echo "环境变量配置已存在"
+fi
+
+# 立即生效环境变量
+export RASPA_TOOL_DIR="$TOOL_DIR"
+export PATH="$RASPA_TOOL_DIR/bin:$PATH"
 
 # 清理旧的根目录软链（统一从 bin/ 调用）
 echo ""
@@ -555,9 +593,10 @@ if validate_installation; then
     echo ""
     echo "🎉 安装完成！所有验证通过。"
     echo ""
-    echo "💡 提示: 建议配置以下环境变量以获得最佳体验:"
-    echo "   export RASPA_DIR=/path/to/raspa/installation"
-    echo "   export RASPA_WORK_DIR=/path/to/work/directory"
+echo "💡 提示: 建议配置以下环境变量以获得最佳体验:"
+echo "   export RASPA_DIR=/path/to/raspa/installation"
+echo "   export RASPA_WORK_DIR=/path/to/work/directory"
+echo "   export RASPA_TOOL_DIR=$TOOL_DIR"
 else
     echo ""
     echo "⚠️  安装完成但存在一些问题，请检查上述错误信息。"

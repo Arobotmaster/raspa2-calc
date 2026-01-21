@@ -253,8 +253,12 @@ def main():
                     logger.error("用户拒绝自动清理 CIF 标签，程序终止。请先处理标签后重新运行。")
                     sys.exit(1)
 
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                script_path = os.path.join(base_dir, "clean_cif_labels.py")
+                tool_dir = os.environ.get("RASPA_TOOL_DIR")
+                if not tool_dir:
+                    tool_dir = os.path.abspath(
+                        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
+                    )
+                script_path = os.path.join(tool_dir, "scripts", "python", "clean_cif_labels.py")
                 target_files = [os.path.basename(path) for _, path, _ in label_issues]
                 logger.info(
                     "运行标签清理脚本（就地处理有编号的文件）: "

@@ -225,7 +225,7 @@ def run_isotherm_plotter():
             if choice == "2":
                 outdir_mode = "by_dirname"
 
-        from isotherm_plotter import main as plotter_main
+        from ..tools.isotherm_plotter import main as plotter_main
 
         print("\n🚀 开始绘制等温线...")
         for i, base_dir in enumerate(base_dirs, 1):

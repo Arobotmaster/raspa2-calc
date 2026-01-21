@@ -111,7 +111,6 @@ detect_subdir() {
 }
 
 # 使用当前真实工作目录
-CWD="$(pwd -P)"
 topdir="$CWD"
 subdir=$(detect_subdir)
 CPU=${1:-1}
@@ -129,10 +128,7 @@ SHOULD_EXIT_NOW() {
     local lim
     lim=$(read_limit)
     [ -z "$lim" ] && lim=$TOTAL_CPUS
-    if [ "$CPU" -gt "$lim" ]; then
-        return 0
-    fi
-    return 1
+    [ "$CPU" -gt "$lim" ]
 }
 
 # ============ 任务队列 ============
@@ -552,7 +548,6 @@ while :; do
     fi
 
     task_running_dir="$CLAIMED_TASK_DIR"
-    task_id="$CLAIMED_TASK_ID"
     task_rel="$CLAIMED_TASK_REL"
     cd "$task_running_dir" || { cd "$topdir"; continue; }
     bn=$(basename "$task_running_dir")

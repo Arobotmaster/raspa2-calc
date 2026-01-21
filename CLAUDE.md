@@ -56,9 +56,12 @@ python .raspa_tools/scripts/python/parameter_screening.py
 ├── bin/                    # CLI tools (raspa-calc, raspa-status, raspa-scale, raspa-diagnose)
 ├── scripts/python/         # Core Python modules
 │   ├── raspa_calc.py       # Thin entry point - mode selection and environment check
-│   ├── raspa_calc/         # raspa-calc modules (config/env/menu/commands)
+│   ├── raspa_calc/         # raspa-calc modules (config/env/menu/modes/common/task_runner)
+│   ├── raspa_calc/modes/   # mode entrypoints (parameter_screening/high_throughput/etc.)
+│   ├── raspa_calc/task_runner/ # task runner modules (cli/scheduler/framework/etc.)
+│   ├── raspa_calc/common/  # shared config helpers
 │   ├── task_runner.py      # Thin entry point for high-throughput orchestration
-│   ├── task_runner/        # task runner modules (cli/scheduler/framework/etc.)
+│   ├── task_runner/        # compatibility shim package
 │   ├── raspa_calc/algorithms/ # auto_mser/calculate_params/raspa3_generator/cluster_info
 │   ├── data_extractor.py   # RASPA2 output parsing and Excel/CSV export
 │   ├── data_extractor_raspa3.py  # RASPA3 output parsing

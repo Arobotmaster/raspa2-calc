@@ -1,9 +1,13 @@
-from .cli import main
-from .scheduler import build_node_plan, get_slurm_cluster_resources, parse_node_priorities
+"""Compatibility shim for task_runner package."""
 
-__all__ = [
-    "main",
-    "build_node_plan",
-    "get_slurm_cluster_resources",
-    "parse_node_priorities",
-]
+import importlib as _importlib
+
+_impl = _importlib.import_module("raspa_calc.task_runner")
+globals().update({
+    key: value
+    for key, value in _impl.__dict__.items()
+    if not key.startswith("__")
+})
+__path__ = _impl.__path__
+
+del _importlib, _impl

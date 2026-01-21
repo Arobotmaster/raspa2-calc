@@ -51,13 +51,19 @@ echo "当前工作目录: $(pwd)"
 echo "环境变量 RASPA_WORK_DIR: $RASPA_WORK_DIR"
 echo "环境变量 RASPA_DIR: $RASPA_DIR"
 
-# 确定包含 job_templates 的根目录
-BASE_DIR="$TARGET_DIR"
-while [ "$BASE_DIR" != "/" ] && [ ! -d "$BASE_DIR/job_templates" ]; do
-    BASE_DIR="$(dirname "$BASE_DIR")"
-done
-if [ ! -d "$BASE_DIR/job_templates" ]; then
-    echo "错误：未找到 job_templates 目录"
+# 确定工作根目录（优先使用环境变量）
+BASE_DIR=""
+if [ -n "$RASPA_WORK_DIR" ] && [ -d "$RASPA_WORK_DIR" ]; then
+    BASE_DIR="$(cd "$RASPA_WORK_DIR" && pwd -P)"
+else
+    BASE_DIR="$TARGET_DIR"
+    while [ "$BASE_DIR" != "/" ] && [ ! -d "$BASE_DIR/job_templates" ]; do
+        BASE_DIR="$(dirname "$BASE_DIR")"
+    done
+    [ -d "$BASE_DIR/job_templates" ] || BASE_DIR=""
+fi
+if [ -z "$BASE_DIR" ]; then
+    echo "错误：未能确定工作根目录，请设置 RASPA_WORK_DIR"
     exit 1
 fi
 export RASPA_WORK_DIR="$BASE_DIR"
@@ -75,7 +81,21 @@ if [ ${#WORKER_IDS[@]} -eq 0 ]; then
   WORKER_IDS=("$WORKER_ID")
 fi
 
-RUNNER="$BASE_DIR/job_templates/runjobs.sh"
+RUNNER=""
+TOOL_DIR="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}"
+TOOL_TEMPLATES="$TOOL_DIR/job_templates"
+RASPA_VERSION_LOWER="$(echo "${RASPA_VERSION:-raspa2}" | tr '[:upper:]' '[:lower:]')"
+if [ "$RASPA_VERSION_LOWER" = "raspa3" ] && [ -f "$TOOL_TEMPLATES/runjobs_raspa3.sh" ]; then
+  RUNNER="$TOOL_TEMPLATES/runjobs_raspa3.sh"
+elif [ -f "$TOOL_TEMPLATES/runjobs.sh" ]; then
+  RUNNER="$TOOL_TEMPLATES/runjobs.sh"
+elif [ -f "$BASE_DIR/job_templates/runjobs.sh" ]; then
+  RUNNER="$BASE_DIR/job_templates/runjobs.sh"
+fi
+if [ -z "$RUNNER" ]; then
+  echo "错误：未找到 runjobs 脚本，请检查 RASPA_TOOL_DIR"
+  exit 1
+fi
 
 if [ "${RASPA_SIMPLE_LAUNCH:-false}" = "true" ]; then
   if [ ${#WORKER_IDS[@]} -le 1 ]; then

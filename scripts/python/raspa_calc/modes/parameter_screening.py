@@ -4,7 +4,7 @@ import sys
 from .. import config as config_module
 
 
-def run_auto_sh():
+def run_parameter_screening():
     """Run parameter screening (auto.sh)."""
     try:
         if config_module.config:
@@ -43,3 +43,8 @@ def run_auto_sh():
     except Exception as e:
         print(f"运行参数筛选模式时出错: {str(e)}")
         sys.exit(1)
+
+
+def run_auto_sh():
+    """Compatibility alias for older imports."""
+    run_parameter_screening()

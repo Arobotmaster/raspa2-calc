@@ -7,7 +7,7 @@ def run_data_extractor():
     print("该功能将从计算结果中提取关键数据并生成Excel表格")
 
     try:
-        from data_extractor import main as extract_main
+        from ..tools.data_extractor import main as extract_main
         extract_main()
     except ImportError as e:
         print(f"错误: 无法导入数据提取模块: {e}")

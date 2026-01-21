@@ -4,7 +4,7 @@ import sys
 from .. import config as config_module
 
 
-def run_task_runner():
+def run_high_throughput():
     """Run high-throughput task runner."""
     try:
         if config_module.config:
@@ -157,7 +157,7 @@ def run_task_runner():
 
             print("✅ 已从配置文件加载计算参数")
 
-        from task_runner import main as task_runner_main
+        from ..task_runner.cli import main as task_runner_main
         task_runner_main()
     except ImportError:
         print("错误: 找不到task_runner模块")
@@ -165,3 +165,8 @@ def run_task_runner():
     except Exception as e:
         print(f"运行高通量计算模式时出错: {str(e)}")
         sys.exit(1)
+
+
+def run_task_runner():
+    """Compatibility alias for older imports."""
+    run_high_throughput()

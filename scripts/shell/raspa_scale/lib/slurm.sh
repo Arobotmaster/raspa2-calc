@@ -15,27 +15,7 @@ submit_missing() {
   mkdir -p "$LOG_DIR"
   local SCRIPT_DIR="$ROOT_DIR/.raspa_tools/job_templates"
   local JOB_TEMPLATE="$SCRIPT_DIR/job_submit.sh"
-
-  # 确保使用正确的 runjobs 脚本 (RASPA2 或 RASPA3)
-  local WORK_JOB_TEMPLATES
-  if [ "$SUBDIR" = "." ]; then
-    WORK_JOB_TEMPLATES="$TARGET_DIR/job_templates"
-  else
-    WORK_JOB_TEMPLATES="$(dirname "$TARGET_DIR")/job_templates"
-  fi
-  mkdir -p "$WORK_JOB_TEMPLATES"
-  local RASPA_VERSION_LOWER
-  RASPA_VERSION_LOWER="$(echo "${RASPA_VERSION:-raspa2}" | tr '[:upper:]' '[:lower:]')"
-  if [ "$RASPA_VERSION_LOWER" = "raspa3" ]; then
-    if [ -f "$SCRIPT_DIR/runjobs_raspa3.sh" ]; then
-      cp -f "$SCRIPT_DIR/runjobs_raspa3.sh" "$WORK_JOB_TEMPLATES/runjobs.sh"
-    else
-      cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_JOB_TEMPLATES/runjobs.sh"
-    fi
-  else
-    cp -f "$SCRIPT_DIR/runjobs.sh" "$WORK_JOB_TEMPLATES/runjobs.sh"
-  fi
-  chmod 755 "$WORK_JOB_TEMPLATES/runjobs.sh"
+  local TOOL_DIR="$ROOT_DIR/.raspa_tools"
 
   # slurmctld 只需要在提交时读取脚本；避免在 NFS 上反复 mktemp/cp/sed 写脚本导致提交变慢
   local submit_tmp_base
@@ -61,6 +41,13 @@ submit_missing() {
 
   local submit_sleep
   submit_sleep="${RASPA_SCALE_SUBMIT_SLEEP:-${RASPA_SUBMIT_SLEEP:-0.15}}"
+  local sbatch_retry
+  sbatch_retry="${RASPA_SCALE_SBATCH_RETRY:-2}"
+  if ! [[ "$sbatch_retry" =~ ^[0-9]+$ ]] || [ "$sbatch_retry" -lt 1 ]; then
+    sbatch_retry=1
+  fi
+  local sbatch_retry_sleep
+  sbatch_retry_sleep="${RASPA_SCALE_SBATCH_RETRY_SLEEP:-0.5}"
 
   local now
   now=$(date +%s)
@@ -305,35 +292,50 @@ PY
 
     # 提交（强制日志到 1log）
     out="$LOG_DIR/${NAMENEW}.out"; err="$LOG_DIR/${NAMENEW}.err"
-    if [ -n "$TARGET_NODE" ]; then
-      submit_result=$(
-        RASPA_TOTAL_CPUS="${NEW_LIMIT}" \
-        RASPA_WORK_DIR="${job_base_dir}" \
-        RASPA_OUTPUT_DIR="${SUBDIR}" \
-        RASPA_SUBDIR="${SUBDIR}" \
-        RASPA_WORKER_ID="${NAMENEW}" \
-        RASPA_WORKER_IDS="${WORKER_IDS_CSV}" \
-        RASPA_VERSION="${RASPA_VERSION:-raspa2}" \
-        sbatch --export=ALL "${SBATCH_EXTRA_ARGS[@]}" --nodelist="$TARGET_NODE" -J "$NAMENEW" -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1
-      )
-    else
-      submit_result=$(
-        RASPA_TOTAL_CPUS="${NEW_LIMIT}" \
-        RASPA_WORK_DIR="${job_base_dir}" \
-        RASPA_OUTPUT_DIR="${SUBDIR}" \
-        RASPA_SUBDIR="${SUBDIR}" \
-        RASPA_WORKER_ID="${NAMENEW}" \
-        RASPA_WORKER_IDS="${WORKER_IDS_CSV}" \
-        RASPA_VERSION="${RASPA_VERSION:-raspa2}" \
-        sbatch --export=ALL "${SBATCH_EXTRA_ARGS[@]}" -J "$NAMENEW" -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1
-      )
-    fi
     local submit_ok=0
-    if [[ "$submit_result" =~ Submitted\ batch\ job\ ([0-9]+) ]]; then
-      submit_ok=1
-      jid="${BASH_REMATCH[1]}"
-      printf "%s %s %s %s\n" "$jid" "$NAMENEW" "$now" "$WORKER_IDS_CSV" >> "$JOBS_BUF"
-    fi
+    local submit_result=""
+    local jid=""
+    local attempt=1
+    while :; do
+      if [ -n "$TARGET_NODE" ]; then
+        submit_result=$(
+          RASPA_TOTAL_CPUS="${NEW_LIMIT}" \
+          RASPA_WORK_DIR="${job_base_dir}" \
+          RASPA_OUTPUT_DIR="${SUBDIR}" \
+          RASPA_SUBDIR="${SUBDIR}" \
+          RASPA_WORKER_ID="${NAMENEW}" \
+          RASPA_WORKER_IDS="${WORKER_IDS_CSV}" \
+          RASPA_VERSION="${RASPA_VERSION:-raspa2}" \
+          RASPA_TOOL_DIR="${TOOL_DIR}" \
+          sbatch --export=ALL "${SBATCH_EXTRA_ARGS[@]}" --nodelist="$TARGET_NODE" -J "$NAMENEW" -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1 || true
+        )
+      else
+        submit_result=$(
+          RASPA_TOTAL_CPUS="${NEW_LIMIT}" \
+          RASPA_WORK_DIR="${job_base_dir}" \
+          RASPA_OUTPUT_DIR="${SUBDIR}" \
+          RASPA_SUBDIR="${SUBDIR}" \
+          RASPA_WORKER_ID="${NAMENEW}" \
+          RASPA_WORKER_IDS="${WORKER_IDS_CSV}" \
+          RASPA_VERSION="${RASPA_VERSION:-raspa2}" \
+          RASPA_TOOL_DIR="${TOOL_DIR}" \
+          sbatch --export=ALL "${SBATCH_EXTRA_ARGS[@]}" -J "$NAMENEW" -o "$out" -e "$err" "$TMP_SCRIPT" 2>&1 || true
+        )
+      fi
+      if [[ "$submit_result" =~ Submitted\ batch\ job\ ([0-9]+) ]]; then
+        submit_ok=1
+        jid="${BASH_REMATCH[1]}"
+        printf "%s %s %s %s\n" "$jid" "$NAMENEW" "$now" "$WORKER_IDS_CSV" >> "$JOBS_BUF"
+        break
+      fi
+      if [ "$attempt" -ge "$sbatch_retry" ]; then
+        break
+      fi
+      if [ -n "$sbatch_retry_sleep" ] && [[ "$sbatch_retry_sleep" =~ ^[0-9]+([.][0-9]+)?$ ]] && [ "$sbatch_retry_sleep" != "0" ] && [ "$sbatch_retry_sleep" != "0.0" ]; then
+        sleep "$sbatch_retry_sleep"
+      fi
+      attempt=$((attempt + 1))
+    done
     if [ "$submit_verbose" -eq 1 ]; then
       echo "$submit_result"
       if [ "$submit_ok" -eq 1 ]; then
@@ -397,7 +399,10 @@ print(count)
 PY
   )
 else
-  INITIAL_RUNNING=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}')
+  INITIAL_RUNNING=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}' || true)
+fi
+if ! [[ "${INITIAL_RUNNING:-}" =~ ^[0-9]+$ ]]; then
+  INITIAL_RUNNING=0
 fi
 ACTIVE_FILE="$WORKERS_DIR/.active_jobs.tsv"
 ACTIVE_WORKERS_FILE="$WORKERS_DIR/.active_workers.list"
@@ -487,9 +492,12 @@ fi
 # 若过滤列表为空，则回退到 .raspa_jobs 与 squeue 的交集估计
 if [ "$LIVE" -le 0 ] && [ -f "$JOBS_FILE" ] && [ "$SQUEUE_OK" -eq 1 ]; then
   mapfile -t ALL_MY_JOBS < <(squeue -u "$USER" -h -o "%i" 2>/dev/null | sort -u || true)
-  mapfile -t TRACKED < <(awk '{print $1}' "$JOBS_FILE" | sort -u)
+  mapfile -t TRACKED < <(awk '{print $1}' "$JOBS_FILE" | sort -u || true)
   if [ ${#ALL_MY_JOBS[@]} -gt 0 ] && [ ${#TRACKED[@]} -gt 0 ]; then
-    LIVE=$(comm -12 <(printf "%s\n" "${ALL_MY_JOBS[@]}") <(printf "%s\n" "${TRACKED[@]}" ) | wc -l)
+    LIVE=$(comm -12 <(printf "%s\n" "${ALL_MY_JOBS[@]}") <(printf "%s\n" "${TRACKED[@]}" ) | wc -l || true)
+    if ! [[ "${LIVE:-}" =~ ^[0-9]+$ ]]; then
+      LIVE=0
+    fi
   fi
 fi
 # 若仍为0，则用 __running 目录兜底；否则优先使用 worker 计数
@@ -557,7 +565,7 @@ fi
 # 如未启用作业追踪文件，则仅写入上限，不做自动提交/缩容（避免错误扩容）
 if [ ! -s "$JOBS_FILE" ]; then
   echo "提示: 未发现 $JOBS_FILE，尝试基于 scontrol 的 StdOut 路径重建..." >&2
-  LOGDIR_CAND="$(find "$TARGET_DIR" -maxdepth 2 -type d -name 1log -print -quit 2>/dev/null)"
+  LOGDIR_CAND="$(find "$TARGET_DIR" -maxdepth 2 -type d -name 1log -print -quit 2>/dev/null || true)"
   # 若当前目录就是子目录，默认日志在 ./1log
   [ -z "$LOGDIR_CAND" ] && LOGDIR_CAND="$TARGET_DIR/1log"
   touch "$JOBS_FILE"
@@ -635,10 +643,14 @@ if [ "$NEED" -gt 0 ]; then
   SCRIPT_DIR_TOOL="$ROOT_DIR/.raspa_tools/job_templates"
   SCRIPT_DIR_WORK="$BASE_DIR/job_templates"
   RUNNER=""
-  if [ -x "$SCRIPT_DIR_WORK/tasksrun.sh" ]; then RUNNER="$SCRIPT_DIR_WORK/tasksrun.sh"; else RUNNER="$SCRIPT_DIR_TOOL/tasksrun.sh"; fi
+  if [ -x "$SCRIPT_DIR_TOOL/tasksrun.sh" ]; then
+    RUNNER="$SCRIPT_DIR_TOOL/tasksrun.sh"
+  else
+    RUNNER="$SCRIPT_DIR_WORK/tasksrun.sh"
+  fi
   for id in "${MISSING_IDS[@]}"; do
     echo "提交 worker 编号: $id"
-    RASPA_WORK_DIR="$BASE_DIR" RASPA_SUBDIR="$SUBDIR" RASPA_OUTPUT_DIR="$SUBDIR" RASPA_START_ID="$id" \
+    RASPA_WORK_DIR="$BASE_DIR" RASPA_SUBDIR="$SUBDIR" RASPA_OUTPUT_DIR="$SUBDIR" RASPA_START_ID="$id" RASPA_TOOL_DIR="$ROOT_DIR/.raspa_tools" \
       bash "$RUNNER" "$id" >/dev/null 2>&1 || true
   done
 else
@@ -678,10 +690,10 @@ if [ "$SKIP_EXPAND" -eq 0 ] && [ -s "$JOBS_FILE" ] && [ "$LIVE_WORKERS" -lt "$NE
   fi
 
   # 计算现存 worker 集合，并找出 1..NEW_LIMIT 中缺口
-  mapfile -t PRESENT_WORKERS < "$ACTIVE_WORKERS_FILE" 2>/dev/null
+  mapfile -t PRESENT_WORKERS < "$ACTIVE_WORKERS_FILE" 2>/dev/null || true
   if [ ${#PRESENT_WORKERS[@]} -eq 0 ]; then
     # 兜底：用 StdOut 过滤后的 job name（数字）推断
-    mapfile -t PRESENT_WORKERS < <(awk '{print $2}' "$ACTIVE_FILE" 2>/dev/null | awk '/^[0-9]+$/{print $1}' | sort -n)
+    mapfile -t PRESENT_WORKERS < <(awk '{print $2}' "$ACTIVE_FILE" 2>/dev/null | awk '/^[0-9]+$/{print $1}' | sort -n || true)
   fi
   present=""
   for wid in "${PRESENT_WORKERS[@]}"; do
@@ -946,9 +958,9 @@ if [ "$EXPANDED_THIS_ROUND" -eq 1 ]; then
   echo "补足并发: 本轮已完成扩容提交，等待调度器接管后再检查，无需重复提交。"
   exit 0
 fi
-mapfile -t PRESENT_WORKERS < "$ACTIVE_WORKERS_FILE" 2>/dev/null
+mapfile -t PRESENT_WORKERS < "$ACTIVE_WORKERS_FILE" 2>/dev/null || true
 if [ ${#PRESENT_WORKERS[@]} -eq 0 ]; then
-  mapfile -t PRESENT_WORKERS < <(awk '{print $2}' "$ACTIVE_FILE" 2>/dev/null | awk '/^[0-9]+$/{print $1}' | sort -n)
+  mapfile -t PRESENT_WORKERS < <(awk '{print $2}' "$ACTIVE_FILE" 2>/dev/null | awk '/^[0-9]+$/{print $1}' | sort -n || true)
 fi
 present=""
 for wid in "${PRESENT_WORKERS[@]}"; do

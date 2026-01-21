@@ -39,4 +39,18 @@ WORKER_ID=${RASPA_WORKER_ID:-1}
 TOTAL_CPUS=${RASPA_TOTAL_CPUS:-1}
 
 # 优先使用 bash 执行，确保环境变量与管道行为一致
-bash job_templates/runjobs.sh "$WORKER_ID" "$TOTAL_CPUS"
+TOOL_DIR="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}"
+TOOL_TEMPLATES="$TOOL_DIR/job_templates"
+RASPA_VERSION_LOWER="$(echo "${RASPA_VERSION:-raspa2}" | tr '[:upper:]' '[:lower:]')"
+if [ "$RASPA_VERSION_LOWER" = "raspa3" ] && [ -f "$TOOL_TEMPLATES/runjobs_raspa3.sh" ]; then
+    RUNNER="$TOOL_TEMPLATES/runjobs_raspa3.sh"
+elif [ -f "$TOOL_TEMPLATES/runjobs.sh" ]; then
+    RUNNER="$TOOL_TEMPLATES/runjobs.sh"
+else
+    RUNNER="$WORK_DIR/job_templates/runjobs.sh"
+fi
+if [ ! -f "$RUNNER" ]; then
+    echo "错误: 未找到 runjobs 脚本，请检查 RASPA_TOOL_DIR"
+    exit 1
+fi
+bash "$RUNNER" "$WORKER_ID" "$TOTAL_CPUS"

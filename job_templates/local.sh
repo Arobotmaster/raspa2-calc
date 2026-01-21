@@ -39,7 +39,21 @@ START_TIME=$(date +%s)
 echo "作业开始时间: $(date)"
 
 # 执行runjobs.sh脚本
-sh job_templates/runjobs.sh $1 $2
+TOOL_DIR="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}"
+TOOL_TEMPLATES="$TOOL_DIR/job_templates"
+RASPA_VERSION_LOWER="$(echo "${RASPA_VERSION:-raspa2}" | tr '[:upper:]' '[:lower:]')"
+if [ "$RASPA_VERSION_LOWER" = "raspa3" ] && [ -f "$TOOL_TEMPLATES/runjobs_raspa3.sh" ]; then
+    RUNNER="$TOOL_TEMPLATES/runjobs_raspa3.sh"
+elif [ -f "$TOOL_TEMPLATES/runjobs.sh" ]; then
+    RUNNER="$TOOL_TEMPLATES/runjobs.sh"
+else
+    RUNNER="$WORK_DIR/job_templates/runjobs.sh"
+fi
+if [ ! -f "$RUNNER" ]; then
+    echo "错误: 未找到 runjobs 脚本，请检查 RASPA_TOOL_DIR"
+    exit 1
+fi
+sh "$RUNNER" "$1" "$2"
 
 # 记录结束时间和运行时长
 END_TIME=$(date +%s)
