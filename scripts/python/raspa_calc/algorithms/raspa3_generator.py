@@ -18,7 +18,6 @@ RASPA3 高通量计算输入文件生成器
 import os
 import sys
 import json
-import shutil
 import logging
 import argparse
 import traceback
@@ -32,7 +31,8 @@ from .calculate_params import (
     calculate_UnitCells,
     get_cif_cell_parameters
 )
-from force_field_utils import write_filtered_force_field
+from .raspa3_io import copy_force_field_and_components
+from ..task_runner.cif import locate_cif_file
 
 # 配置日志
 def setup_logging(log_file="raspa3_generator.log"):
@@ -103,37 +103,7 @@ def load_simulation_template(template_path):
 
 def find_cif_file(framework_name, cif_base_path):
     """查找 CIF 文件"""
-    # 清理框架名
-    clean_name = framework_name
-    if clean_name.lower().endswith('.cif'):
-        clean_name = clean_name[:-4]
-
-    # 尝试多种路径
-    candidates = [
-        os.path.join(cif_base_path, f"{clean_name}.cif"),
-        os.path.join(cif_base_path, f"{clean_name}"),
-        os.path.join(cif_base_path, f"{clean_name.upper()}.cif"),
-        os.path.join(cif_base_path, f"{clean_name.lower()}.cif"),
-    ]
-
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-
-    # 兜底：若传入包含路径（如 cleaned_cif/foo），尝试仅取文件名重试
-    base_name = os.path.basename(clean_name)
-    if base_name != clean_name:
-        candidates_base = [
-            os.path.join(cif_base_path, f"{base_name}.cif"),
-            os.path.join(cif_base_path, base_name),
-            os.path.join(cif_base_path, f"{base_name.upper()}.cif"),
-            os.path.join(cif_base_path, f"{base_name.lower()}.cif"),
-        ]
-        for path in candidates_base:
-            if os.path.exists(path):
-                return path
-
-    return None
+    return locate_cif_file(framework_name, cif_base_path)
 
 
 def calculate_unit_cells_for_cif(cif_path, cutoff=12.0):
@@ -179,33 +149,13 @@ def copy_json_files_to_task_dir(task_dir, json_dir, components, cif_path=None):
             name = component.get("Name", "")
             if name:
                 component_names.append(name)
-
-    # 复制力场文件
-    force_field_src = os.path.join(json_dir, "force_field.json")
-    if os.path.exists(force_field_src):
-        dest = os.path.join(task_dir, "force_field.json")
-        write_filtered_force_field(
-            force_field_src,
-            dest,
-            cif_path=cif_path,
-            json_dir=json_dir,
-            component_names=component_names,
-            log=logger,
-        )
-        logger.debug(f"复制力场文件到: {dest}（已按 CIF/组分筛选）")
-    else:
-        logger.warning(f"力场文件不存在: {force_field_src}")
-
-    # 复制分子定义文件
-    for component in components:
-        mol_name = component.get("Name", "")
-        if mol_name:
-            mol_src = os.path.join(json_dir, f"{mol_name}.json")
-            if os.path.exists(mol_src):
-                shutil.copy2(mol_src, os.path.join(task_dir, f"{mol_name}.json"))
-                logger.debug(f"复制分子文件 {mol_name}.json 到: {task_dir}")
-            else:
-                logger.warning(f"分子定义文件不存在: {mol_src}")
+    copy_force_field_and_components(
+        json_dir,
+        task_dir,
+        component_names=component_names,
+        cif_path=cif_path,
+        log=logger,
+    )
 
 
 def generate_raspa3_tasks(

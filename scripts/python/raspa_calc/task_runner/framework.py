@@ -3,19 +3,27 @@ import json
 import logging
 import math
 import os
-import shutil
 import subprocess
 
 from raspa_calc.algorithms.calculate_params import process_structure_file
-from force_field_utils import write_filtered_force_field
+from raspa_calc.algorithms.raspa3_io import (
+    apply_component_names,
+    apply_mser_settings,
+    apply_system_settings,
+    copy_force_field_and_components,
+    finalize_simulation_config,
+    write_simulation_json,
+)
 
+from .cif import locate_cif_file
 from .logging_utils import logger
 
 
 def check_structure_files(framework_name, custom_cif_dir=None):
     """Check CIF structure file exists."""
-    if framework_name.lower().endswith(".cif"):
-        framework_name = framework_name[:-4]
+    clean_name = framework_name
+    if clean_name.lower().endswith(".cif"):
+        clean_name = clean_name[:-4]
 
     if custom_cif_dir:
         cif_dir = custom_cif_dir
@@ -25,23 +33,15 @@ def check_structure_files(framework_name, custom_cif_dir=None):
             current_dir = os.getcwd()
             cif_dir = os.path.join(current_dir, "data", "cif")
 
-    cif_file = os.path.join(cif_dir, f"{framework_name}.cif")
-    if os.path.exists(cif_file):
+    cif_file = locate_cif_file(clean_name, cif_dir)
+    if cif_file:
+        default_path = os.path.join(cif_dir, f"{clean_name}.cif")
+        if os.path.abspath(cif_file) != os.path.abspath(default_path):
+            logger.info(f"找到框架 {framework_name} 的替代CIF文件: {cif_file}")
         return cif_file
 
-    alternative_files = [
-        os.path.join(cif_dir, f"{framework_name.upper()}.cif"),
-        os.path.join(cif_dir, f"{framework_name.lower()}.cif"),
-        os.path.join(cif_dir, f"{framework_name}"),
-    ]
-
-    for alt_file in alternative_files:
-        if os.path.exists(alt_file):
-            logger.info(f"找到框架 {framework_name} 的替代CIF文件: {alt_file}")
-            return alt_file
-
     from raspa_calc.algorithms.calculate_params import check_structure_files as check_cif_files
-    cif_file = check_cif_files(framework_name, cif_dir)
+    cif_file = check_cif_files(clean_name, cif_dir)
     if cif_file:
         return cif_file
 
@@ -223,21 +223,8 @@ def process_framework_raspa3(
     try:
         try:
             cif_path = None
-            clean_name = framework_name
-            if clean_name.lower().endswith(".cif"):
-                clean_name = clean_name[:-4]
-
             if cif_base_path:
-                candidates = [
-                    os.path.join(cif_base_path, f"{clean_name}.cif"),
-                    os.path.join(cif_base_path, f"{clean_name}"),
-                    os.path.join(cif_base_path, f"{clean_name.upper()}.cif"),
-                    os.path.join(cif_base_path, f"{clean_name.lower()}.cif"),
-                ]
-                for path in candidates:
-                    if os.path.exists(path):
-                        cif_path = path
-                        break
+                cif_path = locate_cif_file(framework_name, cif_base_path)
 
             if cif_path is None:
                 logger.error(f"找不到框架 {framework_name} 的 CIF 文件")
@@ -291,18 +278,16 @@ def process_framework_raspa3(
 
             sim_config = copy.deepcopy(sim_config)
 
-            if "Systems" in sim_config and len(sim_config["Systems"]) > 0:
-                sim_config["Systems"][0]["Name"] = cif_path
-                sim_config["Systems"][0]["NumberOfUnitCells"] = unit_cells
-                sim_config["Systems"][0]["HeliumVoidFraction"] = void_fraction
+            apply_system_settings(
+                sim_config,
+                cif_path=cif_path,
+                unit_cells=unit_cells,
+                void_fraction=void_fraction,
+                use_abs_cif=False,
+            )
 
             molecule_list = molecule_name.split() if isinstance(molecule_name, str) else [molecule_name]
-            if "Components" in sim_config:
-                for i, component in enumerate(sim_config["Components"]):
-                    if i < len(molecule_list):
-                        component["Name"] = molecule_list[i]
-                    elif molecule_list:
-                        component["Name"] = molecule_list[0]
+            apply_component_names(sim_config, molecule_list)
 
             mser_enable = os.environ.get("RASPA_MSER_ENABLE", "false").lower() == "true"
             if mser_enable:
@@ -310,35 +295,21 @@ def process_framework_raspa3(
                     mser_add_cycles = int(os.environ.get("RASPA_MSER_ADD_CYCLES", "500"))
                 except ValueError:
                     mser_add_cycles = 500
-                sim_config["NumberOfCycles"] = mser_add_cycles
-                sim_config["NumberOfInitializationCycles"] = 0
-                sim_config["NumberOfEquilibrationCycles"] = 0
-                sim_config["PrintEvery"] = 1
+                apply_mser_settings(sim_config, mser_enable=mser_enable, add_cycles=mser_add_cycles)
 
-            sim_config.pop("WriteBinaryRestartEvery", None)
-            sim_config.pop("RestartFromBinaryFile", None)
+            finalize_simulation_config(sim_config)
 
             sim_path = os.path.join(md_dir, "simulation.json")
-            with open(sim_path, "w", encoding="utf-8") as f:
-                json.dump(sim_config, f, indent=2)
+            write_simulation_json(sim_config, sim_path)
 
             if json_dir and os.path.isdir(json_dir):
-                force_field_src = os.path.join(json_dir, "force_field.json")
-                if os.path.exists(force_field_src):
-                    dest = os.path.join(md_dir, "force_field.json")
-                    write_filtered_force_field(
-                        force_field_src,
-                        dest,
-                        cif_path=cif_path,
-                        json_dir=json_dir,
-                        component_names=molecule_list,
-                        log=logger,
-                    )
-
-                for mol_name in molecule_list:
-                    mol_src = os.path.join(json_dir, f"{mol_name}.json")
-                    if os.path.exists(mol_src):
-                        shutil.copy2(mol_src, os.path.join(md_dir, f"{mol_name}.json"))
+                copy_force_field_and_components(
+                    json_dir,
+                    md_dir,
+                    component_names=molecule_list,
+                    cif_path=cif_path,
+                    log=logger,
+                )
 
             return True
 

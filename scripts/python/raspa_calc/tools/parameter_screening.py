@@ -15,12 +15,18 @@ import traceback
 import itertools
 import subprocess
 import re
-import multiprocessing
-from pathlib import Path
 from contextlib import contextmanager
 from tqdm import tqdm
-from force_field_utils import write_filtered_force_field
-from task_runner.scheduler import build_node_plan, get_slurm_cluster_resources
+try:
+    import yaml  # type: ignore
+except Exception:
+    yaml = None
+from task_runner.cif import count_numbered_labels, locate_cif_file
+from task_runner.csv_utils import read_csv_with_fallbacks
+from task_runner.env import _env_flag, _positive_int
+from task_runner.inputs import get_cpu_cores_with_plan
+from task_runner.submit_utils import _parse_submit_index, _should_print_submit_line
+from task_runner.void_utils import load_void_fraction_from_csv
 
 # 配置读取
 from common import config as common_config
@@ -32,6 +38,19 @@ from raspa_calc.algorithms.calculate_params import (
     load_cache,
     save_cache,
 )
+from raspa_calc.algorithms.raspa3_io import (
+    apply_component_names,
+    apply_mser_settings,
+    apply_system_settings,
+    copy_force_field_and_components,
+    finalize_simulation_config,
+    write_simulation_json,
+)
+from raspa_calc.tools.legacy_job_scripts import (
+    create_job_script,
+    create_job_script_raspa3,
+    submit_job,
+)
 
 # 配置日志
 logging.basicConfig(
@@ -39,6 +58,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("parameter_screening")
+
+# Backward-compatible alias
+find_cif_file = locate_cif_file
 
 @contextmanager
 def suppress_info_logs():
@@ -49,46 +71,6 @@ def suppress_info_logs():
         yield
     finally:
         logging.disable(prev_disable)
-
-def _parse_submit_index(line):
-    match = re.search(r"正在提交第(\d+)个任务", line)
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
-
-def _should_print_submit_line(line):
-    important_markers = (
-        "错误",
-        "失败",
-        "⚠️",
-        "❌",
-        "警告",
-        "WARNING",
-        "Error",
-        "ERROR",
-        "开始提交计算任务",
-        "使用CPU核心数",
-        "提交模式",
-        "开始逐个提交作业",
-        "job array",
-        "Job array",
-        "节点分配计划",
-        "提交汇总",
-        "所有作业已提交完成",
-        "提示",
-        "检测到",
-    )
-    return any(marker in line for marker in important_markers)
-
-def _positive_int(raw, default):
-    try:
-        value = int(raw)
-        return value if value > 0 else default
-    except (TypeError, ValueError):
-        return default
 
 def load_config(config_path=None):
     """加载配置文件"""
@@ -152,92 +134,6 @@ def detect_job_system():
     else:
         return "local"
 
-def get_ht_cpu_cores(total_tasks, output_base_dir):
-    """高通量模式的 CPU 核心选择与节点计划生成"""
-    if total_tasks <= 0:
-        return 0
-
-    system_cores = multiprocessing.cpu_count()
-    logger.info(f"当前节点CPU核心数: {system_cores}")
-
-    cluster_info = get_slurm_cluster_resources()
-    if cluster_info.get("available"):
-        logger.info(f"SLURM集群总 CPU核心数: {cluster_info.get('total_cpus')}")
-        logger.info(f"SLURM集群已分配 CPU核心数: {cluster_info.get('allocated_cpus')}")
-        logger.info(f"SLURM集群当前可用 CPU核心数: {cluster_info.get('available_cpus')}")
-
-        if cluster_info.get("nodes"):
-            logger.info("节点资源详情（线程总数/负载/建议可用线程）：")
-            for node in cluster_info["nodes"]:
-                load_txt = f"{node['load']:.2f}" if node.get("load") is not None else "未知"
-                topo_txt = node.get("topology") or "?"
-                free_cpus = node.get("free_cpus", 0)
-                physical = node.get("physical_cpus")
-                if physical:
-                    logger.info(
-                        f"  {node['node']}: 总{node['total_cpus']}线程 (物理{physical}, 拓扑{topo_txt}), "
-                        f"已分配{node['allocated_cpus']}, CPULoad={load_txt}, 估计可用={free_cpus}"
-                    )
-                else:
-                    logger.info(
-                        f"  {node['node']}: 总{node['total_cpus']}线程, 已分配{node['allocated_cpus']}, "
-                        f"CPULoad={load_txt}, 估计可用={free_cpus}"
-                    )
-
-        recommended_cores = min(int(cluster_info.get("available_cpus") or 0), total_tasks)
-        if recommended_cores > 0:
-            logger.info(f"建议使用CPU核心数: {recommended_cores} (基于集群空闲资源)")
-        else:
-            logger.info("集群当前无空闲CPU资源，请谨慎选择使用数量")
-    else:
-        logger.info("未检测到SLURM集群环境，使用当前节点信息")
-
-    while True:
-        try:
-            cpu_cores = int(input(f"\n请输入需要运行的CPU核心数 (1-{total_tasks}): "))
-            if 1 <= cpu_cores <= total_tasks:
-                break
-            logger.warning(f"CPU核心数必须在1到{total_tasks}之间")
-        except ValueError:
-            logger.warning("请输入有效的数字")
-        except KeyboardInterrupt:
-            logger.info("用户取消操作")
-            sys.exit(130)
-
-    plan_path = os.path.join(output_base_dir, ".raspa_node_plan")
-    if cluster_info.get("available"):
-        plan_string, plan_pairs = build_node_plan(cluster_info, cpu_cores)
-        if plan_string:
-            os.environ["RASPA_NODE_PLAN"] = plan_string
-            logger.info(f"节点分配计划: {plan_string}")
-            if plan_pairs:
-                summary = ", ".join(f"{n}:{c}" for n, c in plan_pairs)
-                logger.info(f"节点任务分配总览: {summary}")
-            try:
-                with open(plan_path, "w", encoding="utf-8") as pf:
-                    pf.write(plan_string + "\n")
-                logger.info(f"节点分配计划已写入: {plan_path}")
-            except Exception as exc:
-                logger.warning(f"写入节点分配计划失败: {exc}")
-        else:
-            os.environ.pop("RASPA_NODE_PLAN", None)
-            if os.path.exists(plan_path):
-                try:
-                    os.remove(plan_path)
-                    logger.info(f"已清理旧的节点分配计划: {plan_path}")
-                except Exception as exc:
-                    logger.warning(f"删除节点分配计划失败: {exc}")
-    else:
-        os.environ.pop("RASPA_NODE_PLAN", None)
-        if os.path.exists(plan_path):
-            try:
-                os.remove(plan_path)
-                logger.info(f"已清理旧的节点分配计划: {plan_path}")
-            except Exception as exc:
-                logger.warning(f"删除节点分配计划失败: {exc}")
-
-    return cpu_cores
-
 def get_job_templates(job_system):
     """根据作业系统类型获取对应的作业模板和提交命令"""
     # 统一转为小写处理
@@ -262,7 +158,7 @@ def get_job_templates(job_system):
 def read_csv_data(csv_path, column_number):
     """读取CSV文件中的框架数据"""
     try:
-        df = pd.read_csv(csv_path)
+        df = read_csv_with_fallbacks(csv_path)
 
         # 显示CSV文件的列信息
         print("CSV文件的列信息：")
@@ -282,65 +178,7 @@ def read_csv_data(csv_path, column_number):
         logger.error(f"读取CSV文件失败: {e}")
         return []
 
-def load_void_fraction_from_csv(csv_path, framework_column, void_column):
-    """从CSV文件加载孔隙率数据
 
-    Args:
-        csv_path: CSV文件路径
-        framework_column: 框架名称列名
-        void_column: 孔隙率列名
-
-    Returns:
-        dict: {框架名: 孔隙率}
-    """
-    try:
-        df = pd.read_csv(csv_path)
-
-        if framework_column not in df.columns:
-            logger.error(f"CSV文件中未找到框架列: {framework_column}")
-            return {}
-
-        if void_column not in df.columns:
-            logger.error(f"CSV文件中未找到孔隙率列: {void_column}")
-            return {}
-
-        # 创建框架名到孔隙率的映射
-        void_dict = {}
-        for _, row in df.iterrows():
-            framework = row[framework_column]
-            void_frac = row[void_column]
-            if pd.notna(framework) and pd.notna(void_frac):
-                void_dict[str(framework)] = float(void_frac)
-
-        logger.info(f"从CSV文件加载了 {len(void_dict)} 个框架的孔隙率数据")
-        return void_dict
-
-    except Exception as e:
-        logger.error(f"加载孔隙率数据失败: {e}")
-        return {}
-
-def find_cif_file(framework_name, cif_dir):
-    """查找框架对应的CIF文件，支持大小写和后缀的智能匹配"""
-    # 检查直接匹配
-    direct_match = os.path.join(cif_dir, f"{framework_name}.cif")
-    if os.path.exists(direct_match):
-        return direct_match
-    
-    # 检查其他可能的匹配（大小写、后缀）
-    possible_patterns = [
-        f"{framework_name}.cif",
-        f"{framework_name}.CIF",
-        f"{framework_name}",
-        f"{framework_name.upper()}.cif",
-        f"{framework_name.lower()}.cif"
-    ]
-    
-    for filename in os.listdir(cif_dir):
-        base_name = os.path.splitext(filename)[0]
-        if base_name.lower() == framework_name.lower() or filename in possible_patterns:
-            return os.path.join(cif_dir, filename)
-    
-    return None
 
 def generate_parameter_combinations(param_ranges):
     """根据参数范围生成所有可能的参数组合"""
@@ -443,30 +281,22 @@ def copy_raspa3_json_files(json_dir, output_dir, component_names=None, cif_path=
             shutil.copy2(src, dest)
             copied.add(os.path.relpath(dest, output_dir))
 
-        # 复制 force_field.json（按 CIF/气体筛选）
+        # 复制 force_field.json 与组件 JSON（按 CIF/气体筛选）
+        copy_force_field_and_components(
+            json_dir,
+            output_dir,
+            component_names=component_names,
+            cif_path=cif_path,
+            log=logger,
+        )
         ff_src = os.path.join(json_dir, "force_field.json")
         if os.path.exists(ff_src):
-            dest = os.path.join(output_dir, "force_field.json")
-            write_filtered_force_field(
-                ff_src,
-                dest,
-                cif_path=cif_path,
-                json_dir=json_dir,
-                component_names=component_names,
-                log=logger,
-            )
             copied.add("force_field.json")
-            logger.debug(f"复制 force_field.json 到 {dest}（已按 CIF/气体筛选）")
-        else:
-            logger.warning(f"force_field.json 不存在: {ff_src}")
-
-        # 复制组件 JSON（如指定）
         if component_names:
             for name in component_names:
                 mol_src = os.path.join(json_dir, f"{name}.json")
                 if os.path.exists(mol_src):
-                    copy_file(mol_src, os.path.join(output_dir, f"{name}.json"))
-                    logger.debug(f"复制 {name}.json 到 {output_dir}")
+                    copied.add(f"{name}.json")
 
         # 复制剩余资源（包含子目录，排除 simulation.json，已复制的 force_field.json）
         for root, _, files in os.walk(json_dir):
@@ -528,14 +358,9 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
         # 获取框架名称和 CIF 路径
         framework_name = params.get('framework', '')
 
-        # 确保 Systems[0] 存在
-        if not sim_config.get('Systems'):
-            sim_config['Systems'] = [{}]
-        system_cfg = sim_config['Systems'][0]
-
         # 设置 Systems[0].Name 为 CIF 绝对路径（RASPA3 需要绝对路径）
+        system_cfg = apply_system_settings(sim_config, cif_path=cif_path, use_abs_cif=True)
         if cif_path and os.path.exists(cif_path):
-            system_cfg['Name'] = os.path.abspath(cif_path)
             logger.info(f"设置 CIF 路径: {system_cfg['Name']}")
         else:
             logger.warning("未找到有效的 CIF 路径，保留模板中的 Name 字段")
@@ -550,12 +375,12 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
                     cif_path, cutoff_value, result_cache=result_cache
                 )
                 if success and unit_cells_tuple:
-                    system_cfg['NumberOfUnitCells'] = list(unit_cells_tuple)
+                    apply_system_settings(sim_config, unit_cells=unit_cells_tuple)
                     logger.info(f"计算 NumberOfUnitCells: {unit_cells_tuple}")
 
                     # 设置孔隙率
                     if void_fraction is not None:
-                        system_cfg['HeliumVoidFraction'] = void_fraction
+                        apply_system_settings(sim_config, void_fraction=void_fraction)
                         logger.info(f"设置 HeliumVoidFraction: {void_fraction}")
             except Exception as e:
                 logger.warning(f"计算 UnitCells 失败: {e}")
@@ -564,7 +389,7 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
         if void_fraction_csv and framework_name:
             vf = void_fraction_csv.get(framework_name)
             if vf is not None:
-                system_cfg['HeliumVoidFraction'] = vf
+                apply_system_settings(sim_config, void_fraction=vf)
                 logger.info(f"从 CSV 设置 HeliumVoidFraction: {vf}")
 
         # 替换顶层参数
@@ -602,27 +427,18 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
             elif isinstance(component_override, str):
                 component_names_override = parse_molecule_names(component_override)
 
-        if component_names_override and "Components" in sim_config:
-            for i, component in enumerate(sim_config["Components"]):
-                chosen = component_names_override[min(i, len(component_names_override) - 1)]
-                component["Name"] = chosen
-                logger.info(f"设置 Components[{i}].Name: {chosen}")
+        if component_names_override:
+            apply_component_names(sim_config, component_names_override, log=logger)
 
         # pyMSER 续跑需要重启文件；若启用则补足配置并按追加步数启动（与高通量模式一致）
         if mser_enable:
-            write_every = max(1, mser_add_cycles or 1)
-            sim_config['NumberOfCycles'] = mser_add_cycles or sim_config.get('NumberOfCycles', write_every)
-            sim_config['NumberOfInitializationCycles'] = 0
-            sim_config['NumberOfEquilibrationCycles'] = 0
-            sim_config['PrintEvery'] = 1
+            apply_mser_settings(sim_config, mser_enable=mser_enable, add_cycles=mser_add_cycles)
 
         # 统一移除二进制重启相关字段，使用 JSON RestartFileName 续跑
-        sim_config.pop('WriteBinaryRestartEvery', None)
-        sim_config.pop('RestartFromBinaryFile', None)
+        finalize_simulation_config(sim_config)
 
         # 写入输出文件
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(sim_config, f, indent=2, ensure_ascii=False)
+        write_simulation_json(sim_config, output_path, ensure_ascii=False)
 
         logger.info(f"成功创建 RASPA3 配置文件: {output_path}")
         return True
@@ -631,259 +447,6 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
         logger.error(f"创建 simulation.json 文件失败: {e}")
         logger.debug(traceback.format_exc())
         return False
-
-
-def create_job_script_raspa3(param_dir, job_name, scheduler_type="slurm", conda_env="raspa3", mser_config=None):
-    """创建 RASPA3 作业提交脚本
-
-    Args:
-        param_dir: 参数目录
-        job_name: 作业名称
-        scheduler_type: 调度系统类型 ('slurm', 'pbs', 或 'local')
-        conda_env: RASPA3 conda 环境名称
-        mser_config: pyMSER 配置
-
-    Returns:
-        str: 脚本文件路径
-    """
-    script_path = os.path.join(param_dir, "job.sh")
-
-    mser_settings = mser_config or {}
-    mser_enable = bool(mser_settings.get('enable', False))
-    mser_target_cycles = int(mser_settings.get('target_cycles', 1000)) if mser_enable else None
-    mser_add_cycles = int(mser_settings.get('add_cycles', 500)) if mser_enable else None
-    mser_max_iter = int(mser_settings.get('max_iter', 20)) if mser_enable else None
-    mser_uncertainty = mser_settings.get('uncertainty', 'uSD') if mser_enable else 'uSD'
-    mser_conda_env = mser_settings.get('conda_env', 'pymser') if mser_enable else 'pymser'
-
-    status_file = "status.txt"
-    orig_dir = param_dir
-
-    mser_env_block = ""
-    mser_run_block = ""
-    if mser_enable:
-        mser_env_block = f"""
-# pyMSER 设置
-MSER_MODULE="raspa_calc.algorithms.auto_mser_raspa3"
-MSER_PYTHONPATH="${{RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}}/scripts/python"
-export PYTHONPATH="${{MSER_PYTHONPATH}}${{PYTHONPATH:+:$PYTHONPATH}}"
-export RASPA_MSER_ENABLE=true
-export RASPA_MSER_TARGET_CYCLES={mser_target_cycles}
-export RASPA_MSER_ADD_CYCLES={mser_add_cycles}
-export RASPA_MSER_MAX_ITER={mser_max_iter}
-export RASPA_MSER_UNCERTAINTY={mser_uncertainty}
-export RASPA_MSER_CONDA_ENV={mser_conda_env}
-export RASPA3_CONDA_ENV={conda_env}
-"""
-
-        mser_run_block = f"""
-if [ $raspa3_exit_code -eq 0 ] && [ -d "output" ]; then
-    output_count=$(find output -maxdepth 1 -type f \\( -name "output_*.txt" -o -name "output_*.json" \\) 2>/dev/null | wc -l)
-else
-    output_count=0
-fi
-if [ $output_count -gt 0 ] && [ -d "$MSER_PYTHONPATH/raspa_calc/algorithms" ]; then
-    echo " ==> 运行 pyMSER 自动平衡"
-    if command -v conda >/dev/null 2>&1; then
-        conda run -n "{mser_conda_env}" python -m "$MSER_MODULE" \\
-          --workdir "$(pwd)" \\
-          --target-cycles "{mser_target_cycles}" \\
-          --add-cycles "{mser_add_cycles}" \\
-          --max-iter "{mser_max_iter}" \\
-          --uncertainty "{mser_uncertainty}" \\
-          --conda-env "{mser_conda_env}" \\
-          --raspa3-conda-env "{conda_env}"
-    else
-        python -m "$MSER_MODULE" \\
-          --workdir "$(pwd)" \\
-          --target-cycles "{mser_target_cycles}" \\
-          --add-cycles "{mser_add_cycles}" \\
-          --max-iter "{mser_max_iter}" \\
-          --uncertainty "{mser_uncertainty}" \\
-          --conda-env "{mser_conda_env}" \\
-          --raspa3-conda-env "{conda_env}"
-    fi
-    mser_status=$?
-fi
-"""
-
-    # conda 初始化脚本
-    conda_init = '''
-# 初始化 conda
-if [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
-    source "$HOME/anaconda3/etc/profile.d/conda.sh"
-elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    source "$HOME/miniconda3/etc/profile.d/conda.sh"
-fi
-'''
-
-    if scheduler_type == "slurm":
-        script_content = f'''#!/bin/bash
-#SBATCH --job-name={job_name}
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
-#SBATCH --hint=multithread
-#SBATCH --output=%x.%j.out
-#SBATCH --error=%x.%j.err
-
-# 设置资源限制
-ulimit -u 20480
-ulimit -s 16384
-
-# 设置环境变量
-export OPENBLAS_NUM_THREADS=1
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-MSER_ENABLED={"1" if mser_enable else "0"}
-{mser_env_block}
-{conda_init}
-# 激活 RASPA3 环境
-conda activate {conda_env}
-
-ORIG_DIR="{orig_dir}"
-PARENT_DIR="$(dirname "$ORIG_DIR")"
-BASE_DIR="$(basename "$ORIG_DIR")"
-RUN_DIR="$ORIG_DIR"
-if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
-if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
-if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
-if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
-  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
-fi
-cd "$RUN_DIR" || exit 1
-
-echo "running" > "{status_file}"
-echo $SLURM_JOB_ID > jobid
-
-# 运行 RASPA3
-raspa3_exit_code=0
-mser_status=0
-raspa3
-raspa3_exit_code=$?
-{mser_run_block}
-if [ $raspa3_exit_code -ne 0 ]; then
-    echo "failed_simulate" > "{status_file}"
-    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
-    echo "failed_mser" > "{status_file}"
-    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-else
-    echo "done" > "{status_file}"
-    mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
-fi
-'''
-    elif scheduler_type == "pbs":
-        script_content = f'''#!/bin/bash
-#PBS -N {job_name}
-#PBS -l nodes=1:ppn=1
-#PBS -o pbs.out
-#PBS -e pbs.err
-#PBS -j oe
-
-# 设置资源限制
-ulimit -u 20480
-ulimit -s 16384
-
-# 设置环境变量
-export OPENBLAS_NUM_THREADS=1
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-MSER_ENABLED={"1" if mser_enable else "0"}
-{mser_env_block}
-{conda_init}
-# 激活 RASPA3 环境
-conda activate {conda_env}
-
-# 切换到作业目录
-cd $PBS_O_WORKDIR
-
-ORIG_DIR="{orig_dir}"
-PARENT_DIR="$(dirname "$ORIG_DIR")"
-BASE_DIR="$(basename "$ORIG_DIR")"
-RUN_DIR="$ORIG_DIR"
-if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
-if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
-if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
-if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
-  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
-fi
-cd "$RUN_DIR" || exit 1
-
-echo $PBS_JOBID > jobid
-echo "running" > "{status_file}"
-
-# 运行 RASPA3
-raspa3_exit_code=0
-mser_status=0
-raspa3
-raspa3_exit_code=$?
-{mser_run_block}
-if [ $raspa3_exit_code -ne 0 ]; then
-    echo "failed_simulate" > "{status_file}"
-    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
-    echo "failed_mser" > "{status_file}"
-    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-else
-    echo "done" > "{status_file}"
-    mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
-fi
-'''
-    else:
-        script_content = f'''#!/bin/bash
-
-# 设置环境变量
-export OPENBLAS_NUM_THREADS=1
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-MSER_ENABLED={"1" if mser_enable else "0"}
-{mser_env_block}
-{conda_init}
-# 激活 RASPA3 环境
-conda activate {conda_env}
-
-# 切换到作业目录
-ORIG_DIR="{orig_dir}"
-PARENT_DIR="$(dirname "$ORIG_DIR")"
-BASE_DIR="$(basename "$ORIG_DIR")"
-RUN_DIR="$ORIG_DIR"
-if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
-if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
-if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
-if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
-  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
-fi
-cd "$RUN_DIR" || exit 1
-
-echo $$ > jobid
-echo "running" > "{status_file}"
-
-# 运行 RASPA3
-raspa3_exit_code=0
-mser_status=0
-raspa3
-raspa3_exit_code=$?
-{mser_run_block}
-if [ $raspa3_exit_code -ne 0 ]; then
-    echo "failed_simulate" > "{status_file}"
-    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
-    echo "failed_mser" > "{status_file}"
-    mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-else
-    echo "done" > "{status_file}"
-    mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
-fi
-'''
-
-    with open(script_path, 'w') as f:
-        f.write(script_content)
-
-    os.chmod(script_path, 0o755)
-    logger.info(f"创建 RASPA3 作业脚本: {script_path}")
-
-    return script_path
 
 
 def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, template_path,
@@ -1200,323 +763,6 @@ def create_simulation_input(template_path, params, cif_path, output_path, config
         logger.debug(traceback.format_exc())
         return False
 
-def create_job_script(param_dir, job_name, scheduler_type="pbs", mser_config=None):
-    """创建作业提交脚本
-
-    Args:
-        param_dir: 参数目录
-        job_name: 作业名称
-        scheduler_type: 调度系统类型 ('slurm', 'pbs', 或 'local')
-        mser_config: pyMSER 配置
-
-    Returns:
-        str: 脚本文件路径
-    """
-    # 创建脚本文件路径
-    script_path = os.path.join(param_dir, "job.sh")
-    
-    # 获取RASPA目录
-    raspa_dir = os.environ.get('RASPA_DIR', '')
-    raspa_cmd = os.path.join(raspa_dir, "bin", "simulate")
-
-    mser_settings = mser_config or {}
-    mser_enable = bool(mser_settings.get('enable', False))
-    mser_target_cycles = int(mser_settings.get('target_cycles', 1000)) if mser_enable else None
-    mser_add_cycles = int(mser_settings.get('add_cycles', 500)) if mser_enable else None
-    mser_max_iter = int(mser_settings.get('max_iter', 20)) if mser_enable else None
-    mser_uncertainty = mser_settings.get('uncertainty', 'uSD') if mser_enable else 'uSD'
-    mser_conda_env = mser_settings.get('conda_env', 'pymser') if mser_enable else 'pymser'
-
-    status_file = "status.txt"
-    orig_dir = param_dir
-
-    mser_env_block = ""
-    mser_run_block = ""
-    if mser_enable:
-        mser_env_block = f"""
-# pyMSER 设置
-MSER_MODULE="raspa_calc.algorithms.auto_mser_raspa2"
-MSER_PYTHONPATH="${{RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}}/scripts/python"
-export PYTHONPATH="${{MSER_PYTHONPATH}}${{PYTHONPATH:+:$PYTHONPATH}}"
-export RASPA_MSER_ENABLE=true
-export RASPA_MSER_TARGET_CYCLES={mser_target_cycles}
-export RASPA_MSER_ADD_CYCLES={mser_add_cycles}
-export RASPA_MSER_MAX_ITER={mser_max_iter}
-export RASPA_MSER_UNCERTAINTY={mser_uncertainty}
-export RASPA_MSER_CONDA_ENV={mser_conda_env}
-"""
-        mser_run_block = f"""
-if [ $sim_exit_code -eq 0 ] && [ -d "$MSER_PYTHONPATH/raspa_calc/algorithms" ]; then
-  echo " ==> 运行 pyMSER 自动平衡"
-  mser_status=0
-  if command -v conda >/dev/null 2>&1; then
-    conda run -n "{mser_conda_env}" python -m "$MSER_MODULE" \\
-      --workdir "$(pwd)" \\
-      --target-cycles "{mser_target_cycles}" \\
-      --add-cycles "{mser_add_cycles}" \\
-      --max-iter "{mser_max_iter}" \\
-      --uncertainty "{mser_uncertainty}" \\
-      --conda-env "{mser_conda_env}"
-  else
-    python -m "$MSER_MODULE" \\
-      --workdir "$(pwd)" \\
-      --target-cycles "{mser_target_cycles}" \\
-      --add-cycles "{mser_add_cycles}" \\
-      --max-iter "{mser_max_iter}" \\
-      --uncertainty "{mser_uncertainty}" \\
-      --conda-env "{mser_conda_env}"
-  fi
-  mser_status=$?
-fi
-"""
-    
-    # 根据调度系统类型生成不同的脚本内容
-    if scheduler_type == "slurm":
-        # SLURM脚本
-        script_content = f"""#!/bin/bash
-#SBATCH --job-name={job_name}
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
-#SBATCH --hint=multithread
-#SBATCH --output=%x.%j.out
-#SBATCH --error=%x.%j.err
-
-# 设置资源限制和线程数
-ulimit -u 20480
-ulimit -s 16384
-
-# 设置环境变量，防止数学库线程冲突
-export OPENBLAS_NUM_THREADS=1 
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-MSER_ENABLED={"1" if mser_enable else "0"}
-{mser_env_block}
-
-# 设置工作目录并重命名状态
-ORIG_DIR="{orig_dir}"
-PARENT_DIR="$(dirname "$ORIG_DIR")"
-BASE_DIR="$(basename "$ORIG_DIR")"
-RUN_DIR="$ORIG_DIR"
-if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
-if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
-if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
-if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
-  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
-fi
-cd "$RUN_DIR" || exit 1
-
-echo "running" > "{status_file}"
-echo $SLURM_JOB_ID > jobid
-
-# 运行RASPA
-sim_exit_code=0
-mser_status=0
-{raspa_cmd}
-sim_exit_code=$?
-{mser_run_block}
-if [ $sim_exit_code -ne 0 ]; then
-  echo "failed_simulate" > "{status_file}"
-  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
-  echo "failed_mser" > "{status_file}"
-  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-else
-  echo "done" > "{status_file}"
-  mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
-fi
-"""
-    elif scheduler_type == "pbs":
-        # PBS脚本
-        script_content = f"""#!/bin/bash
-#PBS -N {job_name}
-#PBS -l nodes=1:ppn=1
-#PBS -o pbs.out
-#PBS -e pbs.err
-#PBS -j oe
-
-# 设置资源限制和线程数
-ulimit -u 20480
-ulimit -s 16384
-
-# 设置环境变量，防止数学库线程冲突
-export OPENBLAS_NUM_THREADS=1 
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-MSER_ENABLED={"1" if mser_enable else "0"}
-{mser_env_block}
-
-# 切换到作业提交的目录
-cd $PBS_O_WORKDIR
-
-ORIG_DIR="{orig_dir}"
-RUN_DIR="$ORIG_DIR"
-if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
-if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
-if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
-if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
-  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
-fi
-cd "$RUN_DIR" || exit 1
-
-echo $PBS_JOBID > jobid
-echo "running" > "{status_file}"
-
-# 运行RASPA
-sim_exit_code=0
-mser_status=0
-{raspa_cmd}
-sim_exit_code=$?
-{mser_run_block}
-if [ $sim_exit_code -ne 0 ]; then
-  echo "failed_simulate" > "{status_file}"
-  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
-  echo "failed_mser" > "{status_file}"
-  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-else
-  echo "done" > "{status_file}"
-  mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
-fi
-"""
-    else:
-        # 本地脚本
-        script_content = f"""#!/bin/bash
-
-# 设置环境变量，防止数学库线程冲突
-export OPENBLAS_NUM_THREADS=1 
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-MSER_ENABLED={"1" if mser_enable else "0"}
-{mser_env_block}
-
-# 切换到作业目录
-ORIG_DIR="{orig_dir}"
-PARENT_DIR="$(dirname "$ORIG_DIR")"
-BASE_DIR="$(basename "$ORIG_DIR")"
-RUN_DIR="$ORIG_DIR"
-if [ -d "${{ORIG_DIR}}__running" ]; then RUN_DIR="${{ORIG_DIR}}__running"; fi
-if [ -d "${{ORIG_DIR}}__done" ]; then RUN_DIR="${{ORIG_DIR}}__done"; fi
-if [ -d "${{ORIG_DIR}}__failed" ]; then RUN_DIR="${{ORIG_DIR}}__failed"; fi
-if [ "$RUN_DIR" = "$ORIG_DIR" ] && [ -d "$ORIG_DIR" ]; then
-  (cd "$PARENT_DIR" && mv "$BASE_DIR" "${{BASE_DIR}}__running") && RUN_DIR="${{ORIG_DIR}}__running"
-fi
-cd "$RUN_DIR" || exit 1
-
-echo $$ > jobid
-echo "running" > "{status_file}"
-
-# 运行RASPA
-sim_exit_code=0
-mser_status=0
-{raspa_cmd}
-sim_exit_code=$?
-{mser_run_block}
-if [ $sim_exit_code -ne 0 ]; then
-  echo "failed_simulate" > "{status_file}"
-  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-elif [ $MSER_ENABLED -eq 1 ] && [ $mser_status -ne 0 ]; then
-  echo "failed_mser" > "{status_file}"
-  mv "$RUN_DIR" "${{ORIG_DIR}}__failed" 2>/dev/null || true
-else
-  echo "done" > "{status_file}"
-  mv "$RUN_DIR" "${{ORIG_DIR}}__done" 2>/dev/null || true
-fi
-"""
-
-    # 写入脚本文件
-    with open(script_path, 'w') as f:
-        f.write(script_content)
-
-    # 设置执行权限
-    os.chmod(script_path, 0o755)
-    logger.info(f"创建作业脚本: {script_path}")
-
-    return script_path
-
-def submit_job(script_path, scheduler_type="pbs"):
-    """提交作业
-
-    Args:
-        script_path: 脚本文件路径
-        scheduler_type: 调度系统类型 ('slurm', 'pbs', 或 'local')
-
-    Returns:
-        str: 作业ID或None（如果提交失败）
-    """
-    try:
-        # 保存当前目录
-        original_dir = os.getcwd()
-
-        # 切换到脚本所在目录
-        script_dir = os.path.dirname(script_path)
-        os.chdir(script_dir)
-        script_name = os.path.basename(script_path)
-
-        # 根据调度系统类型提交作业
-        if scheduler_type == "slurm":
-            # 使用SLURM提交作业
-            result = subprocess.run(["sbatch", script_name],
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE,
-                                  check=False)
-
-            # 处理结果
-            if result.returncode == 0:
-                # 从输出中提取作业ID
-                output = result.stdout.decode('utf-8').strip()
-                # SLURM输出格式通常是 "Submitted batch job 123456"
-                job_id = output.split()[-1] if output else "unknown"
-                logger.info(f"作业提交成功，ID: {job_id}")
-                # 将作业ID写入文件
-                with open(os.path.join(script_dir, "jobid"), 'w') as f:
-                    f.write(job_id)
-                return job_id
-            else:
-                error = result.stderr.decode('utf-8').strip()
-                logger.error(f"作业提交失败: {error}")
-                return None
-
-        elif scheduler_type == "pbs":
-            # 使用PBS提交作业
-            result = subprocess.run(["qsub", script_name],
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE,
-                                  check=False)
-
-            # 处理结果
-            if result.returncode == 0:
-                job_id = result.stdout.decode('utf-8').strip()
-                logger.info(f"作业提交成功，ID: {job_id}")
-                # 将作业ID写入文件
-                with open(os.path.join(script_dir, "jobid"), 'w') as f:
-                    f.write(job_id)
-                return job_id
-            else:
-                error = result.stderr.decode('utf-8').strip()
-                logger.error(f"作业提交失败: {error}")
-                return None
-        else:
-            # 本地模式，直接在后台运行
-            process = subprocess.Popen(["bash", script_name],
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE)
-
-            # 将进程ID写入文件
-            job_id = str(process.pid)
-            with open(os.path.join(script_dir, "jobid"), 'w') as f:
-                f.write(job_id)
-
-            logger.info(f"本地作业已启动，进程ID: {job_id}")
-            return job_id
-
-    except Exception as e:
-        logger.error(f"提交作业时出错: {e}")
-        logger.debug(traceback.format_exc())
-        return None
-    finally:
-        # 返回原始目录
-        os.chdir(original_dir)
 
 def parse_number_list(input_str):
     """解析数字列表，支持空格或逗号作为分隔符"""
@@ -1596,7 +842,7 @@ def interactive_parameter_selection(framework_name, cif_dir=None, reuse_params=N
         params['framework'] = framework_name
         
         # 查找当前框架的CIF文件
-        cif_path = find_cif_file(params['framework'], params['cif_dir'])
+        cif_path = locate_cif_file(params['framework'], params['cif_dir'])
         if not cif_path:
             logger.error(f"未找到框架 {params['framework']} 对应的CIF文件")
             return None
@@ -1651,7 +897,7 @@ def interactive_parameter_selection(framework_name, cif_dir=None, reuse_params=N
     params['cif_dir'] = cif_dir
     
     # 检查CIF文件是否存在
-    cif_path = find_cif_file(params['framework'], params['cif_dir'])
+    cif_path = locate_cif_file(params['framework'], params['cif_dir'])
     if not cif_path:
         logger.error(f"未找到框架 {params['framework']} 对应的CIF文件")
         return None
@@ -1859,12 +1105,17 @@ def main():
         framework_col = calc_config.get('framework_column', 'refcode')
 
         # 根据 RASPA 版本选择 CIF 目录
+        cif_dir = ""
+        cif_dir_source = None
         if args.cif_dir:
             cif_dir = args.cif_dir
+            cif_dir_source = "args"
         elif raspa_version == 'raspa3':
             cif_dir = env_config.get('raspa3_cif_base_path', '')
+            cif_dir_source = "config" if cif_dir else None
         else:
             cif_dir = env_config.get('raspa2_cif_dir', '')
+            cif_dir_source = "config" if cif_dir else None
 
         # 根据 RASPA 版本选择模板文件
         if args.template:
@@ -1924,7 +1175,7 @@ def main():
         column_number = args.column_number
         if not column_number:
             try:
-                df = pd.read_csv(csv_file)
+                df = read_csv_with_fallbacks(csv_file)
                 if framework_col in df.columns:
                     column_number = str(df.columns.get_loc(framework_col) + 1)
                     logger.info(f"从配置文件获取框架列: {framework_col} (第{column_number}列)")
@@ -1962,12 +1213,33 @@ def main():
         if not framework_names:
             logger.error("CSV中没有有效框架名称")
             return 1
+        logger.info(f"找到 {len(framework_names)} 个有效框架结构")
 
         print("\n步骤3：检查CIF文件")
+        if cif_dir_source == "args":
+            logger.info(f"使用命令行指定CIF目录: {cif_dir}")
+        elif cif_dir_source == "config":
+            if raspa_version == 'raspa3':
+                logger.info(f"使用配置文件中的CIF基础路径 (RASPA3): {cif_dir}")
+            else:
+                logger.info(f"使用配置文件中的CIF目录: {cif_dir}")
+
+        if not os.path.exists(cif_dir):
+            logger.warning(f"CIF目录不存在: {cif_dir}")
+            create_dir = input("是否创建该目录? (y/n): ").strip().lower()
+            if create_dir == "y":
+                try:
+                    os.makedirs(cif_dir, exist_ok=True)
+                    logger.info(f"已创建目录: {cif_dir}")
+                except Exception as e:
+                    logger.error(f"创建目录失败: {e}")
+
+        logger.info(f"将使用CIF目录: {cif_dir}")
+        logger.info("检查框架对应的CIF文件...")
         framework_cif_paths = {}
         missing_cifs = []
         for framework in framework_names:
-            cif_path = find_cif_file(framework, cif_dir)
+            cif_path = locate_cif_file(framework, cif_dir)
             if cif_path:
                 framework_cif_paths[framework] = cif_path
             else:
@@ -1979,11 +1251,77 @@ def main():
                 logger.warning(f"  {i}. {missing}")
             if len(missing_cifs) > 10:
                 logger.warning(f"  ... 及其他 {len(missing_cifs) - 10} 个")
+            logger.warning("上述框架将被自动跳过，程序继续处理其余结构。")
 
         framework_names = list(framework_cif_paths.keys())
         if not framework_names:
             logger.error("所有框架均缺少CIF文件，无法继续计算。")
             return 1
+        logger.info(f"共找到 {len(framework_names)} 个框架对应的CIF文件")
+
+        if raspa_version == 'raspa3':
+            label_issues = []
+            total_label_issues = 0
+            check_tasks = []
+            logger.info("正在检查 CIF 文件标签格式...")
+
+            for framework in framework_names:
+                cif_path = framework_cif_paths.get(framework)
+                if not cif_path:
+                    continue
+                if "cleaned_cif" in os.path.normpath(cif_path).split(os.sep):
+                    continue
+                check_tasks.append((framework, cif_path))
+
+            if check_tasks:
+                for framework, cif_path in check_tasks:
+                    issue_count = count_numbered_labels(cif_path)
+                    if issue_count > 0:
+                        label_issues.append((framework, cif_path, issue_count))
+                        total_label_issues += issue_count
+
+            if label_issues:
+                preview_limit = 10
+                logger.warning(
+                    f"检测到 {len(label_issues)} 个 CIF 文件的 _atom_site_label 含编号，共 {total_label_issues} 条标签存在编号。"
+                )
+                for fw, path, cnt in label_issues[:preview_limit]:
+                    logger.warning(f"  - {fw}: {cnt} 个编号标签 ({path})")
+                if len(label_issues) > preview_limit:
+                    logger.warning(f"  ... 仅展示前 {preview_limit} 个框架，另有 {len(label_issues) - preview_limit} 个未列出")
+
+                auto_clean = config.get('parameter_screening', {}).get('auto_clean_cif_labels', False)
+                if auto_clean:
+                    logger.info("已启用 CIF 标签自动清理 (parameter_screening.auto_clean_cif_labels=true)")
+                else:
+                    user_choice = input("是否使用 clean_cif_labels.py 自动去除编号? (y/n): ").strip().lower()
+                    if user_choice != "y":
+                        logger.error("用户拒绝自动清理 CIF 标签，程序终止。请先处理标签后重新运行。")
+                        return 1
+
+                tool_dir = os.environ.get("RASPA_TOOL_DIR")
+                if not tool_dir:
+                    tool_dir = os.path.abspath(
+                        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
+                    )
+                script_path = os.path.join(tool_dir, "scripts", "python", "clean_cif_labels.py")
+                target_files = [os.path.basename(path) for _, path, _ in label_issues]
+                logger.info(
+                    "运行标签清理脚本（就地处理有编号的文件）: "
+                    f"{script_path} {cif_dir} --in-place --files {', '.join(target_files)}"
+                )
+                cmd = [sys.executable, script_path, cif_dir, "--in-place", "--files", *target_files]
+                result = subprocess.run(cmd)
+                if result.returncode != 0:
+                    logger.error("标签清理脚本执行失败，程序终止。")
+                    return 1
+
+                missing_cleaned = [f for f in target_files if not os.path.exists(os.path.join(cif_dir, f))]
+                if missing_cleaned:
+                    logger.error(f"以下文件未成功完成就地清理: {', '.join(missing_cleaned)}")
+                    return 1
+
+                logger.info(f"已完成 {len(target_files)} 个 CIF 的就地清理。")
 
         # 计算组合数
         combo_count = 1
@@ -1996,7 +1334,8 @@ def main():
         os.makedirs(output_base_dir, exist_ok=True)
 
         print("\n步骤4：集群资源与并发设置")
-        cpu_cores = get_ht_cpu_cores(total_jobs_est, output_base_dir)
+        plan_path = os.path.join(output_base_dir, ".raspa_node_plan")
+        cpu_cores = get_cpu_cores_with_plan(total_jobs_est, plan_path=plan_path)
         if cpu_cores <= 0:
             print("❌ 无有效CPU核心数，任务未提交")
             return 1
@@ -2169,7 +1508,7 @@ def main():
         # 保存配置快照
         try:
             snap_path = os.path.join(output_base_dir, ".raspa_config.yaml")
-            if common_config.HAS_YAML:
+            if common_config.HAS_YAML and yaml is not None:
                 with open(snap_path, "w", encoding="utf-8") as fh:
                     yaml.safe_dump(config or {}, fh, allow_unicode=True)
             else:
@@ -2221,7 +1560,7 @@ def main():
                 bufsize=1,
                 env=env,
             ) as proc:
-                submit_verbose = os.environ.get("RASPA_SUBMIT_VERBOSE", "").strip().lower() in ("1", "true", "yes", "y", "on")
+                submit_verbose = _env_flag("RASPA_SUBMIT_VERBOSE", False)
                 submit_every = _positive_int(os.environ.get("RASPA_SUBMIT_LOG_EVERY"), 10)
                 submit_every = min(submit_every, max(1, actual_cores))
                 if not submit_verbose and submit_every > 1:

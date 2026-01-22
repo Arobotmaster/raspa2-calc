@@ -4,7 +4,7 @@ import sys
 
 import pandas as pd
 
-from .env import _env_flag
+from .csv_utils import read_csv_with_fallbacks
 from .logging_utils import logger
 from .scheduler import build_node_plan, get_slurm_cluster_resources
 from . import state
@@ -66,13 +66,7 @@ def get_framework_data():
         return None, None
 
     try:
-        try:
-            df = pd.read_csv(csv_path, encoding="utf-8-sig")
-        except UnicodeDecodeError:
-            try:
-                df = pd.read_csv(csv_path, encoding="utf-8")
-            except UnicodeDecodeError:
-                df = pd.read_csv(csv_path, encoding="gbk")
+        df = read_csv_with_fallbacks(csv_path)
     except Exception as e:
         logger.error(f"无法读取CSV文件: {str(e)}")
         return None, None
@@ -135,24 +129,63 @@ def get_framework_data():
     return framework_names, x
 
 
-def get_computation_setup(total_tasks, cif_dir=None):
-    """Get computation settings."""
-    logger.info("=== 步骤3：设置计算参数 ===")
+def _write_node_plan(plan_path, plan_string):
+    try:
+        with open(plan_path, "w", encoding="utf-8") as pf:
+            pf.write(plan_string + "\n")
+        logger.info(f"节点分配计划已写入: {plan_path}")
+    except Exception as exc:
+        logger.warning(f"写入节点分配计划失败: {exc}")
+
+
+def _clear_node_plan(plan_path):
+    if plan_path and os.path.exists(plan_path):
+        try:
+            os.remove(plan_path)
+            logger.info(f"已清理旧的节点分配计划: {plan_path}")
+        except Exception as exc:
+            logger.warning(f"删除节点分配计划失败: {exc}")
+
+
+def _apply_node_plan(cluster_info, cpu_cores, plan_path=None):
+    if cluster_info.get("available"):
+        plan_string, plan_pairs = build_node_plan(cluster_info, cpu_cores)
+        if plan_string:
+            os.environ["RASPA_NODE_PLAN"] = plan_string
+            logger.info(f"节点分配计划: {plan_string}")
+            if plan_pairs:
+                summary = ", ".join(f"{n}:{c}" for n, c in plan_pairs)
+                logger.info(f"节点任务分配总览: {summary}")
+            if plan_path:
+                _write_node_plan(plan_path, plan_string)
+        else:
+            os.environ.pop("RASPA_NODE_PLAN", None)
+            _clear_node_plan(plan_path)
+    else:
+        os.environ.pop("RASPA_NODE_PLAN", None)
+        _clear_node_plan(plan_path)
+
+
+def get_cpu_cores_with_plan(total_tasks, cluster_info=None, plan_path=None):
+    """Prompt for CPU cores and configure node plan."""
+    if total_tasks <= 0:
+        return 0
 
     system_cores = multiprocessing.cpu_count()
     logger.info(f"当前节点CPU核心数: {system_cores}")
 
-    cluster_info = get_slurm_cluster_resources()
-    globals()["LAST_CLUSTER_INFO"] = cluster_info
-    if cluster_info["available"]:
-        logger.info(f"SLURM集群总 CPU核心数: {cluster_info['total_cpus']}")
-        logger.info(f"SLURM集群已分配 CPU核心数: {cluster_info['allocated_cpus']}")
-        logger.info(f"SLURM集群当前可用 CPU核心数: {cluster_info['available_cpus']}")
+    if cluster_info is None:
+        cluster_info = get_slurm_cluster_resources()
+
+    if cluster_info.get("available"):
+        logger.info(f"SLURM集群总 CPU核心数: {cluster_info.get('total_cpus')}")
+        logger.info(f"SLURM集群已分配 CPU核心数: {cluster_info.get('allocated_cpus')}")
+        logger.info(f"SLURM集群当前可用 CPU核心数: {cluster_info.get('available_cpus')}")
 
         if cluster_info.get("nodes"):
             logger.info("节点资源详情（线程总数/负载/建议可用线程）：")
             for node in cluster_info["nodes"]:
-                load_txt = f"{node['load']:.2f}" if node["load"] is not None else "未知"
+                load_txt = f"{node['load']:.2f}" if node.get("load") is not None else "未知"
                 topo_txt = node.get("topology") or "?"
                 free_cpus = node.get("free_cpus", 0)
                 physical = node.get("physical_cpus")
@@ -167,7 +200,7 @@ def get_computation_setup(total_tasks, cif_dir=None):
                         f"CPULoad={load_txt}, 估计可用={free_cpus}"
                     )
 
-        recommended_cores = min(cluster_info["available_cpus"], total_tasks)
+        recommended_cores = min(int(cluster_info.get("available_cpus") or 0), total_tasks)
         if recommended_cores > 0:
             logger.info(f"建议使用CPU核心数: {recommended_cores} (基于集群空闲资源)")
         else:
@@ -187,43 +220,24 @@ def get_computation_setup(total_tasks, cif_dir=None):
             logger.info("用户取消操作")
             sys.exit(130)
 
-    if cluster_info.get("available"):
-        plan_string, plan_pairs = build_node_plan(cluster_info, cpu_cores)
-        if plan_string:
-            os.environ["RASPA_NODE_PLAN"] = plan_string
-            logger.info(f"节点分配计划: {plan_string}")
-            if plan_pairs:
-                summary = ", ".join(f"{n}:{c}" for n, c in plan_pairs)
-                logger.info(f"节点任务分配总览: {summary}")
-            plan_path = None
-            if state.CURRENT_TOPDIR and state.CURRENT_SUBDIR:
-                plan_path = os.path.join(state.CURRENT_TOPDIR, state.CURRENT_SUBDIR, ".raspa_node_plan")
-                try:
-                    with open(plan_path, "w", encoding="utf-8") as pf:
-                        pf.write(plan_string + "\n")
-                    logger.info(f"节点分配计划已写入: {plan_path}")
-                except Exception as exc:
-                    logger.warning(f"写入节点分配计划失败: {exc}")
-        else:
-            os.environ.pop("RASPA_NODE_PLAN", None)
-            if state.CURRENT_TOPDIR and state.CURRENT_SUBDIR:
-                plan_path = os.path.join(state.CURRENT_TOPDIR, state.CURRENT_SUBDIR, ".raspa_node_plan")
-                if os.path.exists(plan_path):
-                    try:
-                        os.remove(plan_path)
-                        logger.info(f"已清理旧的节点分配计划: {plan_path}")
-                    except Exception as exc:
-                        logger.warning(f"删除节点分配计划失败: {exc}")
-    else:
-        os.environ.pop("RASPA_NODE_PLAN", None)
-        if state.CURRENT_TOPDIR and state.CURRENT_SUBDIR:
-            plan_path = os.path.join(state.CURRENT_TOPDIR, state.CURRENT_SUBDIR, ".raspa_node_plan")
-            if os.path.exists(plan_path):
-                try:
-                    os.remove(plan_path)
-                    logger.info(f"已清理旧的节点分配计划: {plan_path}")
-                except Exception as exc:
-                    logger.warning(f"删除节点分配计划失败: {exc}")
+    _apply_node_plan(cluster_info, cpu_cores, plan_path)
+    return cpu_cores
+
+
+def get_computation_setup(total_tasks, cif_dir=None):
+    """Get computation settings."""
+    logger.info("=== 步骤3：设置计算参数 ===")
+
+    cluster_info = get_slurm_cluster_resources()
+    globals()["LAST_CLUSTER_INFO"] = cluster_info
+    plan_path = None
+    if state.CURRENT_TOPDIR and state.CURRENT_SUBDIR:
+        plan_path = os.path.join(state.CURRENT_TOPDIR, state.CURRENT_SUBDIR, ".raspa_node_plan")
+    cpu_cores = get_cpu_cores_with_plan(
+        total_tasks,
+        cluster_info=cluster_info,
+        plan_path=plan_path,
+    )
 
     while True:
         try:
@@ -319,7 +333,7 @@ def get_computation_setup(total_tasks, cif_dir=None):
                 break
 
         try:
-            df = pd.read_csv(void_csv_file)
+            df = read_csv_with_fallbacks(void_csv_file)
             columns = df.columns.tolist()
 
             logger.info("可用的列名:")

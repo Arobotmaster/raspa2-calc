@@ -12,7 +12,7 @@
       "UseChargesFrom": "CIF_File",
       "ChargeMethod": "Ewald",
       "CutOff": 12.8,
-      "ExternalTemperature": 298,
+      "ExternalTemperature": 308,
       "ExternalPressure": 100000,
       "HeliumVoidFraction": 0.5
     }
@@ -26,7 +26,6 @@
       "RotationProbability" : 0.5,
       "ReinsertionProbability" : 0.5,
       "SwapProbability" : 1.0,
-      "WidomProbability" : 1.0,
       "CreateNumberOfMolecules" : 0
     },
     {
@@ -37,7 +36,6 @@
       "RotationProbability" : 0.5,
       "ReinsertionProbability" : 0.5,
       "SwapProbability" : 1.0,
-      "WidomProbability" : 1.0,
       "CreateNumberOfMolecules" : 0
     }
   ]

@@ -38,14 +38,14 @@ environment:
   # RASPA3 JSON 文件目录
   # 包含: force_field.json 和分子定义文件 (如 CO2.json, CH4.json 等)
   # 高通量计算时会自动复制到每个任务目录
-  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/Rn"
+  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/oldN2"
 
   # RASPA3 CIF 文件基础路径
   # 框架名会追加到此路径，例如: {raspa3_cif_base_path}/{框架名}.cif
-  raspa3_cif_base_path: "/home/zjp/raspa2-calc/work/Rncif/1000"
+  raspa3_cif_base_path: "/home/zjp/raspa2-calc/work/Rncif/939"
 
   # RASPA3 simulation.json 模板路径
-  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/Rn/simulation.json"
+  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/oldN2/simulation.json"
 
 # ============================================================
 #                    计算参数 (通用)
@@ -57,16 +57,16 @@ calculation:
   # 默认分子 (支持多种气体分子，用空格分隔)
   # RASPA2 示例: "CO2" 或 "CO2 CH4 N2"
   # RASPA3 示例: "p-xylene" 或 "CO2"
-  default_molecules: "N2 Rn"
+  default_molecules: "N2"
 
   # CSV 文件路径 (用于批量处理，指定框架列表)
-  csv_file_path: "/home/zjp/raspa2-calc/work/1000Rn-adsorption.csv"
+  csv_file_path: "/home/zjp/raspa2-calc/work/245Tsn&property.csv"
 
   # 框架名称列名（必须与 CSV 文件中的列名完全一致）
   framework_column: "Framework Name"
 
   # 输出目录名
-  output_directory: "1000-test2"
+  output_directory: "2452"
 
   # 是否从 CSV 文件读取孔隙率
   use_void_csv: false
@@ -80,8 +80,8 @@ calculation:
   # pyMSER 自动平衡
   mser:
     enable: true
-    target_cycles: 1000
-    add_cycles: 400
+    target_cycles: 20000
+    add_cycles: 3000
     max_iter: 20
     uncertainty: "uSD"   # SD, SE, uSD, uSE
     conda_env: "pymser"  # 包含 pymser 的 conda 环境
@@ -90,10 +90,10 @@ calculation:
 
   # 节点优先级（可选），格式: 节点名: 权重；数字越大优先级越高
   node_priorities:
-    master-node: 4
+    master-node: 1
     worker-node-01: 3
     worker-node-02: 2
-    worker-node-03: 1
+    worker-node-03: 4
 
 # ============================================================
 #              参数筛选配置（模式1：小批量运算）
@@ -103,7 +103,7 @@ calculation:
 # - RASPA3: 修改 simulation.json JSON 文件
 parameter_screening:
   # 输出目录名
-  output_directory: "Xenew2"
+  output_directory: "245"
 
   # 是否自动计算 UnitCells
   auto_unit_cells: true
@@ -124,12 +124,18 @@ parameter_screening:
   #
   # 注意: 大部分参数名在两个版本间兼容，程序会自动映射
   parameters:
+
+    Name: [N2] # 仅 RASPA3
+    # MoleculeName: [CO2, CH4, N2]  # 仅 RASPA2
+
     # 重要: 如果启用 auto_unit_cells，必须包含截断半径参数
     # RASPA2 用 CutOffVDW, RASPA3 用 CutOff (两者都支持)
     CutOffVDW: [12.8]
 
     # 压力点 (Pa)
+    # ExternalPressure: [1000000,5000000,10000000,15000000,20000000,25000000,30000000,35000000,40000000]
     ExternalPressure: [100000]
+    # ExternalPressure: [10000,20000,50000,100000,150000,200000,250000,300000,350000,400000,480000]
 
     # 温度点 (K) - 可选
     # ExternalTemperature: [323.0]
@@ -140,8 +146,7 @@ parameter_screening:
     # 其他可选参数示例:
     # ForceField: [UFF, Dreiding]
     # ChargeMethod: [Ewald, None]
-    Name: [Xe] # 仅 RASPA3
-    # MoleculeName: [CO2, CH4, N2]  # 仅 RASPA2
+
 
 # ============================================================
 #                    日志配置

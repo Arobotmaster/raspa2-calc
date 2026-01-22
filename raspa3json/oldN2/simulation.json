@@ -12,14 +12,14 @@
       "UseChargesFrom": "CIF_File",
       "ChargeMethod": "Ewald",
       "CutOff": 12.8,
-      "ExternalTemperature": 308,
+      "ExternalTemperature": 298,
       "ExternalPressure": 100000,
       "HeliumVoidFraction": 0.5
     }
   ],
   "Components": [
     {
-      "Name" : "N2",
+      "Name" : "methylcyclohexane",
       "IdealGasRosenbluthWeight" : 1.0,
       "TranslationProbability" : 0.5,
       "RotationProbability" : 0.5,

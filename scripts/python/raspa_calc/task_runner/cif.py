@@ -5,20 +5,43 @@ from .logging_utils import logger
 
 def locate_cif_file(framework_name, cif_dir):
     """Locate CIF file for a given framework name within a directory."""
+    if not cif_dir or not os.path.isdir(cif_dir):
+        return None
+
     clean_name = framework_name
     if isinstance(clean_name, str) and clean_name.lower().endswith(".cif"):
         clean_name = clean_name[:-4]
 
+    direct_match = os.path.join(cif_dir, f"{clean_name}.cif")
+    if os.path.exists(direct_match):
+        return direct_match
+
     candidates = [
-        os.path.join(cif_dir, f"{clean_name}.cif"),
-        os.path.join(cif_dir, f"{clean_name}"),
-        os.path.join(cif_dir, f"{str(clean_name).upper()}.cif"),
-        os.path.join(cif_dir, f"{str(clean_name).lower()}.cif"),
+        f"{clean_name}.cif",
+        f"{clean_name}.CIF",
+        f"{clean_name}",
+        f"{str(clean_name).upper()}.cif",
+        f"{str(clean_name).lower()}.cif",
     ]
 
-    for path in candidates:
-        if os.path.exists(path):
-            return path
+    for filename in os.listdir(cif_dir):
+        base_name = os.path.splitext(filename)[0]
+        if base_name.lower() == str(clean_name).lower() or filename in candidates:
+            return os.path.join(cif_dir, filename)
+
+    base_name = os.path.basename(str(clean_name))
+    if base_name and base_name != clean_name:
+        candidates_base = [
+            f"{base_name}.cif",
+            f"{base_name}.CIF",
+            f"{base_name}",
+            f"{base_name.upper()}.cif",
+            f"{base_name.lower()}.cif",
+        ]
+        for filename in os.listdir(cif_dir):
+            stem = os.path.splitext(filename)[0]
+            if stem.lower() == base_name.lower() or filename in candidates_base:
+                return os.path.join(cif_dir, filename)
     return None
 
 
