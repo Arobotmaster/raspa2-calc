@@ -6,47 +6,50 @@ wired together. It is intended as a quick reference for maintainers.
 ## Top-Level Layout
 
 ```
-.raspa_tools/
-  bin/                         # CLI shims (raspa-calc, raspa-status, ...)
+raspa2-calc/
+  README.md                   # Main user guide
+  AGENTS.md                   # Repo guidelines for contributors
+  CLAUDE.md                   # Notes for assistant tooling
+  pyproject.toml              # Python package metadata + console scripts
+  requirements.txt            # Base env pip deps
+  environment.yml             # pymser env definition
+  config.yaml                 # Default runtime configuration
+  install.sh                  # Installer (copies repo to ~/.raspa_tools and runs pip -e)
+  qdel.sh                     # Queue helper (shell)
+  src/
+    raspa_calc/               # Core Python package (src layout)
+  bin/                        # CLI shims (raspa-calc, raspa-status, ...)
   scripts/
-    python/
-      raspa_calc.py            # Entry point for raspa-calc CLI
-      raspa_calc/              # Core package (config/env/menu/modes/tools)
-      task_runner.py           # Entry point for high-throughput runner
-      task_runner/             # Compatibility shim package
-      common/                  # Compatibility shim package
-      parameter_screening.py   # Compatibility shim for tools.parameter_screening
-      data_extractor.py        # Compatibility shim for tools.data_extractor
-      data_extractor_raspa3.py  # Compatibility shim for tools.data_extractor_raspa3
-      warning_processor.py     # Compatibility shim for tools.warning_processor
-      isotherm_plotter.py      # Compatibility shim for tools.isotherm_plotter
-      ciffilter.py             # Compatibility shim for tools.ciffilter
-      clean_cif_labels.py      # Compatibility shim for tools.clean_cif_labels
-      force_field_utils.py     # Compatibility shim for tools.force_field_utils
-    shell/                     # Shell workflows (auto.sh, simulate_workflow.sh)
-  job_templates/               # Scheduler templates (SLURM/PBS/local)
-  config.yaml                  # Default runtime configuration
-  raspa3json/                  # RASPA3 templates and molecule definitions
-  raspa2-3/                    # RASPA2/3 conversion helpers
-  docs/                        # Documentation
+    shell/                    # Shell workflows (auto.sh, simulate_workflow.sh)
+      raspa_scale/            # raspa-scale helpers and shared libs
+  job_templates/              # Scheduler templates (SLURM/PBS/local), resolved via RASPA_TOOL_DIR
+  raspa3json/                 # RASPA3 templates and molecule definitions
+  raspa2-3/                   # RASPA2/3 conversion helpers
+  nfs/                        # NFS helper scripts
+  docs/                       # Documentation (including this file)
+  figure/                     # Doc assets
 ```
 
-## Core Package (`scripts/python/raspa_calc/`)
+## Core Package (`src/raspa_calc/`)
 
 ```
 raspa_calc/
-  cli.py                       # Main CLI, shows menu and dispatches modes
-  menu.py                      # Help/version text and mode descriptions
-  config.py                    # Loads config.yaml via common.config
-  env_check.py                 # Environment validation
-  modes/                       # Mode entrypoints (user-facing)
+  __main__.py                 # python -m raspa_calc entry
+  cli/                        # CLI entrypoints
+    raspa_calc.py             # Main menu + mode dispatch
+    task_runner.py            # High-throughput runner CLI
+  core/                       # Config/env/menu utilities
+    config.py
+    env_check.py
+    menu.py
+  modes/                      # Mode entrypoints (user-facing)
     parameter_screening.py
     high_throughput.py
     data_extractor.py
     warning_processor.py
     isotherm_plotter.py
     ciffilter.py
-  tools/                       # Implementation modules
+  tools/                      # Implementation modules
     parameter_screening.py
     data_extractor.py
     data_extractor_raspa3.py
@@ -55,8 +58,8 @@ raspa_calc/
     ciffilter.py
     clean_cif_labels.py
     force_field_utils.py
-  task_runner/                 # High-throughput engine (cli/scheduler/etc.)
-    cli.py
+    legacy_job_scripts.py
+  task_runner/                # High-throughput engine (scheduler/framework/etc.)
     scheduler.py
     framework.py
     inputs.py
@@ -65,11 +68,15 @@ raspa_calc/
     logging_utils.py
     state.py
     cif.py
-  common/                      # Shared config helpers
+    csv_utils.py
+    submit_utils.py
+    void_utils.py
+  common/                     # Shared config helpers
     config.py
-  algorithms/                  # Core algorithms and generators
+  algorithms/                 # Core algorithms and generators
     calculate_params.py
     raspa3_generator.py
+    raspa3_io.py
     auto_mser_raspa2.py
     auto_mser_raspa3.py
     cluster_info.py
@@ -82,7 +89,7 @@ raspa_calc/
      `raspa_calc.tools.parameter_screening`
 
 2) High-Throughput Calculation  
-   - `raspa_calc.modes.high_throughput` -> `raspa_calc.task_runner.cli`
+   - `raspa_calc.modes.high_throughput` -> `raspa_calc.cli.task_runner`
 
 3) Data Extraction  
    - `raspa_calc.modes.data_extractor` -> `raspa_calc.tools.data_extractor`
@@ -97,14 +104,20 @@ raspa_calc/
 6) CSV/CIF Filtering  
    - `raspa_calc.modes.ciffilter` -> `raspa_calc.tools.ciffilter`
 
-## Compatibility Shims
+## Python Entry Points
 
-The top-level Python files under `scripts/python/` are thin shims that forward
-to `raspa_calc.tools.*`. They are kept to preserve existing entrypoints such as:
+- `python -m raspa_calc` → main interactive menu
+- `python -m raspa_calc.cli.task_runner` → high-throughput runner CLI
+- `python -m raspa_calc.tools.data_extractor` → RASPA2/3 data extraction
+- `python -m raspa_calc.tools.parameter_screening` → parameter screening
+- `python -m raspa_calc.tools.isotherm_plotter` → isotherm plotting
 
-- `python scripts/python/data_extractor.py`
-- `python scripts/python/parameter_screening.py`
-- `python scripts/python/clean_cif_labels.py`
+## Shell Workflows and Templates
 
-The `scripts/python/task_runner/` and `scripts/python/common/` directories are
-shim packages that forward to `raspa_calc.task_runner` and `raspa_calc.common`.
+- `scripts/shell/auto.sh` and `scripts/shell/simulate_workflow.sh` are helper
+  workflows invoked by the CLI modes.
+- `scripts/shell/raspa_scale/` contains the `raspa-scale` implementation and
+  shared libs (queue management, target detection, scheduler helpers).
+- `job_templates/` is a stable top-level path for scheduler templates. Scripts
+  resolve it via `RASPA_TOOL_DIR/job_templates` (and do not copy templates into
+  the work directory).

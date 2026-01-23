@@ -46,3 +46,6 @@ dist/
 
 # Local config overrides
 .raspa_config.yaml
+
+# Generated job submit wrapper (created by job_templates/tasksrun.sh)
+job_templates/job_submit_ht.sh

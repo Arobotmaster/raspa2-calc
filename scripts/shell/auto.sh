@@ -55,8 +55,8 @@ echo "=== RASPA参数筛选工具 ==="
 echo "作业系统: $JOB_SYSTEM"
 echo "Python: $($PYTHON_CMD --version)"
 
-# 调用Python脚本进行参数筛选
-$PYTHON_CMD "$TOOL_DIR/scripts/python/parameter_screening.py" --job-system "$JOB_SYSTEM" "$@"
+# 调用Python模块进行参数筛选
+$PYTHON_CMD -m raspa_calc.tools.parameter_screening --job-system "$JOB_SYSTEM" "$@"
 
 # 退出
 exit $?

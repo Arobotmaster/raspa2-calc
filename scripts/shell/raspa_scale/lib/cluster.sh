@@ -1,5 +1,5 @@
 fetch_cluster_info_json() {
-  PYTHONPATH="$ROOT_DIR/.raspa_tools/scripts/python${PYTHONPATH:+:$PYTHONPATH}" \
+  PYTHONPATH="$ROOT_DIR/.raspa_tools/src${PYTHONPATH:+:$PYTHONPATH}" \
     python -m raspa_calc.algorithms.cluster_info 2>/dev/null || true
 }
 

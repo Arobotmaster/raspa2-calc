@@ -97,7 +97,7 @@ def check_warning_mode():
    • 输出目录: warning_tasks
 
 2️⃣ 启动高通量计算：
-   python3 scripts/python/raspa_calc.py --no-check
+   python -m raspa_calc --no-check
    选择选项2（高通量计算模式）
 
 3️⃣ 系统将自动检测并使用警告任务设置

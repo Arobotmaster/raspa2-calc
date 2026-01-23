@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `bin/`: shims (`raspa-calc`, `raspa-diagnose`, `raspa-status`, `raspa-scale`, `raspa-plot-isotherm`) forwarding to Python; keep names stable.
-- `scripts/python/`: main logic (`raspa_calc.py` thin entry + `raspa_calc/` package with `modes/`, `common/`, `task_runner/`; `task_runner.py` thin entry + `task_runner/` shim; `parameter_screening.py` for batch runs; `data_extractor*.py`, `warning_processor.py`, `isotherm_plotter.py`; `raspa_calc/algorithms/` for auto_mser/calculate_params/raspa3_generator/cluster_info).
+- `src/raspa_calc/`: core Python package (`core/`, `modes/`, `tools/`, `task_runner/`, `algorithms/`, `common/`); CLI entry points live in `src/raspa_calc/cli/`.
 - `scripts/shell/`: helper workflows (`auto.sh`, `simulate_workflow.sh`, `recheck_failed.sh`) + `raspa_scale/` shared libs.
 - `job_templates/`: SLURM/PBS/local submission templates used by runners and `raspa-scale`; keep placeholder vars intact.
 - `config.yaml` and `config/raspa3/`: runtime defaults and sample RASPA3 JSON; `raspa3json/` packaged templates; `raspa2-3/` converters; `figure/` docs assets.
@@ -13,7 +13,7 @@
 - `RASPA_WORK_DIR=/path/to/work raspa-diagnose` — verify Python deps, scheduler tools, RASPA2/3 paths.
 - `RASPA_WORK_DIR=/path/to/work raspa-calc` — main entry; respects `config.yaml`.
 - `raspa-status -d output` / `raspa-scale status -d output` — check queues; `raspa-scale -i work/output` — tune concurrency; `raspa-plot-isotherm` — plot outputs.
-- `python scripts/python/parameter_screening.py --help` / `data_extractor.py --help` — quick CLI sanity after edits.
+- `python -m raspa_calc.tools.parameter_screening --help` / `python -m raspa_calc.tools.data_extractor --help` — quick CLI sanity after edits.
 
 ## Coding Style & Naming Conventions
 - Python 3, 4-space indent; prefer small helpers over long procedures; use `os.path`/`pathlib` for paths.

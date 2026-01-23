@@ -34,11 +34,10 @@
 - **操作系统**: Linux 8.10
 - **调度器**: SLURM / PBS
 - **节点配置**:
-  - master-node: 控制节点
-  - worker-node-01: 计算节点 (192核)
-  - worker-node-02: 计算节点 (192核)
+  - master-node: 控制节点 (256核)
+  - worker-node-01: 计算节点 (128核)
+  - worker-node-02: 计算节点 (384核)
   - worker-node-03: 计算节点 (192核) + NFS服务器
-  - worker-node-04: 计算节点 (384核)
 - **总CPU核心数**: 960核
 
 ### 1.4 部署目标
@@ -427,7 +426,7 @@ raspa3 --help
 cd /home/zjp/raspa2-calc/work
 python3 -c "
 import sys
-sys.path.insert(0, '/home/zjp/raspa2-calc/.raspa_tools/scripts/python')
+sys.path.insert(0, '/home/zjp/raspa2-calc/.raspa_tools/src')
 from data_extractor import detect_raspa_version
 
 # 测试 RASPA3 目录

@@ -49,12 +49,12 @@
 ## 核心功能
 
 ### 六大计算模式
-- *参数筛选* (`parameter_screening.py`)：快速测试参数组合，高通量调度提交，可用 `raspa-scale` 动态扩缩容
-- *高通量计算* (`raspa_calc.algorithms.calculate_params`)：批量处理框架结构，支持960+核心并行
-- *数据提取* (`data_extractor.py`)：解析RASPA输出，生成Excel/CSV报表，自动检测版本
-- *警告处理* (`warning_processor.py`)：提取失败任务、CSV数据替换
-- *等温线绘制* (`isotherm_plotter.py`)：可视化吸附数据
-- *CSV/CIF 筛选* (`ciffilter.py`)：交互式按条件/refcode筛选CSV，可复制匹配的CIF
+- *参数筛选* (`python -m raspa_calc.tools.parameter_screening`)：快速测试参数组合，高通量调度提交，可用 `raspa-scale` 动态扩缩容
+- *高通量计算* (`python -m raspa_calc.cli.task_runner`)：批量处理框架结构，支持960+核心并行
+- *数据提取* (`python -m raspa_calc.tools.data_extractor`)：解析RASPA输出，生成Excel/CSV报表，自动检测版本
+- *警告处理* (`python -m raspa_calc.tools.warning_processor`)：提取失败任务、CSV数据替换
+- *等温线绘制* (`python -m raspa_calc.tools.isotherm_plotter`)：可视化吸附数据
+- *CSV/CIF 筛选* (`python -m raspa_calc.tools.ciffilter`)：交互式按条件/refcode筛选CSV，可复制匹配的CIF
 ####
  **详细指南** 参考`docs/`（各个功能使用说明）
 
@@ -105,6 +105,17 @@ source ~/.bashrc  # 或 source ~/.zshrc
 # 4. 验证安装
 raspa-diagnose
 
+```
+### Python 模块入口（可直接运行）
+
+```bash
+python -m raspa_calc                      # 主交互入口（同 raspa-calc）
+python -m raspa_calc.cli.task_runner      # 高通量 runner
+python -m raspa_calc.tools.data_extractor # 数据提取
+python -m raspa_calc.tools.parameter_screening
+python -m raspa_calc.tools.warning_processor
+python -m raspa_calc.tools.isotherm_plotter
+python -m raspa_calc.tools.ciffilter
 ```
 ## 命令行工具参考-**详细指南看docs**
 

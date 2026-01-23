@@ -35,6 +35,21 @@ fi
 
 WORK_DIR=${RASPA_WORK_DIR:-"$PWD"}
 
+# Resolve tool directory (installed root)
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+if [[ "$SCRIPT_SOURCE" != /* ]]; then
+  SCRIPT_SOURCE="$(type -P -- "$SCRIPT_SOURCE" || true)"
+fi
+if [[ -z "${SCRIPT_SOURCE:-}" ]]; then
+  SCRIPT_SOURCE="$0"
+fi
+if command -v readlink >/dev/null 2>&1; then
+  SCRIPT_SOURCE="$(readlink -f -- "$SCRIPT_SOURCE" 2>/dev/null || echo "$SCRIPT_SOURCE")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd -P)"
+TOOL_DIR_DEFAULT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+TOOL_DIR="${RASPA_TOOL_DIR:-$TOOL_DIR_DEFAULT}"
+
 if [ -n "$ARG_SUBDIR" ]; then
   if [[ "$ARG_SUBDIR" = /* ]]; then
     TARGET_DIR="${ARG_SUBDIR%/}"
@@ -98,15 +113,24 @@ has_work_marker() {
 }
 
 BASE_DIR=""
-if [ -n "${RASPA_WORK_DIR:-}" ] && [ -d "$RASPA_WORK_DIR" ]; then
+if [ -n "$TOOL_DIR" ] && [ -d "$TOOL_DIR/job_templates" ]; then
+  case "$TARGET_DIR" in
+    "$TOOL_DIR"|"$TOOL_DIR"/*)
+      BASE_DIR="$TOOL_DIR"
+      ;;
+  esac
+fi
+if [ -z "$BASE_DIR" ] && [ -n "${RASPA_WORK_DIR:-}" ] && [ -d "$RASPA_WORK_DIR" ]; then
   BASE_DIR="$(cd "$RASPA_WORK_DIR" && pwd -P)"
 else
-  BASE_DIR="$TARGET_DIR"
-  while [ "$BASE_DIR" != "/" ] && ! has_work_marker "$BASE_DIR"; do
-    BASE_DIR="$(dirname "$BASE_DIR")"
-  done
-  if ! has_work_marker "$BASE_DIR"; then
-    BASE_DIR=""
+  if [ -z "$BASE_DIR" ]; then
+    BASE_DIR="$TARGET_DIR"
+    while [ "$BASE_DIR" != "/" ] && ! has_work_marker "$BASE_DIR"; do
+      BASE_DIR="$(dirname "$BASE_DIR")"
+    done
+    if ! has_work_marker "$BASE_DIR"; then
+      BASE_DIR=""
+    fi
   fi
 fi
 
@@ -225,8 +249,7 @@ echo
 echo "🔍 检查脚本文件..."
 SCRIPT_BASE="$BASE_DIR"
 if [ -z "$SCRIPT_BASE" ] || [ ! -d "$SCRIPT_BASE/job_templates" ]; then
-  TOOL_DIR="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}"
-  if [ -d "$TOOL_DIR/job_templates" ]; then
+if [ -d "$TOOL_DIR/job_templates" ]; then
     SCRIPT_BASE="$TOOL_DIR"
   fi
 fi

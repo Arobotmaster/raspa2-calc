@@ -38,14 +38,14 @@ pip install numpy pandas gemmi openpyxl tqdm PyYAML
 ### Running Tests
 ```bash
 # Test CIF parameter extraction
-PYTHONPATH=$HOME/raspa2-calc/.raspa_tools/scripts/python \
+PYTHONPATH=$HOME/raspa2-calc/.raspa_tools/src \
   python -m raspa_calc.algorithms.calculate_params /path/to/structure.cif --cutoff 12.8
 
 # Test data extraction (auto-detects RASPA version)
-python .raspa_tools/scripts/python/data_extractor.py
+python -m raspa_calc.tools.data_extractor
 
 # Test parameter screening
-python .raspa_tools/scripts/python/parameter_screening.py
+python -m raspa_calc.tools.parameter_screening
 ```
 
 ## Architecture
@@ -54,20 +54,15 @@ python .raspa_tools/scripts/python/parameter_screening.py
 ```
 .raspa_tools/
 ├── bin/                    # CLI tools (raspa-calc, raspa-status, raspa-scale, raspa-diagnose)
-├── scripts/python/         # Core Python modules
-│   ├── raspa_calc.py       # Thin entry point - mode selection and environment check
-│   ├── raspa_calc/         # raspa-calc modules (config/env/menu/modes/common/task_runner)
-│   ├── raspa_calc/modes/   # mode entrypoints (parameter_screening/high_throughput/etc.)
-│   ├── raspa_calc/task_runner/ # task runner modules (cli/scheduler/framework/etc.)
-│   ├── raspa_calc/common/  # shared config helpers
-│   ├── task_runner.py      # Thin entry point for high-throughput orchestration
-│   ├── task_runner/        # compatibility shim package
-│   ├── raspa_calc/algorithms/ # auto_mser/calculate_params/raspa3_generator/cluster_info
-│   ├── data_extractor.py   # RASPA2 output parsing and Excel/CSV export
-│   ├── data_extractor_raspa3.py  # RASPA3 output parsing
-│   ├── parameter_screening.py    # Parameter combination generation
-│   ├── warning_processor.py      # Failed task recovery
-│   └── isotherm_plotter.py       # Visualization
+├── src/                    # Python package (src layout)
+│   └── raspa_calc/
+│       ├── cli/            # CLI entrypoints (raspa-calc, task runner)
+│       ├── core/           # config/env/menu
+│       ├── modes/          # mode entrypoints (parameter_screening/high_throughput/etc.)
+│       ├── task_runner/    # task runner modules (scheduler/framework/etc.)
+│       ├── tools/          # data_extractor/warning_processor/isotherm_plotter/etc.
+│       ├── algorithms/     # auto_mser/calculate_params/raspa3_generator/cluster_info
+│       └── common/         # shared config helpers
 ├── scripts/shell/          # Helper shell workflows
 │   └── raspa_scale/        # raspa-scale shared shell modules
 ├── job_templates/          # Job submission scripts
@@ -300,18 +295,18 @@ raspa-calc  # Choose mode 2 (high-throughput)
 **Testing individual components:**
 ```bash
 # Test CIF parameter extraction with specific cutoff
-PYTHONPATH=$HOME/raspa2-calc/.raspa_tools/scripts/python \
+PYTHONPATH=$HOME/raspa2-calc/.raspa_tools/src \
   python -m raspa_calc.algorithms.calculate_params /path/to/structure.cif --cutoff 12.8
 
 # Test data extraction (auto-detects RASPA version)
 cd work/output
-python ../../.raspa_tools/scripts/python/data_extractor.py
+python -m raspa_calc.tools.data_extractor
 
 # Test parameter screening without running simulations
-python .raspa_tools/scripts/python/parameter_screening.py --dry-run
+python -m raspa_calc.tools.parameter_screening --dry-run
 
 # Test SLURM resource detection
-python -c "from task_runner import get_slurm_cluster_resources; import json; print(json.dumps(get_slurm_cluster_resources(), indent=2))"
+python -c "from raspa_calc.task_runner import get_slurm_cluster_resources; import json; print(json.dumps(get_slurm_cluster_resources(), indent=2))"
 ```
 
 **Monitoring cluster performance:**

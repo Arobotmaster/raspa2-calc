@@ -55,7 +55,7 @@ calculation:
 ## 4) 手动复跑/排查
 
 若想对某个 `mc*` 目录单独复跑（以 RASPA3 为例）：
-- `PYTHONPATH=$HOME/raspa2-calc/.raspa_tools/scripts/python conda run -n pymser python -m raspa_calc.algorithms.auto_mser_raspa3 --workdir /path/to/mcXXX`
+- `PYTHONPATH=$HOME/raspa2-calc/.raspa_tools/src conda run -n pymser python -m raspa_calc.algorithms.auto_mser_raspa3 --workdir /path/to/mcXXX`
 
 常见排查点：
 - 看 `auto_mser.log`：是否一直是 “平衡后样本不足”，需要提高 `NumberOfCycles` 或调大 `add_cycles/max_iter/target_cycles`

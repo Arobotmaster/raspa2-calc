@@ -395,6 +395,7 @@ fi
 copy_dir_with_header "job_templates/" "$SCRIPT_DIR/job_templates"
 
 copy_dir_with_header "scripts/" "$SCRIPT_DIR/scripts"
+copy_dir_with_header "src/" "$SCRIPT_DIR/src"
 
 # 清理已改为包入口的旧脚本
 OLD_ALGO_FILES=(
@@ -413,21 +414,7 @@ done
 
 # 清理已调整结构的旧模块/目录（避免旧文件残留）
 LEGACY_PATHS=(
-    "scripts/python/raspa_calc/commands"
-    "scripts/python/raspa_calc/modes/auto.py"
-    "scripts/python/raspa_calc/modes/task_runner.py"
-    "scripts/python/task_runner/cif.py"
-    "scripts/python/task_runner/cli.py"
-    "scripts/python/task_runner/env.py"
-    "scripts/python/task_runner/framework.py"
-    "scripts/python/task_runner/inputs.py"
-    "scripts/python/task_runner/logging_utils.py"
-    "scripts/python/task_runner/scheduler.py"
-    "scripts/python/task_runner/state.py"
-    "scripts/python/task_runner/templates.py"
-    "scripts/python/task_runner/__pycache__"
-    "scripts/python/common/config.py"
-    "scripts/python/common/__pycache__"
+    "scripts/python"
 )
 for legacy_path in "${LEGACY_PATHS[@]}"; do
     if [ -e "$TOOL_DIR/$legacy_path" ]; then
@@ -451,6 +438,17 @@ copy_dir_quiet "docs/" "$SCRIPT_DIR/docs" "✅ docs/ 复制完成（说明文档
 echo "正在复制配置文件..."
 copy_file_quiet "config.yaml" "$SCRIPT_DIR/config.yaml"
 copy_file_quiet "requirements.txt" "$SCRIPT_DIR/requirements.txt"
+copy_file_quiet "pyproject.toml" "$SCRIPT_DIR/pyproject.toml"
+
+echo ""
+echo "安装 Python 包 (editable)..."
+if ! "$PYTHON_CMD" -m pip install -e "$TOOL_DIR" >/dev/null 2>&1; then
+    echo "❌ Python 包安装失败 (pip install -e)."
+    echo "   请检查 pip 是否可用，或手动运行:"
+    echo "   $PYTHON_CMD -m pip install -e \"$TOOL_DIR\""
+    exit 1
+fi
+echo "✅ Python 包安装完成"
 
 # 设置脚本权限
 echo ""
@@ -483,7 +481,6 @@ EXECUTABLES=(
     "job_templates/runjobs_raspa3.sh"
     "job_templates/tasksrun.sh"
     "job_templates/job_submit.sh"
-    "job_templates/job_submit_ht.sh"
 
     "nfs/nfs_client_setup.sh"
     "nfs/nfs_setup_all_nodes.sh"

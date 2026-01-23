@@ -106,7 +106,7 @@ LOGILFE=${topdir}/log__${subdir}_job_output
 SIMULATE_CMD="$RASPA_DIR/bin/simulate"
 [ -x "$SIMULATE_CMD" ] || SIMULATE_CMD="echo '模拟执行RASPA计算...'; sleep 2"
 MSER_MODULE="raspa_calc.algorithms.auto_mser_raspa2"
-MSER_PYTHONPATH="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}/scripts/python"
+MSER_PYTHONPATH="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}/src"
 export PYTHONPATH="${MSER_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}"
 
 # MSER 环境变量已在配置加载阶段尽可能设置；若仍未设置，则沿用已有环境或默认值

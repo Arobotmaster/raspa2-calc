@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 识别工具目录（优先环境变量，其次脚本路径，最后默认安装位置）
 if [ -z "${RASPA_TOOL_DIR:-}" ]; then
     script_parent="$(dirname "$SCRIPT_DIR")"
-    if [ -d "$script_parent/job_templates" ] && [ -d "$script_parent/scripts/python" ]; then
+    if [ -d "$script_parent/job_templates" ] && [ -d "$script_parent/src" ]; then
         RASPA_TOOL_DIR="$script_parent"
     elif [ -d "$HOME/raspa2-calc/.raspa_tools/job_templates" ]; then
         RASPA_TOOL_DIR="$HOME/raspa2-calc/.raspa_tools"

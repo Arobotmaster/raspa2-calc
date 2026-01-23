@@ -3,17 +3,6 @@
 # raspa-plot-isotherm - 便捷的等温线绘制命令
 # 用于快速批量绘制MOF等温吸附曲线
 
-# 获取工具目录
-TOOL_DIR="$HOME/raspa2-calc/.raspa_tools"
-SCRIPT_PATH="$TOOL_DIR/scripts/python/isotherm_plotter.py"
-
-# 检查脚本是否存在
-if [ ! -f "$SCRIPT_PATH" ]; then
-    echo "错误: 找不到等温线绘制脚本"
-    echo "预期路径: $SCRIPT_PATH"
-    exit 1
-fi
-
 # 显示帮助信息
 show_help() {
     cat << EOF
@@ -68,7 +57,8 @@ if [ -n "$1" ] && [ "${1:0:1}" != "-" ]; then
 fi
 
 # 构造命令
-CMD="python \"$SCRIPT_PATH\""
+export PYTHONPATH="$HOME/raspa2-calc/.raspa_tools/src${PYTHONPATH:+:$PYTHONPATH}"
+CMD="python -m raspa_calc.tools.isotherm_plotter"
 
 if [ -n "$BASE_DIR" ]; then
     CMD="$CMD --base-dir \"$BASE_DIR\""
