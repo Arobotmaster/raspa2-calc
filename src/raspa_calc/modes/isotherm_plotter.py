@@ -2,7 +2,7 @@ import os
 import re
 import sys
 
-from .. import config as config_module
+from raspa_calc.core import config as config_module
 
 
 def run_isotherm_plotter():

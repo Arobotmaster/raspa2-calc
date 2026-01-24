@@ -23,6 +23,16 @@ from raspa_calc.task_runner.templates import update_all_files
 
 def main():
     try:
+        class _AbortOnWarningFilter(logging.Filter):
+            def filter(self, record):
+                if record.levelno >= logging.WARNING:
+                    msg = record.getMessage()
+                    print(f"❌ 检测到警告，已终止: [{record.name}] {msg}", file=sys.stderr)
+                    raise SystemExit(1)
+                return True
+
+        logging.getLogger().addFilter(_AbortOnWarningFilter())
+
         raspa_version = get_raspa_version_from_env()
         raspa3_config = load_raspa3_config() if raspa_version == "raspa3" else {}
 

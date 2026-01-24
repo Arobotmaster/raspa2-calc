@@ -52,12 +52,29 @@ from raspa_calc.tools.legacy_job_scripts import (
     submit_job,
 )
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("parameter_screening")
+def _init_logger() -> logging.Logger:
+    logger = logging.getLogger("parameter_screening")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
+logger = _init_logger()
+
+
+class _AbortOnWarningFilter(logging.Filter):
+    def filter(self, record):
+        if record.levelno >= logging.WARNING:
+            msg = record.getMessage()
+            print(f"❌ 检测到警告，已终止: [{record.name}] {msg}", file=sys.stderr)
+            raise SystemExit(1)
+        return True
 
 # Backward-compatible alias
 find_cif_file = locate_cif_file
@@ -160,16 +177,11 @@ def read_csv_data(csv_path, column_number):
     try:
         df = read_csv_with_fallbacks(csv_path)
 
-        # 显示CSV文件的列信息
-        print("CSV文件的列信息：")
-        for i, col in enumerate(df.columns, 1):
-            print(f"     {i}  {col}")
-
         # 获取指定列的框架名称
         col_idx = int(column_number) - 1
         if 0 <= col_idx < len(df.columns):
             frameworks = df.iloc[:, col_idx].dropna().unique().tolist()
-            logger.info(f"成功从{csv_path}第{column_number}列读取数据，共{len(frameworks)}个框架")
+            logger.info(f"成功从{csv_path}读取数据，共{len(frameworks)}个框架")
             return frameworks
         else:
             logger.error(f"列号{column_number}超出范围，CSV文件只有{len(df.columns)}列")
@@ -1072,6 +1084,9 @@ def process_parameter_combinations(framework, cif_path, param_ranges, template_p
 def main():
     """主函数 - 纯配置模式"""
     try:
+        logger.addFilter(_AbortOnWarningFilter())
+        logging.getLogger().addFilter(_AbortOnWarningFilter())
+
         # 解析命令行参数
         parser = setup_arg_parser()
         args = parser.parse_args()
@@ -1178,7 +1193,7 @@ def main():
                 df = read_csv_with_fallbacks(csv_file)
                 if framework_col in df.columns:
                     column_number = str(df.columns.get_loc(framework_col) + 1)
-                    logger.info(f"从配置文件获取框架列: {framework_col} (第{column_number}列)")
+                    logger.info("使用配置文件中的框架列")
                 else:
                     logger.error(f"配置的框架列 '{framework_col}' 在CSV文件中不存在")
                     return 1
@@ -1355,7 +1370,6 @@ def main():
         print("📋 参数筛选任务简介")
         print("="*60)
         print(f"CSV文件: {csv_file}")
-        print(f"框架列: {framework_col} (第{column_number}列)")
         print(f"有效框架数量: {len(framework_names)}")
         print(f"CIF目录: {cif_dir}")
         print(f"模板文件: {template_path}")
@@ -1374,7 +1388,7 @@ def main():
             print(f"\n⚠️  未配置筛选参数,将使用模板默认值")
 
         if use_void_csv:
-            print(f"\n📊 孔隙率CSV: {void_csv_file} (列: {void_column})")
+            print(f"\n📊 孔隙率CSV: {void_csv_file}")
             if void_fraction_csv:
                 print(f"📊 已从CSV加载 {len(void_fraction_csv)} 个框架的孔隙率数据")
 

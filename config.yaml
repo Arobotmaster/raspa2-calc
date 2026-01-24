@@ -42,7 +42,7 @@ environment:
 
   # RASPA3 CIF 文件基础路径
   # 框架名会追加到此路径，例如: {raspa3_cif_base_path}/{框架名}.cif
-  raspa3_cif_base_path: "/home/zjp/raspa2-calc/filter/wxj-3442"
+  raspa3_cif_base_path: "/home/zjp/raspa2-calc/work/Rncif/939"
 
   # RASPA3 simulation.json 模板路径
   raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/wxj/simulation.json"
@@ -60,16 +60,16 @@ calculation:
   default_molecules: "methylcyclohexane"
 
   # CSV 文件路径 (用于批量处理，指定框架列表)
-  csv_file_path: "/home/zjp/raspa2-calc/filter/wxj-3442.csv"
+  csv_file_path: "/home/zjp/raspa2-calc/work/245Tsn&property.csv"
 
   # 框架名称列名（必须与 CSV 文件中的列名完全一致）
-  framework_column: "refcode"
+  framework_column: "Framework Name"
 
   # 输出目录名
-  output_directory: "wxj-3442-Qmch"
+  output_directory: "test"
 
   # 是否从 CSV 文件读取孔隙率
-  use_void_csv: true
+  use_void_csv: false
 
   # 孔隙率 CSV 文件路径
   void_csv_file: "/home/zjp/raspa2-calc/filter/wxj-3442.csv"
