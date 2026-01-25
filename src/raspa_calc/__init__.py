@@ -1,8 +1,8 @@
-from .core.config import __version__, __version_name__, load_config, get_raspa_version
+from .runtime.config import __version__, __version_name__, load_runtime_config, get_raspa_version
 
 __all__ = [
     "__version__",
     "__version_name__",
-    "load_config",
+    "load_runtime_config",
     "get_raspa_version",
 ]

@@ -20,9 +20,9 @@ raspa2-calc/
     raspa_calc/               # Core Python package (src layout)
   bin/                        # CLI shims (raspa-calc, raspa-status, ...)
   scripts/
-    shell/                    # Shell workflows (auto.sh, simulate_workflow.sh)
+    shell/                    # Shell workflows (entrypoints/workers/templates)
+      templates/              # Scheduler templates (SLURM/PBS/local), resolved via RASPA_TOOL_DIR
       raspa_scale/            # raspa-scale helpers and shared libs
-  job_templates/              # Scheduler templates (SLURM/PBS/local), resolved via RASPA_TOOL_DIR
   raspa3json/                 # RASPA3 templates and molecule definitions
   raspa2-3/                   # RASPA2/3 conversion helpers
   nfs/                        # NFS helper scripts
@@ -35,89 +35,102 @@ raspa2-calc/
 ```
 raspa_calc/
   __main__.py                 # python -m raspa_calc entry
-  cli/                        # CLI entrypoints
-    raspa_calc.py             # Main menu + mode dispatch
+  entrypoints/                # CLI entrypoints + menu
+    interactive.py            # Main menu + mode dispatch
+    menu.py                   # Help/version output
     task_runner.py            # High-throughput runner CLI
-  core/                       # Config/env/menu utilities
-    config.py
-    env_check.py
-    menu.py
-  modes/                      # Mode entrypoints (user-facing)
-    parameter_screening.py
+    parameter_screening.py    # Parameter screening CLI
+    data_extractor.py         # Data extraction CLI
+    warning_processor.py      # Warning processor CLI
+    isotherm_plotter.py       # Isotherm plotting CLI
+    ciffilter.py              # CSV/CIF filter CLI
+  app/                        # Use cases and workflows
+    task_runner.py
     high_throughput.py
-    data_extractor.py
-    warning_processor.py
-    isotherm_plotter.py
-    ciffilter.py
-  tools/                      # Implementation modules
     parameter_screening.py
+    parameter_screening_mode.py
     data_extractor.py
-    data_extractor_raspa3.py
+    data_extractor_mode.py
     warning_processor.py
+    warning_processor_mode.py
     isotherm_plotter.py
+    isotherm_plotter_mode.py
     ciffilter.py
-    clean_cif_labels.py
-    force_field_utils.py
-    legacy_job_scripts.py
-  task_runner/                # High-throughput engine (scheduler/framework/etc.)
-    scheduler.py
-    framework.py
-    inputs.py
-    templates.py
-    env.py
-    logging_utils.py
-    state.py
-    cif.py
-    csv_utils.py
-    submit_utils.py
-    void_utils.py
-  common/                     # Shared config helpers
+    ciffilter_mode.py
+  runtime/                    # Config/env/diagnostics
     config.py
-  algorithms/                 # Core algorithms and generators
-    calculate_params.py
-    raspa3_generator.py
-    raspa3_io.py
-    auto_mser_raspa2.py
-    auto_mser_raspa3.py
-    cluster_info.py
+    diagnostics.py
+  infra/                      # Scheduler + external integrations
+    job_scripts.py
+    runner/
+      scheduler.py
+      framework.py
+      inputs.py
+      templates.py
+      env.py
+      logging_utils.py
+      state.py
+      cif.py
+      csv_utils.py
+      submit_utils.py
+      void_utils.py
+  domain/                     # Algorithms and parsers
+    algorithms/
+      calculate_params.py
+      raspa3_generator.py
+      raspa3_io.py
+      auto_mser_raspa2.py
+      auto_mser_raspa3.py
+      cluster_info.py
+    parsers/
+      data_extractor_raspa3.py
+    utils/
+      clean_cif_labels.py
+      force_field_utils.py
 ```
 
 ## Mode Mapping (Menu -> Module)
 
 1) Parameter Screening  
-   - `raspa_calc.modes.parameter_screening` -> `scripts/shell/auto.sh` ->
-     `raspa_calc.tools.parameter_screening`
+   - `raspa_calc.entrypoints.interactive` -> `raspa_calc.app.parameter_screening_mode`
+   - `raspa_calc.app.parameter_screening_mode` -> `raspa_calc.app.parameter_screening`
 
 2) High-Throughput Calculation  
-   - `raspa_calc.modes.high_throughput` -> `raspa_calc.cli.task_runner`
+   - `raspa_calc.entrypoints.interactive` -> `raspa_calc.app.high_throughput` ->
+     `raspa_calc.entrypoints.task_runner`
 
 3) Data Extraction  
-   - `raspa_calc.modes.data_extractor` -> `raspa_calc.tools.data_extractor`
-   - RASPA3 parser: `raspa_calc.tools.data_extractor_raspa3`
+   - `raspa_calc.entrypoints.interactive` -> `raspa_calc.app.data_extractor_mode` ->
+     `raspa_calc.entrypoints.data_extractor`
+   - RASPA3 parser: `raspa_calc.domain.parsers.data_extractor_raspa3`
 
 4) Warning Processing  
-   - `raspa_calc.modes.warning_processor` -> `raspa_calc.tools.warning_processor`
+   - `raspa_calc.entrypoints.interactive` -> `raspa_calc.app.warning_processor_mode` ->
+     `raspa_calc.entrypoints.warning_processor`
 
 5) Isotherm Plotting  
-   - `raspa_calc.modes.isotherm_plotter` -> `raspa_calc.tools.isotherm_plotter`
+   - `raspa_calc.entrypoints.interactive` -> `raspa_calc.app.isotherm_plotter_mode` ->
+     `raspa_calc.entrypoints.isotherm_plotter`
 
 6) CSV/CIF Filtering  
-   - `raspa_calc.modes.ciffilter` -> `raspa_calc.tools.ciffilter`
+   - `raspa_calc.entrypoints.interactive` -> `raspa_calc.app.ciffilter_mode` ->
+     `raspa_calc.entrypoints.ciffilter`
 
 ## Python Entry Points
 
 - `python -m raspa_calc` → main interactive menu
-- `python -m raspa_calc.cli.task_runner` → high-throughput runner CLI
-- `python -m raspa_calc.tools.data_extractor` → RASPA2/3 data extraction
-- `python -m raspa_calc.tools.parameter_screening` → parameter screening
-- `python -m raspa_calc.tools.isotherm_plotter` → isotherm plotting
+- `python -m raspa_calc.entrypoints.task_runner` → high-throughput runner CLI
+- `python -m raspa_calc.entrypoints.data_extractor` → RASPA2/3 data extraction
+- `python -m raspa_calc.entrypoints.parameter_screening` → parameter screening
+- `python -m raspa_calc.entrypoints.warning_processor` → warning processing
+- `python -m raspa_calc.entrypoints.isotherm_plotter` → isotherm plotting
+- `python -m raspa_calc.entrypoints.ciffilter` → CSV/CIF filtering
 
 ## Shell Workflows and Templates
 
-- `scripts/shell/auto.sh` and `scripts/shell/simulate_workflow.sh` are helper
-  workflows invoked by the CLI modes.
-- `scripts/shell/raspa_scale/` contains the `raspa-scale` implementation and
-  shared libs (queue management, target detection, scheduler helpers).
-- `job_templates/` is a stable top-level path for scheduler templates. Scripts
-  resolve it via `RASPA_TOOL_DIR/job_templates` (and do not copy templates into
-  the work directory).
+- `scripts/shell/entrypoints/submit.sh` and `scripts/shell/entrypoints/scale.sh`
+  provide submission/scale entrypoints for CLI modes and `raspa-scale`.
+- `scripts/shell/workers/` contains worker scripts (`runjobs*.sh`) that claim tasks.
+- `scripts/shell/templates/schedulers/` is the stable path for scheduler templates.
+  Scripts resolve it via `RASPA_TOOL_DIR/scripts/shell/templates/schedulers` (and do not
+  copy templates into the work directory).

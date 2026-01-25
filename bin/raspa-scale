@@ -15,4 +15,4 @@ if command -v readlink >/dev/null 2>&1; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")"/../.. && pwd -P)"
-exec bash "$ROOT_DIR/.raspa_tools/scripts/shell/raspa_scale/raspa_scale.sh" "$@"
+exec bash "$ROOT_DIR/.raspa_tools/scripts/shell/entrypoints/scale.sh" "$@"

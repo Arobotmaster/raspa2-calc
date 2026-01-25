@@ -17,7 +17,7 @@ NFS 导出：
 - `10.10.14.12:/srv/raspa2-calc-work` → 客户端挂载到 `/home/zjp/raspa2-calc/work`
 
 说明：
-- `raspa-calc`/`raspa-scale`/`.raspa_tools` 脚本位于代码区（NVMe），`job_templates` 不再复制到 `work/`。
+- `raspa-calc`/`raspa-scale`/`.raspa_tools` 脚本位于代码区（NVMe），`scripts/shell` 下脚本不再复制到 `work/`。
 - 高频读写集中在 `work/`（队列锁文件与任务目录），**必须**在 NVMe 上。
 
 ### 2.1.1 为什么 work 目录要单独挂载？（Mount Overlay 机制）
@@ -88,7 +88,7 @@ nohup rm -rf .trash_bigdir_* >/tmp/rm_bigdir.log 2>&1 &
 
 ## 5. 空间保护（防止 NVMe 被写满）
 
-已在 `raspa-calc`、`raspa-scale`、`RASPA_TOOL_DIR/job_templates/tasksrun.sh` 中加入剩余空间检查。
+已在 `raspa-calc`、`raspa-scale`、`RASPA_TOOL_DIR/scripts/shell/entrypoints/submit.sh` 中加入剩余空间检查。
 
 默认：
 - 阈值 50GB

@@ -20,9 +20,9 @@ dependencies = [
 ]
 
 [project.scripts]
-raspa-calc = "raspa_calc.cli.raspa_calc:main"
-raspa-task-runner = "raspa_calc.cli.task_runner:main"
-raspa-plot-isotherm = "raspa_calc.tools.isotherm_plotter:main"
+raspa-calc = "raspa_calc.entrypoints.interactive:main"
+raspa-task-runner = "raspa_calc.entrypoints.task_runner:main"
+raspa-plot-isotherm = "raspa_calc.entrypoints.isotherm_plotter:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

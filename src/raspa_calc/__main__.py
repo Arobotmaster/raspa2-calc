@@ -1,4 +1,4 @@
-from .cli.raspa_calc import main
+from .entrypoints.interactive import main
 
 
 if __name__ == "__main__":

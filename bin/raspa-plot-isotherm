@@ -58,7 +58,7 @@ fi
 
 # 构造命令
 export PYTHONPATH="$HOME/raspa2-calc/.raspa_tools/src${PYTHONPATH:+:$PYTHONPATH}"
-CMD="python -m raspa_calc.tools.isotherm_plotter"
+CMD="python -m raspa_calc.entrypoints.isotherm_plotter"
 
 if [ -n "$BASE_DIR" ]; then
     CMD="$CMD --base-dir \"$BASE_DIR\""

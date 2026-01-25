@@ -323,7 +323,7 @@ validate_installation() {
     fi
 
     # 检查关键可执行文件
-    local key_files=("bin/raspa-status" "job_templates/runjobs.sh" "job_templates/tasksrun.sh")
+    local key_files=("bin/raspa-status" "scripts/shell/workers/runjobs.sh" "scripts/shell/entrypoints/submit.sh")
     for file in "${key_files[@]}"; do
         if [ ! -f "$TOOL_DIR/$file" ]; then
             errors+=("关键文件缺失: $file")
@@ -392,8 +392,6 @@ if [ -f "$TOOL_DIR/bin/main.sh" ]; then
     echo "✅ 已移除旧的 main.sh (已整合到 raspa-calc)"
 fi
 
-copy_dir_with_header "job_templates/" "$SCRIPT_DIR/job_templates"
-
 copy_dir_with_header "scripts/" "$SCRIPT_DIR/scripts"
 copy_dir_with_header "src/" "$SCRIPT_DIR/src"
 
@@ -415,6 +413,14 @@ done
 # 清理已调整结构的旧模块/目录（避免旧文件残留）
 LEGACY_PATHS=(
     "scripts/python"
+    "job_templates"
+    "src/raspa_calc/algorithms"
+    "src/raspa_calc/task_runner"
+    "src/raspa_calc/tools"
+    "src/raspa_calc/modes"
+    "src/raspa_calc/cli"
+    "src/raspa_calc/common"
+    "src/raspa_calc/core"
 )
 for legacy_path in "${LEGACY_PATHS[@]}"; do
     if [ -e "$TOOL_DIR/$legacy_path" ]; then
@@ -461,7 +467,9 @@ echo "✅ 所有 .sh 文件权限设置完成"
 
 # 给bin目录下的所有文件执行权限
 set_exec_for_dir "$TOOL_DIR/bin" "bin/"
-set_exec_for_dir "$TOOL_DIR/job_templates" "job_templates/"
+set_exec_for_dir "$TOOL_DIR/scripts/shell/entrypoints" "scripts/shell/entrypoints/"
+set_exec_for_dir "$TOOL_DIR/scripts/shell/workers" "scripts/shell/workers/"
+set_exec_for_dir "$TOOL_DIR/scripts/shell/templates/schedulers" "scripts/shell/templates/schedulers/"
 set_exec_for_dir "$TOOL_DIR/scripts" "scripts/" "*.sh" "*.py"
 
 # 特别确保关键可执行文件的权限
@@ -474,13 +482,14 @@ EXECUTABLES=(
     "bin/raspa-diagnose"
     "bin/raspa-plot-isotherm"
 
-    "job_templates/pbs.sh"
-    "job_templates/local.sh"
-    "job_templates/sbatch.sh"
-    "job_templates/runjobs.sh"
-    "job_templates/runjobs_raspa3.sh"
-    "job_templates/tasksrun.sh"
-    "job_templates/job_submit.sh"
+    "scripts/shell/templates/schedulers/pbs.sh"
+    "scripts/shell/templates/schedulers/local.sh"
+    "scripts/shell/templates/schedulers/sbatch.sh"
+    "scripts/shell/templates/schedulers/job_submit.sh"
+    "scripts/shell/workers/runjobs.sh"
+    "scripts/shell/workers/runjobs_raspa3.sh"
+    "scripts/shell/entrypoints/submit.sh"
+    "scripts/shell/entrypoints/scale.sh"
 
     "nfs/nfs_client_setup.sh"
     "nfs/nfs_setup_all_nodes.sh"

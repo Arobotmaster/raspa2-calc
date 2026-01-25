@@ -39,13 +39,13 @@ pip install numpy pandas gemmi openpyxl tqdm PyYAML
 ```bash
 # Test CIF parameter extraction
 PYTHONPATH=$HOME/raspa2-calc/.raspa_tools/src \
-  python -m raspa_calc.algorithms.calculate_params /path/to/structure.cif --cutoff 12.8
+  python -m raspa_calc.domain.algorithms.calculate_params /path/to/structure.cif --cutoff 12.8
 
 # Test data extraction (auto-detects RASPA version)
-python -m raspa_calc.tools.data_extractor
+python -m raspa_calc.entrypoints.data_extractor
 
 # Test parameter screening
-python -m raspa_calc.tools.parameter_screening
+python -m raspa_calc.entrypoints.parameter_screening
 ```
 
 ## Architecture
@@ -64,13 +64,13 @@ python -m raspa_calc.tools.parameter_screening
 │       ├── algorithms/     # auto_mser/calculate_params/raspa3_generator/cluster_info
 │       └── common/         # shared config helpers
 ├── scripts/shell/          # Helper shell workflows
+│   ├── templates/          # Job submission scripts
+│   │   ├── tasksrun.sh      # Main task submission (detects SLURM/PBS/local)
+│   │   ├── runjobs.sh       # RASPA2 worker script with atomic task queue
+│   │   ├── runjobs_raspa3.sh # RASPA3 worker script
+│   │   ├── sbatch.sh        # SLURM job template
+│   │   └── pbs.sh           # PBS job template
 │   └── raspa_scale/        # raspa-scale shared shell modules
-├── job_templates/          # Job submission scripts
-│   ├── tasksrun.sh         # Main task submission (detects SLURM/PBS/local)
-│   ├── runjobs.sh          # RASPA2 worker script with atomic task queue
-│   ├── runjobs_raspa3.sh   # RASPA3 worker script
-│   ├── sbatch.sh           # SLURM job template
-│   └── pbs.sh              # PBS job template
 └── config.yaml             # Main configuration file
 ```
 
@@ -158,27 +158,28 @@ List-mode (e.g., parameter screening):
 
 ### Key Python Functions & Architecture
 
-**raspa_calc.algorithms.calculate_params** - CIF Processing & Unit Cell Calculation
+**raspa_calc.domain.algorithms.calculate_params** - CIF Processing & Unit Cell Calculation
 - `get_cif_cell_parameters(cif_file, cutoff)`: Uses gemmi library to parse CIF files and calculate unit cells
 - `process_structure_file(cif_file, cutoff)`: Main pipeline for CIF processing
 - **Algorithm**: Perpendicular width method using vector cross products to ensure cutoff radius is satisfied in all directions
 - **Key insight**: Must calculate perpendicular widths (not just cell lengths) because non-orthogonal cells require more repetitions
 
-**task_runner.py** - High-Throughput Task Orchestration
+**raspa_calc.app.task_runner** - High-Throughput Task Orchestration
 - `get_slurm_cluster_resources()`: Queries SLURM via `sinfo -N` for per-node CPU availability
   - Considers hyperthreading (extracts sockets × cores from topology)
   - Accounts for node load to estimate actual free CPUs
   - Falls back to `sinfo -h -o %C` for cluster-wide summary
 - `process_framework(framework, molecules, ...)`: Generates RASPA2 simulation.input files
   - Copies template and performs text substitution
-  - Calculates UnitCells using raspa_calc.algorithms.calculate_params
+  - Calculates UnitCells using raspa_calc.domain.algorithms.calculate_params
 - `process_framework_raspa3(framework, molecules, ...)`: Generates RASPA3 simulation.json files
   - Loads JSON template and updates fields
   - Copies force_field.json and molecule .json files to task directory
   - Uses absolute paths for CIF files
 - **Job submission flow**: Python creates directories → Shell script detects scheduler → Submits SLURM/PBS/local jobs
+- Low-level scheduling helpers live under `raspa_calc.infra.runner/*`
 
-**data_extractor.py** - RASPA2 Output Parsing
+**raspa_calc.app.data_extractor** - RASPA2 Output Parsing
 - `detect_raspa_version(base_path)`: Auto-detects RASPA version from file presence
 - `RASPA_Output_Data`: Main parser class with precompiled regex patterns for performance
   - Extracts: absorption (multiple units), pressure, temperature, He void fraction
@@ -187,26 +188,26 @@ List-mode (e.g., parameter screening):
   - **Performance optimization**: All regexes precompiled as class attributes
 - `extract_data_from_directory(base_dir)`: Recursively processes all mc* directories
 
-**data_extractor_raspa3.py** - RASPA3 Output Parsing
+**raspa_calc.domain.parsers.data_extractor_raspa3** - RASPA3 Output Parsing
 - Parses `output/*.txt` files with scientific notation support (e.g., `1.234567e+00`)
 - Extracts from "Loadings" section specifically (avoids confusion with component definitions)
 - Handles multiple components and pressure points
 - Different regex patterns needed due to format differences vs RASPA2
 
-**parameter_screening.py** - Parameter Combination Generation
+**raspa_calc.app.parameter_screening** - Parameter Combination Generation
 - Generates Cartesian product of all parameter combinations from `config.yaml`
 - Auto-calculates UnitCells if `auto_unit_cells: true` and cutoff parameters present
 - Supports both RASPA2 text substitution and RASPA3 JSON modification
 - Creates separate mc directories for each parameter combination
 
-**Job Submission Scripts (job_templates/)**
-- `tasksrun.sh`: Main entry point, detects SLURM/PBS/local and calls appropriate template
-- `runjobs.sh` / `runjobs_raspa3.sh`: Worker scripts that claim tasks from queue
+**Job Submission Scripts (scripts/shell/)**
+- `entrypoints/submit.sh`: Main entry point, detects SLURM/PBS/local and calls appropriate template
+- `workers/runjobs.sh` / `workers/runjobs_raspa3.sh`: Worker scripts that claim tasks from queue
   - Read `.raspa_worker_limit` before claiming next task
   - Use atomic file operations for task claiming
   - Execute RASPA simulation in claimed directory
   - Mark task as done/failed based on output
-- `sbatch.sh` / `pbs.sh`: SLURM/PBS job templates with proper environment setup
+- `templates/schedulers/sbatch.sh` / `templates/schedulers/pbs.sh`: SLURM/PBS job templates with proper environment setup
 
 ## Development Notes
 
@@ -296,17 +297,17 @@ raspa-calc  # Choose mode 2 (high-throughput)
 ```bash
 # Test CIF parameter extraction with specific cutoff
 PYTHONPATH=$HOME/raspa2-calc/.raspa_tools/src \
-  python -m raspa_calc.algorithms.calculate_params /path/to/structure.cif --cutoff 12.8
+  python -m raspa_calc.domain.algorithms.calculate_params /path/to/structure.cif --cutoff 12.8
 
 # Test data extraction (auto-detects RASPA version)
 cd work/output
-python -m raspa_calc.tools.data_extractor
+python -m raspa_calc.entrypoints.data_extractor
 
 # Test parameter screening without running simulations
-python -m raspa_calc.tools.parameter_screening --dry-run
+python -m raspa_calc.entrypoints.parameter_screening --dry-run
 
 # Test SLURM resource detection
-python -c "from raspa_calc.task_runner import get_slurm_cluster_resources; import json; print(json.dumps(get_slurm_cluster_resources(), indent=2))"
+python -c "from raspa_calc.infra.runner import get_slurm_cluster_resources; import json; print(json.dumps(get_slurm_cluster_resources(), indent=2))"
 ```
 
 **Monitoring cluster performance:**

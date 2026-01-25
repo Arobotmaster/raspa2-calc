@@ -318,9 +318,9 @@ RASPA3 使用 conda 环境执行，作业脚本会自动：
 source ~/anaconda3/etc/profile.d/conda.sh
 conda activate raspa3
 
-# 执行任务（脚本位于 RASPA_TOOL_DIR/job_templates）
+# 执行任务（脚本位于 RASPA_TOOL_DIR/scripts/shell/workers）
 cd $WORK_DIR
-bash "$RASPA_TOOL_DIR/job_templates/runjobs_raspa3.sh" "$SLURM_ARRAY_TASK_ID" "$SLURM_ARRAY_TASK_COUNT"
+bash "$RASPA_TOOL_DIR/scripts/shell/workers/runjobs_raspa3.sh" "$SLURM_ARRAY_TASK_ID" "$SLURM_ARRAY_TASK_COUNT"
 ```
 
 ### 5.3 PBS 作业模板示例
@@ -335,9 +335,9 @@ bash "$RASPA_TOOL_DIR/job_templates/runjobs_raspa3.sh" "$SLURM_ARRAY_TASK_ID" "$
 source ~/anaconda3/etc/profile.d/conda.sh
 conda activate raspa3
 
-# 执行任务（脚本位于 RASPA_TOOL_DIR/job_templates）
+# 执行任务（脚本位于 RASPA_TOOL_DIR/scripts/shell/workers）
 cd $PBS_O_WORKDIR
-bash "$RASPA_TOOL_DIR/job_templates/runjobs_raspa3.sh" "$CPU" "$TOTAL_CPUS"
+bash "$RASPA_TOOL_DIR/scripts/shell/workers/runjobs_raspa3.sh" "$CPU" "$TOTAL_CPUS"
 ```
 
 ---

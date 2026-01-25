@@ -45,13 +45,13 @@
 
 ## 4. 代码实现要点（关键文件）
 
-### 4.1 `job_templates/tasksrun.sh`
+### 4.1 `scripts/shell/entrypoints/submit.sh`
 
 脚本位置约定（新版）：
 
-- 提交脚本默认在 `RASPA_TOOL_DIR/job_templates`（未设置时为 `~/raspa2-calc/.raspa_tools/job_templates`）。
-- 不再复制 `job_templates` 到工作目录；任务目录仅保存队列与 `mc*` 任务目录。
-- `tasksrun.sh` 会把 `RASPA_TOOL_DIR` 传入作业环境，供提交脚本/worker 定位 `runjobs*.sh`。
+- 提交脚本默认在 `RASPA_TOOL_DIR/scripts/shell/entrypoints`（未设置时为 `~/raspa2-calc/.raspa_tools/scripts/shell/entrypoints`）。
+- 不再复制 `scripts/shell` 下脚本到工作目录；任务目录仅保存队列与 `mc*` 任务目录。
+- `submit.sh` 会把 `RASPA_TOOL_DIR` 传入作业环境，供提交脚本/worker 定位 `runjobs*.sh`。
 
 主要做了三件事：
 
@@ -70,11 +70,11 @@
   - `RASPA_WORKER_IDS`（CSV，例如 `130,131`，表示同一 job 内要跑的多个 worker）
 - 日志会显示类似：`节点分配计划(线程->作业): master-node:130 -> master-node:65`
 
-### 4.2 `job_templates/job_submit.sh`（以及运行时生成的 `job_submit_ht.sh`）
+### 4.2 `scripts/shell/templates/schedulers/job_submit.sh`（以及运行时生成的 `job_submit_ht.sh`）
 
 新增对 `RASPA_WORKER_IDS` 的解析：
 
-- **脚本来源**：优先从 `RASPA_TOOL_DIR/job_templates` 读取 `runjobs.sh` / `runjobs_raspa3.sh`，仅在工具目录不可用时回退到工作目录同名脚本。
+- **脚本来源**：优先从 `RASPA_TOOL_DIR/scripts/shell/workers` 读取 `runjobs.sh` / `runjobs_raspa3.sh`，仅在工具目录不可用时回退到工作目录同名脚本。
 - **单 worker**：沿用 `srun --ntasks=1 --cpus-per-task=1` 启动 1 个 `runjobs.sh`
 - **多 worker**：在同一个 batch step 里后台启动多个 `runjobs.sh` 并 `wait`
   - 这里刻意 **不使用多个 `srun` step**，因为在 `CR_CORE` 下多个 step 可能会按 core 串行分配资源，导致同一作业内无法并发跑满超线程
@@ -117,14 +117,14 @@ scontrol show job <jobid> | egrep 'ReqTRES|AllocTRES|NumCPUs|NodeList'
 
 ```
 raspa-calc / parameter_screening
-  -> RASPA_TOOL_DIR/job_templates/tasksrun.sh
+  -> RASPA_TOOL_DIR/scripts/shell/entrypoints/submit.sh
      - 检测调度系统: SLURM / PBS / LOCAL
      - 选择提交模式:
          * SLURM array (无节点计划)
          * loop (有节点计划或 PBS/LOCAL)
      - 提交 job_submit.sh / pbs.sh / local.sh
         (注入 RASPA_WORK_DIR / RASPA_SUBDIR / RASPA_WORKER_IDS ...)
-          -> RASPA_TOOL_DIR/job_templates/runjobs*.sh
+          -> RASPA_TOOL_DIR/scripts/shell/workers/runjobs*.sh
              - 读取 .raspa_queue/ (next_id/last_id/next.lock/retry.list/tasks.list)
              - 认领任务: mcX -> mcX__running -> __done/__failed
              - 并发上限: .raspa_worker_limit
@@ -170,7 +170,7 @@ raspa-calc / parameter_screening
 
 ### 7.3 提交层：节点计划如何变成实际的 sbatch 提交
 
-提交由 `RASPA_TOOL_DIR/job_templates/tasksrun.sh` 完成（不再复制 `job_templates` 到工作目录）：
+提交由 `RASPA_TOOL_DIR/scripts/shell/entrypoints/submit.sh` 完成（不再复制 `scripts/shell` 下脚本到工作目录）：
 
 - **如果存在节点计划**：必须逐个提交（loop），因为需要对每个 job 写 `#SBATCH --nodelist=<node>`；这时会自动禁用 job array。
 - **如果不存在节点计划**：可用 job array（由 SLURM 自己调度到各节点）。
@@ -193,7 +193,7 @@ raspa-calc / parameter_screening
 
 ### 7.4 任务层：mc* 目录到底怎么分给 worker（不是按节点硬分配）
 
-每个 worker 运行 `RASPA_TOOL_DIR/job_templates/runjobs.sh`（RASPA3 则用 `runjobs_raspa3.sh`），它们不会提前拿到“属于本节点的任务列表”，而是通过共享队列动态领取：
+每个 worker 运行 `RASPA_TOOL_DIR/scripts/shell/workers/runjobs.sh`（RASPA3 则用 `runjobs_raspa3.sh`），它们不会提前拿到“属于本节点的任务列表”，而是通过共享队列动态领取：
 
 - 输出目录下有一个共享队列：`<output_dir>/.raspa_queue/`
   - `next_id` / `last_id`：指针队列（全局递增领取）

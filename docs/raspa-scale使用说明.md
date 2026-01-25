@@ -36,8 +36,8 @@
 - **终止任务菜单**：`u` 按用户；`r` 按范围；`l` 按列表；`q` 退出。
 
 ### 脚本与模板位置
-- 提交脚本默认使用 `RASPA_TOOL_DIR/job_templates/tasksrun.sh`，不再复制 `job_templates` 到工作目录。
-- Worker 执行脚本优先来自 `RASPA_TOOL_DIR/job_templates/runjobs*.sh`，可通过 `RASPA_TOOL_DIR` 覆盖工具目录。
+- 提交脚本默认使用 `RASPA_TOOL_DIR/scripts/shell/entrypoints/submit.sh`，不再复制 `scripts/shell` 下脚本到工作目录。
+- Worker 执行脚本优先来自 `RASPA_TOOL_DIR/scripts/shell/workers/runjobs*.sh`，可通过 `RASPA_TOOL_DIR` 覆盖工具目录。
 - 工作目录主要保留队列与任务数据：`.raspa_queue`、`.raspa_worker_limit`、`.raspa_jobs.list`、`mc*` 等。
 
 ### 状态监控与排查 (raspa-status)
