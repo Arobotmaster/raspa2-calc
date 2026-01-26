@@ -152,8 +152,9 @@ raspa-calc / parameter_screening
 2) **计算每个节点的“可用线程数”**
 - 基础空闲：`free_by_alloc = total - allocated - other`
 - 负载修正：`free_by_load = total - ceil(load)`
-- 取最保守：`free_cpus = min(free_by_alloc, free_by_load)`  
-  这样能避免某节点存在非 SLURM 负载时被误判为空闲。
+- 默认策略 `alloc_ht`：**超线程节点(T>1)** 用 `min(free_by_alloc, free_by_load)`，其余节点用 `free_by_alloc`。  
+  这样既避免 HT 节点被高负载误判为空闲，又不影响单线程节点的真实空闲。
+- 可通过环境变量覆盖策略：`RASPA_SLURM_FREE_POLICY=alloc_ht|alloc|min|load`
 
 3) **应用节点优先级（可选）**
 - 从 `config.yaml` 的 `environment.node_priorities` 或 `calculation.node_priorities` 读取权重。
@@ -190,6 +191,10 @@ raspa-calc / parameter_screening
 - 但由于 `CR_CORE` 的“1 core = 2 threads”，需要提交 **65 个 job**，每个 job 内跑 2 个 worker
 
 这也解释了为什么 `pe` 会显示 `Use=130/256`（而不是 65）：`pe Use` 统计的是 **已分配的 CPU(thread)**，65 个 job * 2 threads/job = 130 threads。
+
+### 7.6 资源显示口径提醒
+- `raspa-scale` 的资源与推荐并发默认以 **CPU线程数=worker并发数** 统计。
+- 对超线程节点会显示 `线程/核` 形式，便于同时对照 SLURM 的 core 口径与实际 worker 数。
 
 ### 7.4 任务层：mc* 目录到底怎么分给 worker（不是按节点硬分配）
 

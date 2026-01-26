@@ -115,6 +115,16 @@ def _get_slurm_summary():
 def get_slurm_cluster_resources():
     """Get SLURM cluster CPU resources."""
     use_ssh_load = os.environ.get("RASPA_NODE_LOAD_SSH", "false").lower() in ("1", "true", "yes", "y", "on")
+    free_policy_raw = os.environ.get("RASPA_SLURM_FREE_POLICY", "alloc_ht")
+    free_policy = (free_policy_raw or "alloc").strip().lower()
+    if free_policy in ("min", "load+alloc", "load_alloc"):
+        free_policy = "min"
+    elif free_policy in ("load", "load_only", "load-only"):
+        free_policy = "load"
+    elif free_policy in ("alloc_ht", "auto", "auto_ht", "alloc-ht"):
+        free_policy = "alloc_ht"
+    else:
+        free_policy = "alloc"
 
     def _load_from_ssh(node: str):
         if not use_ssh_load:
@@ -201,7 +211,18 @@ def get_slurm_cluster_resources():
 
             free_by_alloc = max(0, node_total - node_alloc - node_other)
             free_by_load = max(0, node_total - load_effective)
-            node_free = min(free_by_alloc, free_by_load)
+            use_load = free_policy in ("load", "min")
+            if free_policy == "alloc_ht" and threads_per_core and threads_per_core > 1:
+                use_load = True
+            if load_value is None:
+                use_load = False
+
+            if free_policy == "load" and use_load:
+                node_free = free_by_load
+            elif free_policy in ("min", "alloc_ht") and use_load:
+                node_free = min(free_by_alloc, free_by_load)
+            else:
+                node_free = free_by_alloc
 
             nodes.append(
                 {
@@ -277,6 +298,17 @@ def build_node_plan(cluster_info, cpu_cores):
             ),
         )
 
+    free_policy_raw = os.environ.get("RASPA_SLURM_FREE_POLICY", "alloc_ht")
+    free_policy = (free_policy_raw or "alloc").strip().lower()
+    if free_policy in ("min", "load+alloc", "load_alloc"):
+        free_policy = "min"
+    elif free_policy in ("load", "load_only", "load-only"):
+        free_policy = "load"
+    elif free_policy in ("alloc_ht", "auto", "auto_ht", "alloc-ht"):
+        free_policy = "alloc_ht"
+    else:
+        free_policy = "alloc"
+
     for n in nodes:
         total = int(n.get("total_cpus", 0) or 0)
         free = max(0, int(n.get("free_cpus", 0) or 0))
@@ -285,6 +317,14 @@ def build_node_plan(cluster_info, cpu_cores):
         try:
             load_val = float(str(load_val_raw).rstrip("*"))
         except Exception:
+            load_val = None
+        tpc = n.get("threads_per_core") or 1
+        use_load = free_policy in ("load", "min")
+        if free_policy == "alloc_ht" and tpc and int(tpc) > 1:
+            use_load = True
+        if load_val is None:
+            use_load = False
+        if not use_load:
             load_val = None
         busy = max(alloc, load_val if load_val is not None else 0)
         headroom = max(0, total - math.ceil(busy))

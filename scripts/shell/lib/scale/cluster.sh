@@ -11,6 +11,7 @@ collect_cluster_info() {
   USEFUL_TASKS=$((RUNNING_COUNT + PENDING_COUNT))
 
   CL_TOTAL=0; CL_ALLOC=0; CL_OTHER=0; CL_IDLE=0
+  CL_TOTAL_CORES=0; CL_ALLOC_CORES=0; CL_IDLE_CORES=0
   CL_METHOD="none"
   CL_NODE_LINES=()
   NODE_TPC=()
@@ -45,10 +46,21 @@ PY
       while IFS= read -r L; do
         case "$L" in NODE::*)
           IFS='::' read -r _ tag_nm tag_tot tag_alloc tag_topo tag_load tag_free <<< "$L"
-          CL_NODE_LINES+=("  ${tag_nm}: 总${tag_tot}线程 (拓扑${tag_topo}), 已分配${tag_alloc}, CPULoad=${tag_load}, 估计可用=${tag_free}")
           tpc_raw="${tag_topo##*:}"
           if [[ "$tpc_raw" =~ ^[0-9]+$ ]] && [ "$tpc_raw" -ge 1 ]; then
             NODE_TPC["$tag_nm"]="$tpc_raw"
+            tag_tot_core=$((tag_tot / tpc_raw))
+            alloc_core=$(( (tag_alloc + tpc_raw - 1) / tpc_raw ))
+            free_core=$(( tag_free / tpc_raw ))
+            CL_TOTAL_CORES=$((CL_TOTAL_CORES + tag_tot_core))
+            CL_ALLOC_CORES=$((CL_ALLOC_CORES + alloc_core))
+            CL_IDLE_CORES=$((CL_IDLE_CORES + free_core))
+            CL_NODE_LINES+=("  ${tag_nm}: 总${tag_tot}线程/${tag_tot_core}核 (拓扑${tag_topo}), 已分配${tag_alloc}线程/${alloc_core}核, CPULoad=${tag_load}, 估计可用=${tag_free}线程/${free_core}核")
+          else
+            CL_TOTAL_CORES=$((CL_TOTAL_CORES + tag_tot))
+            CL_ALLOC_CORES=$((CL_ALLOC_CORES + tag_alloc))
+            CL_IDLE_CORES=$((CL_IDLE_CORES + tag_free))
+            CL_NODE_LINES+=("  ${tag_nm}: 总${tag_tot}线程 (拓扑${tag_topo}), 已分配${tag_alloc}, CPULoad=${tag_load}, 估计可用=${tag_free}")
           fi
         ;; esac
       done < <(printf "%s\n" "$PY_OK")
@@ -76,18 +88,54 @@ PY
           alloc_eff=$c_alloc
           load_eff=$load_int
           free=$(( capacity - alloc_eff - c_other ))
-          by_load=$(( capacity - load_eff ))
-          [ "$by_load" -lt "$free" ] && free=$by_load
+          free_policy="${RASPA_SLURM_FREE_POLICY:-alloc_ht}"
+          free_policy="$(printf "%s" "$free_policy" | tr '[:upper:]' '[:lower:]')"
+          tpc_raw="${topo##*:}"
+          use_load=0
+          case "$free_policy" in
+            load|load_only|load-only)
+              use_load=1
+              ;;
+            min|load+alloc|load_alloc)
+              use_load=1
+              ;;
+            alloc_ht|auto|auto_ht|alloc-ht)
+              if [[ "$tpc_raw" =~ ^[0-9]+$ ]] && [ "$tpc_raw" -gt 1 ]; then
+                use_load=1
+              fi
+              ;;
+            *)
+              use_load=0
+              ;;
+          esac
+          if [ "$use_load" -eq 1 ]; then
+            by_load=$(( capacity - load_eff ))
+            if [ "$free_policy" = "load" ] || [ "$free_policy" = "load_only" ] || [ "$free_policy" = "load-only" ]; then
+              free=$by_load
+            else
+              [ "$by_load" -lt "$free" ] && free=$by_load
+            fi
+          fi
           [ "$free" -lt 0 ] && free=0
+          if [[ "$tpc_raw" =~ ^[0-9]+$ ]] && [ "$tpc_raw" -ge 1 ]; then
+            NODE_TPC["$nm"]="$tpc_raw"
+            tot_core=$((capacity / tpc_raw))
+            alloc_core=$(( (alloc_eff + tpc_raw - 1) / tpc_raw ))
+            free_core=$(( free / tpc_raw ))
+            CL_TOTAL_CORES=$((CL_TOTAL_CORES + tot_core))
+            CL_ALLOC_CORES=$((CL_ALLOC_CORES + alloc_core))
+            CL_IDLE_CORES=$((CL_IDLE_CORES + free_core))
+            CL_NODE_LINES+=("  ${nm}: 总${capacity}线程/${tot_core}核 (拓扑${topo:-?}), 已分配${alloc_eff}线程/${alloc_core}核, CPULoad=${load_disp}, 估计可用=${free}线程/${free_core}核")
+          else
+            CL_TOTAL_CORES=$((CL_TOTAL_CORES + capacity))
+            CL_ALLOC_CORES=$((CL_ALLOC_CORES + alloc_eff))
+            CL_IDLE_CORES=$((CL_IDLE_CORES + free))
+            CL_NODE_LINES+=("  ${nm}: 总${capacity}线程 (拓扑${topo:-?}), 已分配${alloc_eff}, CPULoad=${load_disp}, 估计可用=${free}")
+          fi
           CL_TOTAL=$((CL_TOTAL + capacity))
           CL_ALLOC=$((CL_ALLOC + alloc_eff))
           CL_OTHER=$((CL_OTHER + c_other))
           CL_IDLE=$((CL_IDLE + free))
-          CL_NODE_LINES+=("  ${nm}: 总${capacity}核 (拓扑${topo:-?}), 已分配${alloc_eff}, CPULoad=${load_disp}, 估计可用=${free}")
-          tpc_raw="${topo##*:}"
-          if [[ "$tpc_raw" =~ ^[0-9]+$ ]] && [ "$tpc_raw" -ge 1 ]; then
-            NODE_TPC["$nm"]="$tpc_raw"
-          fi
         done <<< "$out"
         CL_METHOD="sinfo_per_node"
       fi
@@ -102,13 +150,19 @@ PY
   fi
 
   echo "$(ts) - INFO - === 步骤3：设置计算参数 ==="
-  echo "$(ts) - INFO - 当前节点CPU核心数: $(node_cpu_count)"
+  echo "$(ts) - INFO - 当前节点CPU线程数: $(node_cpu_count)"
   if [ "$CL_METHOD" != "none" ]; then
-    echo "$(ts) - INFO - 集群总 CPU核心数: ${CL_TOTAL}"
-    echo "$(ts) - INFO - 集群已分配 CPU核心数: ${CL_ALLOC}"
-    echo "$(ts) - INFO - 集群当前可用 CPU核心数: ${CL_IDLE}"
+    if [ "$CL_TOTAL_CORES" -gt 0 ] && [ "$CL_TOTAL_CORES" -ne "$CL_TOTAL" ]; then
+      echo "$(ts) - INFO - 集群总 CPU线程数: ${CL_TOTAL} (物理核≈${CL_TOTAL_CORES})"
+      echo "$(ts) - INFO - 集群已分配 CPU线程数: ${CL_ALLOC} (物理核≈${CL_ALLOC_CORES})"
+      echo "$(ts) - INFO - 集群当前可用 CPU线程数: ${CL_IDLE} (物理核≈${CL_IDLE_CORES})"
+    else
+      echo "$(ts) - INFO - 集群总 CPU线程数: ${CL_TOTAL}"
+      echo "$(ts) - INFO - 集群已分配 CPU线程数: ${CL_ALLOC}"
+      echo "$(ts) - INFO - 集群当前可用 CPU线程数: ${CL_IDLE}"
+    fi
     if [ "$CL_METHOD" = "sinfo_per_node" ] && [ ${#CL_NODE_LINES[@]} -gt 0 ]; then
-      echo "$(ts) - INFO - 节点资源详情（线程总数/负载/建议可用线程）："
+      echo "$(ts) - INFO - 节点资源详情（线程/核/负载/建议可用）："
       for line in "${CL_NODE_LINES[@]}"; do
         echo "$(ts) - INFO - ${line}"
       done
@@ -157,5 +211,5 @@ PY
     fi
   fi
   [ "$RECOMMENDED" -lt 0 ] && RECOMMENDED=0
-  echo "$(ts) - INFO - 建议使用CPU核心数: ${RECOMMENDED} (${RECOMMEND_NOTE})"
+  echo "$(ts) - INFO - 建议使用CPU线程数: ${RECOMMENDED} (${RECOMMEND_NOTE})"
 }

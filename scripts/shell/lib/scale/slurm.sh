@@ -282,11 +282,12 @@ PY
     local NAMENEW="${WORKER_IDS[0]}"
     local last_wid="${WORKER_IDS[$((pack_size - 1))]}"
     local next_idx=$((idx + pack_size))
+    local progress="${next_idx}/${total_workers}"
     if [ "$submit_verbose" -eq 1 ]; then
-      echo "正在提交第${last_wid}个任务…"
+      echo "正在提交 worker_id=${last_wid} (补交进度 ${progress})…"
     else
       if [ "$next_idx" -eq "$pack_size" ] || [ "$next_idx" -eq "$total_workers" ] || [ $((next_idx % submit_every)) -eq 0 ]; then
-        echo "正在提交第${last_wid}个任务…"
+        echo "正在提交 worker_id=${last_wid} (补交进度 ${progress})…"
       fi
     fi
     local -a SBATCH_EXTRA_ARGS=()
@@ -410,8 +411,10 @@ if ! [[ "${INITIAL_RUNNING:-}" =~ ^[0-9]+$ ]]; then
 fi
 ACTIVE_FILE="$WORKERS_DIR/.active_jobs.tsv"
 ACTIVE_WORKERS_FILE="$WORKERS_DIR/.active_workers.list"
+ACTIVE_RUN_FILE="$WORKERS_DIR/.active_jobs_running.tsv"
 : > "$ACTIVE_FILE"
 : > "$ACTIVE_WORKERS_FILE"
+: > "$ACTIVE_RUN_FILE"
 SQUEUE_OK=0
 if command -v squeue >/dev/null 2>&1; then
   if squeue -u "$USER" -h -o "%i" >/dev/null 2>&1; then
@@ -424,14 +427,42 @@ import os, subprocess, sys
 
 target = os.environ.get("PY_TARGET", "").rstrip("/") + "/"
 user = os.environ.get("PY_USER", "")
+state = os.environ.get("SQUEUE_STATE", "").strip()
 if not target or not user:
   sys.exit(0)
 
 try:
-  out = subprocess.check_output(
-      ["squeue", "-u", user, "-h", "-O", "jobid:20,name:40,stdout:400"],
-      stderr=subprocess.DEVNULL,
-  ).decode(errors="ignore")
+  cmd = ["squeue", "-u", user, "-h"]
+  if state:
+      cmd += ["-t", state]
+  cmd += ["-O", "jobid:20,name:40,stdout:400"]
+  out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode(errors="ignore")
+except Exception:
+  sys.exit(0)
+
+for raw in out.splitlines():
+  parts = raw.strip().split(None, 2)
+  if len(parts) < 3:
+      continue
+  jid, name, stdout = parts[0], parts[1], parts[2]
+  if stdout.startswith(target):
+      print(f"{jid} {name} {stdout}")
+PY
+  PY_TARGET="$TARGET_DIR" PY_USER="$USER" SQUEUE_STATE="R" python - <<'PY' 2>/dev/null > "$ACTIVE_RUN_FILE" || true
+import os, subprocess, sys
+
+target = os.environ.get("PY_TARGET", "").rstrip("/") + "/"
+user = os.environ.get("PY_USER", "")
+state = os.environ.get("SQUEUE_STATE", "").strip()
+if not target or not user:
+  sys.exit(0)
+
+try:
+  cmd = ["squeue", "-u", user, "-h"]
+  if state:
+      cmd += ["-t", state]
+  cmd += ["-O", "jobid:20,name:40,stdout:400"]
+  out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode(errors="ignore")
 except Exception:
   sys.exit(0)
 
@@ -662,12 +693,7 @@ else
 fi
 fi
 # 扩容：提交缺口（需要追踪文件）
-SKIP_EXPAND=0
-if [ "$LIVE_WORKERS" -ge "$NEW_LIMIT" ]; then
-  SKIP_EXPAND=1
-fi
-
-if [ "$SKIP_EXPAND" -eq 0 ] && [ -s "$JOBS_FILE" ] && [ "$LIVE_WORKERS" -lt "$NEW_LIMIT" ]; then
+if [ -s "$JOBS_FILE" ]; then
   # 统计当前可并发的“有意义”上限：已在跑的任务数(__running) + 待处理的任务数(mc*)
   scan_task_counts "$TARGET_DIR"
 
@@ -692,6 +718,17 @@ if [ "$SKIP_EXPAND" -eq 0 ] && [ -s "$JOBS_FILE" ] && [ "$LIVE_WORKERS" -lt "$NE
   if [ "$TOTAL_AVAILABLE" -lt "$USEFUL_TARGET" ]; then
     USEFUL_TARGET=$TOTAL_AVAILABLE
   fi
+  NEED_RUNNING=$((USEFUL_TARGET - RUNNING_COUNT))
+  [ "$NEED_RUNNING" -lt 0 ] && NEED_RUNNING=0
+  if [ "$SQUEUE_OK" -eq 1 ] && [ "$LIVE_WORKERS" -gt 0 ] && [ "$RUNNING_COUNT" -ge 0 ] && [ "$LIVE_WORKERS" -ne "$RUNNING_COUNT" ]; then
+    diff=$((LIVE_WORKERS - RUNNING_COUNT))
+    if [ "$diff" -gt 0 ]; then
+      echo "提示: 调度器活跃worker(${LIVE_WORKERS}) 比目录__running(${RUNNING_COUNT}) 多 ${diff}，多出部分通常处于排队/启动中，目录统计会稍后更新。"
+    elif [ "$diff" -lt 0 ]; then
+      diff=$((RUNNING_COUNT - LIVE_WORKERS))
+      echo "提示: 目录__running(${RUNNING_COUNT}) 比调度器活跃worker(${LIVE_WORKERS}) 多 ${diff}，可能有刚结束/孤儿标记，稍后会自动回收。"
+    fi
+  fi
 
   # 计算现存 worker 集合，并找出 1..NEW_LIMIT 中缺口
   mapfile -t PRESENT_WORKERS < "$ACTIVE_WORKERS_FILE" 2>/dev/null || true
@@ -708,34 +745,65 @@ if [ "$SKIP_EXPAND" -eq 0 ] && [ -s "$JOBS_FILE" ] && [ "$LIVE_WORKERS" -lt "$NE
     case " $present " in *" $i "*) : ;; *) missing_list+=("$i");; esac
   done
 
-  # 本次最多需要补交的数量
-  NEED=$((USEFUL_TARGET - LIVE_WORKERS))
-  [ "$NEED" -lt 0 ] && NEED=0
-
   # 截断缺口到 NEED 个
   to_submit=()
-  if [ "$NEED" -gt 0 ] && [ ${#missing_list[@]} -gt 0 ]; then
+  if [ "$NEED_RUNNING" -gt 0 ] && [ ${#missing_list[@]} -gt 0 ]; then
     for x in "${missing_list[@]}"; do
-      [ "${#to_submit[@]}" -ge "$NEED" ] && break
+      [ "${#to_submit[@]}" -ge "$NEED_RUNNING" ] && break
       to_submit+=("$x")
     done
   fi
 
-  if [ ${#to_submit[@]} -gt 0 ]; then
+  slots_avail=${#missing_list[@]}
+  if [ "$NEED_RUNNING" -le 0 ]; then
+    echo "扩容: 目录__running=${RUNNING_COUNT} 已达到目标=${USEFUL_TARGET}(用户=$NEW_LIMIT)，无需补交"
+  elif [ ${#to_submit[@]} -gt 0 ]; then
+    if [ "$NEED_RUNNING" -gt "$slots_avail" ]; then
+      blocked=$((NEED_RUNNING - slots_avail))
+      echo "提示: 按__running需补 ${NEED_RUNNING}，但已有 ${blocked} 个 worker_id 处于排队/启动占用，避免重复提交，本轮仅补 ${slots_avail}。"
+    fi
     IFS=',' read -r -a _dump <<< "${to_submit[*]}" # no-op to please shellcheck
     submit_csv=$(IFS=,; echo "${to_submit[*]}")
-    echo "扩容: 当前活跃=${LIVE_WORKERS}, 目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}(运行中=${RUNNING_COUNT}, 待处理=${PENDING_COUNT})，计划补交worker=${#to_submit[@]}: ${submit_csv}"
+    echo "扩容: 目录__running=${RUNNING_COUNT}, 目标=${USEFUL_TARGET}(用户=$NEW_LIMIT), 调度器活跃worker=${LIVE_WORKERS}(作业=${LIVE_JOBS},含排队), 可用任务=${TOTAL_AVAILABLE}(运行中=${RUNNING_COUNT}, 待处理=${PENDING_COUNT})，计划补交worker=${#to_submit[@]} (worker_id 列表): ${submit_csv}"
     submit_missing "$submit_csv"
     EXPANDED_THIS_ROUND=1
   else
-    echo "扩容: 当前活跃=${LIVE_WORKERS}, 目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}，无需补交"
+    echo "扩容: 目录__running=${RUNNING_COUNT}, 目标=${USEFUL_TARGET}(用户=$NEW_LIMIT), 调度器活跃worker=${LIVE_WORKERS}(作业=${LIVE_JOBS},含排队), 可用任务=${TOTAL_AVAILABLE}，无需补交"
+    if [ "$NEED_RUNNING" -gt 0 ] && [ "$slots_avail" -eq 0 ]; then
+      echo "提示: 仍有 ${NEED_RUNNING} 个运行缺口，但 1..${NEW_LIMIT} 的 worker_id 已被排队/运行占用，等待调度器启动后再检查。"
+    fi
   fi
 fi
 
-# 缩容：按实际 worker 数计算缺口，优先回收 worker_id 大于目标的作业
-if [ -s "$JOBS_FILE" ] && [ "$LIVE_WORKERS" -gt "$NEW_LIMIT" ]; then
+# 缩容：按运行中或活跃 worker 数计算缺口，优先回收 worker_id 大于目标的作业
+SHRINK_MODE_RAW="${RASPA_SCALE_SHRINK_MODE:-running}"
+SHRINK_MODE="$(printf "%s" "$SHRINK_MODE_RAW" | tr '[:upper:]' '[:lower:]')"
+case "$SHRINK_MODE" in
+  live|worker|workers|queue|queued) SHRINK_MODE="live" ;;
+  running|run|dir|tasks) SHRINK_MODE="running" ;;
+  *) SHRINK_MODE="running" ;;
+esac
+
+EXCESS_WORKERS=0
+ACTIVE_SHRINK_FILE="$ACTIVE_FILE"
+if [ "$SHRINK_MODE" = "running" ]; then
+  EXCESS_WORKERS=$((RUNNING_COUNT - NEW_LIMIT))
+  if [ "$EXCESS_WORKERS" -gt 0 ]; then
+    if [ -s "$ACTIVE_RUN_FILE" ]; then
+      ACTIVE_SHRINK_FILE="$ACTIVE_RUN_FILE"
+    else
+      echo "提示: 未能获取运行中作业列表，缩容将按所有活跃作业估算。"
+      ACTIVE_SHRINK_FILE="$ACTIVE_FILE"
+    fi
+    echo "缩容: 目录__running=${RUNNING_COUNT}, 目标=$NEW_LIMIT，需要释放约 ${EXCESS_WORKERS} worker"
+  fi
+else
   EXCESS_WORKERS=$((LIVE_WORKERS - NEW_LIMIT))
-  echo "缩容: 当前活跃=${LIVE_WORKERS} worker(作业=${LIVE_JOBS}), 目标=$NEW_LIMIT，需要释放约 ${EXCESS_WORKERS} worker"
+  if [ "$EXCESS_WORKERS" -gt 0 ]; then
+    echo "缩容: 调度器活跃worker=${LIVE_WORKERS}(作业=${LIVE_JOBS}), 目标=$NEW_LIMIT，需要释放约 ${EXCESS_WORKERS} worker"
+  fi
+fi
+if [ -s "$JOBS_FILE" ] && [ "$EXCESS_WORKERS" -gt 0 ]; then
 
   SKIP_SHRINK=0
   if [ "${RASPA_SCALE_KILL_FORCE:-0}" -ne 1 ]; then
@@ -756,7 +824,7 @@ if [ -s "$JOBS_FILE" ] && [ "$LIVE_WORKERS" -gt "$NEW_LIMIT" ]; then
   else
 
   : > "$WORKERS_DIR/.kill_jobs"
-  LIMIT_ENV="$NEW_LIMIT" EXCESS_ENV="$EXCESS_WORKERS" ACTIVE_PATH="$ACTIVE_FILE" JOBS_PATH="$JOBS_FILE" python - "$WORKERS_DIR/.kill_jobs" <<'PY'
+  LIMIT_ENV="$NEW_LIMIT" EXCESS_ENV="$EXCESS_WORKERS" ACTIVE_PATH="$ACTIVE_SHRINK_FILE" JOBS_PATH="$JOBS_FILE" python - "$WORKERS_DIR/.kill_jobs" <<'PY'
 import os, sys, re
 
 limit = int(os.environ.get("LIMIT_ENV", "0") or 0)
@@ -1006,21 +1074,28 @@ if [ "$LIVE_COUNT" -lt "$USEFUL_TARGET" ]; then
   for ((i=1;i<=NEW_LIMIT;i++)); do
     case " $present " in *" $i "*) : ;; *) missing_list+=("$i");; esac
   done
-  NEED=$((USEFUL_TARGET - LIVE_COUNT))
-  [ "$NEED" -lt 0 ] && NEED=0
+  NEED_RUNNING=$((USEFUL_TARGET - RUNNING_COUNT))
+  [ "$NEED_RUNNING" -lt 0 ] && NEED_RUNNING=0
   to_submit=()
-  if [ "$NEED" -gt 0 ] && [ ${#missing_list[@]} -gt 0 ]; then
+  if [ "$NEED_RUNNING" -gt 0 ] && [ ${#missing_list[@]} -gt 0 ]; then
     for x in "${missing_list[@]}"; do
-      [ "${#to_submit[@]}" -ge "$NEED" ] && break
+      [ "${#to_submit[@]}" -ge "$NEED_RUNNING" ] && break
       to_submit+=("$x")
     done
   fi
   if [ ${#to_submit[@]} -gt 0 ]; then
     submit_csv=$(IFS=,; echo "${to_submit[*]}")
-    echo "补足并发: 现存=$LIVE_COUNT, 用户目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}(运行中=${RUNNING_COUNT}, 待处理=${PENDING_COUNT})，实际目标=${USEFUL_TARGET}，补交worker: ${submit_csv}"
+    if [ "$NEED_RUNNING" -gt "${#missing_list[@]}" ]; then
+      blocked=$((NEED_RUNNING - ${#missing_list[@]}))
+      echo "提示: 按__running需补 ${NEED_RUNNING}，但已有 ${blocked} 个 worker_id 处于排队/启动占用，避免重复提交，本轮仅补 ${#missing_list[@]}。"
+    fi
+    echo "补足并发: 目录__running=${RUNNING_COUNT}; 用户目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}(运行中=${RUNNING_COUNT}, 待处理=${PENDING_COUNT})，实际目标=${USEFUL_TARGET}，补交worker (worker_id 列表): ${submit_csv}"
     submit_missing "$submit_csv"
   else
-    echo "补足并发: 现存=$LIVE_COUNT, 用户目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}，无需补交"
+    echo "补足并发: 目录__running=${RUNNING_COUNT}; 用户目标=$NEW_LIMIT, 可用任务=${TOTAL_AVAILABLE}，无需补交"
+    if [ "$NEED_RUNNING" -gt 0 ] && [ ${#missing_list[@]} -eq 0 ]; then
+      echo "提示: 仍有 ${NEED_RUNNING} 个运行缺口，但 1..${NEW_LIMIT} 的 worker_id 已被排队/运行占用，等待调度器启动后再检查。"
+    fi
   fi
 fi
 }

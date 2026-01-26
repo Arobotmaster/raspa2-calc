@@ -21,6 +21,11 @@
 - `RASPA_SCALE_SCAN_MODE=auto|fast|verify`：任务统计模式；auto 在任务很多时自动切换到 fast（不逐目录检查 simulation.*）。
 - `RASPA_SCALE_SCAN_FAST_THRESHOLD=<N>`：auto 模式触发 fast 的阈值（默认 2000）。
 - `RASPA_SCALE_SCAN_CACHE_SEC=<N>`：任务统计缓存秒数（默认 15，避免脚本内多次重复扫描）。
+- `RASPA_SLURM_FREE_POLICY=alloc_ht|alloc|min|load`：控制“可用线程数”的估算策略（SLURM）。  
+  - `alloc_ht`（默认）：在 **超线程节点(T>1)** 取 `min(alloc, load)`，其余节点按 `alloc`。  
+  - `alloc`：仅按分配量估算，等价于 `free = total - allocated - other`。  
+  - `min`：所有节点取 `alloc` 与 `load` 的保守最小值，避免非 SLURM 负载干扰。  
+  - `load`：所有节点仅按负载估算，适合想严格避开系统负载时使用。
 - `raspa-scale kill`：进入终止任务的交互菜单（按用户/范围/列表）。
 - `raspa-scale kill -u <用户名>`：终止指定用户的全部 SLURM 任务。
 - `raspa-scale kill -n <node[:count],...> [-c <count>]`：按节点终止运行中的任务（支持多个节点与数量）。
@@ -57,6 +62,10 @@
    - 在支持超线程的节点（如 ThreadsPerCore=2），`raspa-scale` 会自动生成 `pack_size=2` 的作业。
    - 例如：提交 1 个 SLURM Job，申请 2 个 CPU 线程，内部启动 2 个 Worker 并发计算。
    - 日志会显示：`节点分配计划(线程->作业): nodeA:20 -> nodeA:10`。
+4. **线程 vs 物理核显示**：
+   - 资源与推荐并发默认以 **CPU线程数=worker并发数** 统计。
+   - 若节点为超线程（ThreadsPerCore>1），日志会显示 `线程/核` 形式，例如：  
+     `总256线程/128核, 已分配144线程/72核, 估计可用112线程/56核`。
 4. **死锁处理**：
    - **锁超时**：默认 30秒。若作业被杀导致 `mcX.lock` 残留，新 Worker 会在 30s 后自动接管。
    - **指针重置**：若队列指针（`next_id`）已耗尽但仍有大量回滚任务（Pending），`raspa-scale` 会自动删除指针，触发 Worker 全量重新扫描。

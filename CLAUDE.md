@@ -56,21 +56,17 @@ python -m raspa_calc.entrypoints.parameter_screening
 ├── bin/                    # CLI tools (raspa-calc, raspa-status, raspa-scale, raspa-diagnose)
 ├── src/                    # Python package (src layout)
 │   └── raspa_calc/
-│       ├── cli/            # CLI entrypoints (raspa-calc, task runner)
-│       ├── core/           # config/env/menu
-│       ├── modes/          # mode entrypoints (parameter_screening/high_throughput/etc.)
-│       ├── task_runner/    # task runner modules (scheduler/framework/etc.)
-│       ├── tools/          # data_extractor/warning_processor/isotherm_plotter/etc.
-│       ├── algorithms/     # auto_mser/calculate_params/raspa3_generator/cluster_info
-│       └── common/         # shared config helpers
+│       ├── entrypoints/     # CLI entrypoints (interactive + per-tool)
+│       ├── app/             # mode orchestration and workflows
+│       ├── domain/          # algorithms/parsers (auto_mser, calculate_params, raspa3_generator)
+│       ├── infra/           # runner + job scripts + scheduler integrations
+│       └── runtime/         # config/env/diagnostics
 ├── scripts/shell/          # Helper shell workflows
-│   ├── templates/          # Job submission scripts
-│   │   ├── tasksrun.sh      # Main task submission (detects SLURM/PBS/local)
-│   │   ├── runjobs.sh       # RASPA2 worker script with atomic task queue
-│   │   ├── runjobs_raspa3.sh # RASPA3 worker script
-│   │   ├── sbatch.sh        # SLURM job template
-│   │   └── pbs.sh           # PBS job template
-│   └── raspa_scale/        # raspa-scale shared shell modules
+│   ├── entrypoints/        # submit.sh / scale.sh entry scripts
+│   ├── workers/            # runjobs.sh / runjobs_raspa3.sh workers
+│   ├── templates/
+│   │   └── schedulers/      # SLURM/PBS/local submission templates
+│   └── lib/                # Shared shell helpers (scale/, disk.sh)
 └── config.yaml             # Main configuration file
 ```
 

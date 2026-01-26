@@ -20,9 +20,12 @@ raspa2-calc/
     raspa_calc/               # Core Python package (src layout)
   bin/                        # CLI shims (raspa-calc, raspa-status, ...)
   scripts/
-    shell/                    # Shell workflows (entrypoints/workers/templates)
-      templates/              # Scheduler templates (SLURM/PBS/local), resolved via RASPA_TOOL_DIR
-      raspa_scale/            # raspa-scale helpers and shared libs
+    shell/                    # Shell workflows (entrypoints/workers/templates/lib)
+      entrypoints/            # submit.sh / scale.sh entry scripts
+      workers/                # runjobs*.sh worker scripts
+      templates/              # Scheduler templates root
+        schedulers/           # SLURM/PBS/local templates (stable path)
+      lib/                    # Shared shell helpers (scale/, disk.sh)
   raspa3json/                 # RASPA3 templates and molecule definitions
   raspa2-3/                   # RASPA2/3 conversion helpers
   nfs/                        # NFS helper scripts

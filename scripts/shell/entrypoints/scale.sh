@@ -226,7 +226,7 @@ if [ "$DO_AUTOSCALE" -eq 1 ] && [ -z "$NODE_PLAN" ] && [ -n "$PY_RES_JSON" ]; th
   if [ -n "$PLAN_REBUILT" ]; then
     NODE_PLAN="$PLAN_REBUILT"
     echo "$NODE_PLAN" > "$PLAN_FILE"
-    echo "$(ts) - INFO - 重建节点分配计划: $NODE_PLAN"
+    echo "$(ts) - INFO - 重建节点分配计划: $NODE_PLAN (用于节点倾向分配，不代表本次新增数量)"
   fi
 fi
 if [ -z "$NODE_PLAN" ] && [ -f "$PLAN_FILE" ]; then
