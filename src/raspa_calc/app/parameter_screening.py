@@ -1081,6 +1081,27 @@ def process_parameter_combinations(framework, cif_path, param_ranges, template_p
 
     return tasks
 
+def ask_yes_no(question, default_yes=True):
+    """Ask a yes/no question via input() and return their answer."""
+    if default_yes:
+        prompt = " [Y/n]: "
+    else:
+        prompt = " [y/N]: "
+
+    while True:
+        sys.stdout.write(question + prompt)
+        choice = input().lower()
+        if default_yes and choice == '':
+            return True
+        elif not default_yes and choice == '':
+            return False
+        elif choice in ['y', 'yes']:
+            return True
+        elif choice in ['n', 'no']:
+            return False
+        else:
+            sys.stdout.write("Please respond with 'yes' or 'no' (or 'y' or 'n').\n")
+
 def main():
     """主函数 - 纯配置模式"""
     try:
@@ -1343,13 +1364,6 @@ def main():
         output_base_dir = os.path.join(os.getcwd(), output_dir)
         os.makedirs(output_base_dir, exist_ok=True)
 
-        print("\n步骤4：集群资源与并发设置")
-        plan_path = os.path.join(output_base_dir, ".raspa_node_plan")
-        cpu_cores = get_cpu_cores_with_plan(total_jobs_est, plan_path=plan_path)
-        if cpu_cores <= 0:
-            print("❌ 无有效CPU核心数，任务未提交")
-            return 1
-
         # 加载孔隙率数据(如果配置启用)
         void_fraction_csv = None
         use_void_csv = config.get('calculation', {}).get('use_void_csv', False)
@@ -1360,7 +1374,7 @@ def main():
             void_column = config.get('calculation', {}).get('void_column', 'VF')
             void_fraction_csv = load_void_fraction_from_csv(void_csv_file, framework_col, void_column)
 
-        print("\n步骤5：simulation文件预览与任务简介")
+        print("\n步骤4：simulation文件预览与任务简介")
         print("\n" + "="*60)
         print("📋 参数筛选任务简介")
         print("="*60)
@@ -1369,7 +1383,6 @@ def main():
         print(f"CIF目录: {cif_dir}")
         print(f"模板文件: {template_path}")
         print(f"输出目录: {output_dir}")
-        print(f"CPU核心数: {cpu_cores}")
         print(f"作业系统: {job_system}")
         print("提交方式: 高通量调度")
 
@@ -1388,14 +1401,6 @@ def main():
                 print(f"📊 已从CSV加载 {len(void_fraction_csv)} 个框架的孔隙率数据")
 
         print("="*60)
-
-        # 交互：仅保留“预览 + 提交确认”，减少不必要的提问
-        def ask_yes_no(prompt: str, default_yes=True):
-            d = 'y' if default_yes else 'n'
-            ans = input(f"{prompt} (y/n) [默认: {d}]: ").strip().lower()
-            if not ans:
-                return default_yes
-            return ans in ('y', 'yes')
 
         # 预览：展示首个框架 + 首个参数组合的配置文件内容片段
         try:
@@ -1436,6 +1441,14 @@ def main():
         except Exception:
             # 预览失败不影响流程
             pass
+
+        print("\n步骤5：集群资源与并发设置")
+        plan_path = os.path.join(output_base_dir, ".raspa_node_plan")
+        cpu_cores = get_cpu_cores_with_plan(total_jobs_est, plan_path=plan_path)
+        if cpu_cores <= 0:
+            print("❌ 无有效CPU核心数，任务未提交")
+            return 1
+
 
         # 最终仅保留一次“是否提交作业？”确认
         if not ask_yes_no(f"确认继续提交作业? 预计数量: {total_jobs_est}", default_yes=True):

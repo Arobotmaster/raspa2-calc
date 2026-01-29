@@ -1,0 +1,9 @@
+{
+  "CriticalTemperature": 377,
+  "CriticalPressure": 6280000,
+  "AcentricFactor": -0.0080,
+  "Type": "rigid",
+  "pseudoAtoms": [
+    ["Rn_gas", [0.0, 0.0, 0]]
+  ]
+}   

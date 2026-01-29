@@ -31,43 +31,100 @@ def run_isotherm_plotter():
             Roughly detect RASPA result directories.
 
             Returns:
-                (mc_count, raspa3_txt_count)
+                (raspa2_count, raspa3_count)
             """
-            mc_count = 0
-            raspa3_txt_count = 0
+            raspa2_count = 0
+            raspa3_count = 0
 
             try:
-                for entry in os.scandir(dir_path):
-                    if not entry.is_dir():
-                        continue
-                    if re.match(r"^mc\d+", entry.name):
-                        mc_count += 1
+                # Check if dir_path itself contains output files (RASPA2 or RASPA3)
+                # RASPA2: output_*.data directly or in Output/System_0
+                # RASPA3: output_*.txt directly or in output
+                
+                # Check immediate subdirectories
+                with os.scandir(dir_path) as it:
+                    for entry in it:
+                        if entry.is_dir():
+                            # 1. Check for standard mc* naming
+                            if re.match(r"^mc\d+", entry.name):
+                                raspa2_count += 1
+                                continue
+                            
+                            # 2. Check for RASPA2 structure (Output/System_0) in arbitrary named dirs
+                            # This handles cases like COV_...__done
+                            r2_out = os.path.join(entry.path, "Output", "System_0")
+                            if os.path.isdir(r2_out):
+                                # Check if any .data file exists
+                                has_data = False
+                                try:
+                                    with os.scandir(r2_out) as sub_it:
+                                        for f in sub_it:
+                                            if f.name.endswith('.data') and f.name.startswith('output_'):
+                                                has_data = True
+                                                break
+                                except OSError:
+                                    pass
+                                if has_data:
+                                    raspa2_count += 1
+                                    continue
+                            
+                            # 3. Check for RASPA3 structure (output/output_*.txt) in arbitrary named dirs
+                            r3_out = os.path.join(entry.path, "output")
+                            if os.path.isdir(r3_out):
+                                try:
+                                    with os.scandir(r3_out) as sub_it:
+                                        for f in sub_it:
+                                            if f.name.endswith('.txt') and f.name.startswith('output_'):
+                                                raspa3_count += 1
+                                                break
+                                except OSError:
+                                    pass
+
             except Exception:
                 pass
 
+            # Also check for centralized output folder pattern (RASPA3 often puts all txts in one output dir)
+            # or if the current dir IS a simulation dir
+            
             def _count_txt_in_output(output_dir: str) -> int:
                 n = 0
                 try:
-                    for f in os.scandir(output_dir):
-                        if f.is_file():
-                            name = f.name.lower()
-                            if name.startswith("output_") and name.endswith(".txt"):
-                                n += 1
+                    if os.path.isdir(output_dir):
+                        with os.scandir(output_dir) as it:
+                            for f in it:
+                                if f.is_file():
+                                    name = f.name.lower()
+                                    if name.startswith("output_") and name.endswith(".txt"):
+                                        n += 1
                 except Exception:
                     return 0
                 return n
 
-            raspa3_txt_count += _count_txt_in_output(os.path.join(dir_path, "output"))
+            def _count_data_in_output(output_dir: str) -> int:
+                n = 0
+                try:
+                    if os.path.isdir(output_dir):
+                        with os.scandir(output_dir) as it:
+                            for f in it:
+                                if f.is_file():
+                                    name = f.name.lower()
+                                    if name.startswith("output_") and name.endswith(".data"):
+                                        n += 1
+                except Exception:
+                    return 0
+                return n
 
-            try:
-                for entry in os.scandir(dir_path):
-                    if not entry.is_dir():
-                        continue
-                    raspa3_txt_count += _count_txt_in_output(os.path.join(entry.path, "output"))
-            except Exception:
-                pass
+            # Check local output/ (RASPA3)
+            raspa3_count += _count_txt_in_output(os.path.join(dir_path, "output"))
+            
+            # Check local Output/System_0/ (RASPA2)
+            raspa2_count += _count_data_in_output(os.path.join(dir_path, "Output", "System_0"))
+            
+            # Check current dir for direct files (loose files)
+            raspa3_count += _count_txt_in_output(dir_path)
+            raspa2_count += _count_data_in_output(dir_path)
 
-            return mc_count, raspa3_txt_count
+            return raspa2_count, raspa3_count
 
         def _parse_selection(raw: str, max_idx: int) -> list[int]:
             raw = raw.strip().lower()
@@ -111,30 +168,30 @@ def run_isotherm_plotter():
         for d in [default_output_dir, "等温线", "output", "calc_output", "isotherms", "."]:
             full_path = work_dir if d == "." else os.path.join(work_dir, d)
             if os.path.isdir(full_path):
-                mc_count, raspa3_txt_count = _detect_result_signals(full_path)
-                if mc_count > 0 or raspa3_txt_count > 0:
+                raspa2_count, raspa3_count = _detect_result_signals(full_path)
+                if raspa2_count > 0 or raspa3_count > 0:
                     label = d
-                    possible_dirs.append((label, full_path, mc_count, raspa3_txt_count))
+                    possible_dirs.append((label, full_path, raspa2_count, raspa3_count))
 
         if not possible_dirs:
             try:
                 for entry in os.scandir(work_dir):
                     if not entry.is_dir():
                         continue
-                    mc_count, raspa3_txt_count = _detect_result_signals(entry.path)
-                    if mc_count > 0 or raspa3_txt_count > 0:
-                        possible_dirs.append((entry.name, entry.path, mc_count, raspa3_txt_count))
+                    raspa2_count, raspa3_count = _detect_result_signals(entry.path)
+                    if raspa2_count > 0 or raspa3_count > 0:
+                        possible_dirs.append((entry.name, entry.path, raspa2_count, raspa3_count))
             except Exception:
                 pass
 
         if possible_dirs:
             print(f"\n✓ 检测到 {len(possible_dirs)} 个包含计算结果的目录:")
-            for i, (dirname, _, mc_count, raspa3_txt_count) in enumerate(possible_dirs, 1):
+            for i, (dirname, _, raspa2_count, raspa3_count) in enumerate(possible_dirs, 1):
                 parts = []
-                if mc_count > 0:
-                    parts.append(f"{mc_count} 个mc任务目录")
-                if raspa3_txt_count > 0:
-                    parts.append(f"{raspa3_txt_count} 个RASPA3输出文件")
+                if raspa2_count > 0:
+                    parts.append(f"{raspa2_count} 个RASPA2模拟/文件")
+                if raspa3_count > 0:
+                    parts.append(f"{raspa3_count} 个RASPA3输出文件")
                 detail = "，".join(parts) if parts else "包含结果文件"
                 suffix = "/" if dirname != "." else ""
                 print(f"  {i}. {dirname}{suffix} ({detail})")

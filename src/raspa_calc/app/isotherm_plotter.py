@@ -32,6 +32,11 @@ import argparse
 from collections import defaultdict
 
 try:
+    import yaml
+except ImportError:
+    yaml = None
+
+try:
     import matplotlib
     matplotlib.use("Agg")  # headless
     import matplotlib.pyplot as plt
@@ -90,15 +95,97 @@ def _infer_context_dir(output_file: str) -> str | None:
         return None
 
 
+def _find_config_root(start_dir: str) -> str | None:
+    current = os.path.abspath(start_dir)
+    while True:
+        if os.path.exists(os.path.join(current, '.raspa_config.yaml')):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
 def _iter_output_files(base_dir: str):
     """
-    Yield (context_dir, output_file) pairs.
+    Yield (context_dir, output_file, framework_hint) pairs.
 
-    - If mc* layout exists, prefer mc* ordering and pick the most likely output per mc dir.
-    - Otherwise, recursively find output files:
-      - RASPA2: output*.data
-      - RASPA3: output_*.txt (under output/)
+    - If .raspa_config.yaml exists (Screening Mode):
+      - Read config to determine RASPA version.
+      - Walk base_dir to find outputs.
+      - Determine Framework Name by relative path to the config directory.
+    
+    - Otherwise (Scanning Mode):
+      - If mc* layout exists, prefer mc* ordering and pick the most likely output per mc dir.
+      - Otherwise, recursively find output files:
+        - RASPA2: output*.data
+        - RASPA3: output_*.txt (under output/)
     """
+    # 1. Check for Screening Config (search upwards)
+    config_root = _find_config_root(base_dir)
+
+    if config_root and yaml:
+        try:
+            cfg_path = os.path.join(config_root, '.raspa_config.yaml')
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                cfg = yaml.safe_load(f) or {}
+            
+            # Detect version from config
+            raspa_version = cfg.get('environment', {}).get('raspa_version', '').lower()
+            
+            # Directories to ignore as frameworks
+            ignore = {'.raspa_tools', '1log', 'isotherms', '__pycache__', '.git', '.idea', '.vscode', 'log__._job_output', 'output', 'outputs'}
+            
+            found_any = False
+            
+            # Walk the base_dir to find all output files
+            for root, _, files in os.walk(base_dir):
+                for fn in files:
+                    lower = fn.lower()
+                    full = os.path.join(root, fn)
+                    
+                    is_target = False
+                    if raspa_version == 'raspa2':
+                        if fn.endswith('.data') and 'output' in lower:
+                            is_target = True
+                    elif raspa_version == 'raspa3':
+                        if fn.endswith('.txt') and lower.startswith('output_'):
+                            is_target = True
+                    else:
+                        # Auto-detect if version not specified
+                        if (fn.endswith('.data') and 'output' in lower) or \
+                           (fn.endswith('.txt') and lower.startswith('output_')):
+                            is_target = True
+                    
+                    if is_target:
+                        # Determine Framework Name based on directory structure relative to config_root
+                        rel_path = os.path.relpath(full, config_root)
+                        parts = rel_path.split(os.sep)
+                        
+                        # parts[0] is typically the framework directory
+                        fw_name = parts[0] if parts else 'Unknown'
+                        
+                        # If file is in root, fw_name is the filename itself -> fallback to 'Root' or skip?
+                        # If base_dir is deep inside, fw_name will still be the top-level dir.
+                        # e.g. config_root/ZIF-8/mc1/out.data -> parts=['ZIF-8', 'mc1', 'out.data'] -> fw='ZIF-8'
+                        
+                        if fw_name in ignore or fw_name.startswith('.'):
+                            continue
+                            
+                        # Edge case: if file is directly in config_root
+                        if len(parts) == 1:
+                            fw_name = 'Root'
+                        
+                        context = _infer_context_dir(full)
+                        yield (context, full, fw_name)
+                        found_any = True
+            
+            if found_any:
+                return
+        except Exception as e:
+            print(f"Warning: Failed to read .raspa_config.yaml: {e}")
+
+    # 2. Fallback to existing logic
     mc_dirs = find_all_mc_directories(base_dir)
     yielded = False
     if mc_dirs:
@@ -108,7 +195,7 @@ def _iter_output_files(base_dir: str):
                 output = find_output_file_in_mc_dir_raspa3(mc_dir)
             if output and os.path.exists(output):
                 yielded = True
-                yield (mc_dir, output)
+                yield (mc_dir, output, None)
         if yielded:
             return
 
@@ -118,11 +205,11 @@ def _iter_output_files(base_dir: str):
             lower = fn.lower()
             full = os.path.join(root, fn)
             if fn.endswith('.data') and 'output' in lower:
-                yield (_infer_context_dir(full), full)
+                yield (_infer_context_dir(full), full, None)
             elif fn.endswith('.txt') and lower.startswith('output_'):
-                yield (_infer_context_dir(full), full)
+                yield (_infer_context_dir(full), full, None)
             elif lower == 'output' and os.path.isfile(full):
-                yield (_infer_context_dir(full), full)
+                yield (_infer_context_dir(full), full, None)
 
 
 def _extract_mc_number_safe(mc_dir: str) -> int:
@@ -223,7 +310,13 @@ def collect_isotherm_points(base_dir: str,
     """
     data = defaultdict(lambda: defaultdict(list))
 
-    for context_dir, output_file in _iter_output_files(base_dir):
+    for item in _iter_output_files(base_dir):
+        if len(item) == 3:
+            context_dir, output_file, fw_hint = item
+        else:
+            context_dir, output_file = item
+            fw_hint = None
+
         try:
             with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
@@ -259,7 +352,10 @@ def collect_isotherm_points(base_dir: str,
             if not ads_map:
                 continue
 
-            fw = _safe_framework_name(context_dir, output_file, content)
+            if fw_hint:
+                fw = fw_hint
+            else:
+                fw = _safe_framework_name(context_dir, output_file, content)
 
             # If a specific component is requested, filter to it; else add all
             if component:

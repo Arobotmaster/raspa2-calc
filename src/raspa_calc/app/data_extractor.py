@@ -35,9 +35,16 @@ _MC_DIR_NAME_RE = re.compile(r'^mc(\d+)(?:__(done|failed|running))?(?:__.+)?$')
 _MC_NUMBER_RE = re.compile(r'mc(\d+)')
 
 _FRAMEWORK_NAME_PATTERNS = (
+    # Match scientific notation and complex suffixes first
+    # e.g. output_Name_2.2.2_298.000000_1e+06.data
+    re.compile(r'output_(.+?)_\d+(?:\.\d+)*_[\d.]+(?:_[0-9.eE+-]+)+\.data'),
+    
     re.compile(r'output_(.+?)_\d+\.\d+_\d+\.\d+_\d+\.data'),
     re.compile(r'output_(.+?)_\d+(?:\.\d+)+(?:_\d+(?:\.\d+)*)*(?:\.data)?$'),
     re.compile(r'output_(.+?)_\d+_\d+(?:\.data)?$'),
+    
+    # Fallback: be careful not to split at the first underscore if possible,
+    # but if all else fails, this is the last resort.
     re.compile(r'output_([^._]+)'),
 )
 

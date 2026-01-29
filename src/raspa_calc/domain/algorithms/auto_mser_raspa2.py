@@ -48,6 +48,7 @@ def _parse_output_data_to_df(workdir: str, temp: float, pressure: float) -> pd.D
     components = {}
     step_counter = 0
     conv_mol_kg = None
+    current_component_name = None
 
     with open(data_path, "r", encoding="utf-8", errors="ignore") as f:
         for raw_line in f:
@@ -71,6 +72,7 @@ def _parse_output_data_to_df(workdir: str, temp: float, pressure: float) -> pd.D
                             record[k] = v
                     records.append(record)
                 components = {}
+                current_component_name = None
                 try:
                     parts = line.split()
                     current_cycle = int(parts[2])
@@ -98,10 +100,22 @@ def _parse_output_data_to_df(workdir: str, temp: float, pressure: float) -> pd.D
                         name = line.split("(", 1)[1].split(")", 1)[0]
                     else:
                         name = f"Comp{len(components)}"
+                    current_component_name = name
                     after_colon = line.split(":", 1)[1]
                     count_str = after_colon.strip().split("/")[0]
                     count_val = int(count_str)
                     components[f"{name}_[molecules/uc]"] = count_val
+                except Exception:
+                    current_component_name = None
+                continue
+
+            if "absolute adsorption:" in line and "[mol/kg]" in line and current_component_name:
+                try:
+                    # absolute adsorption:  19.62500 (avg.  18.69719) [mol/uc],   7.1854598513 (avg.   6.8457515313) [mol/kg], ...
+                    segment = line.split("[mol/kg]")[0].split(",")[-1].strip()
+                    val_str = segment.split("(")[0].strip()
+                    val = float(val_str)
+                    components[f"{current_component_name}_[mol/kg]"] = val
                 except Exception:
                     pass
                 continue
@@ -120,12 +134,14 @@ def _parse_output_data_to_df(workdir: str, temp: float, pressure: float) -> pd.D
 
     df = pd.DataFrame.from_records(records)
 
-    # 如果有转换因子，添加 mol/kg 列
+    # 如果有转换因子，添加 mol/kg 列 (如果未直接解析到)
     if conv_mol_kg is not None:
         for col in list(df.columns):
             if col.endswith("_[molecules/uc]"):
                 base = col.replace("_[molecules/uc]", "")
-                df[f"{base}_[mol/kg]"] = df[col] * conv_mol_kg
+                target_col = f"{base}_[mol/kg]"
+                if target_col not in df.columns:
+                    df[target_col] = df[col] * conv_mol_kg
 
     return df
 
