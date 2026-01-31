@@ -42,7 +42,7 @@ environment:
 
   # RASPA3 CIF 文件基础路径
   # 框架名会追加到此路径，例如: {raspa3_cif_base_path}/{框架名}.cif
-  raspa3_cif_base_path: "/home/zjp/raspa2-calc/work/Rncif/yanzheng"
+  raspa3_cif_base_path: "/home/zjp/raspa2-calc/filter/core25all"
 
   # RASPA3 simulation.json 模板路径
   raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/N2-nocharge/simulation.json"
@@ -60,13 +60,13 @@ calculation:
   default_molecules: "Rn"
 
   # CSV 文件路径 (用于批量处理，指定框架列表)
-  csv_file_path: "/home/zjp/raspa2-calc/work/VEL.csv"
+  csv_file_path: "/home/zjp/raspa2-calc/filter/core25Sc.csv"
 
   # 框架名称列名（必须与 CSV 文件中的列名完全一致）
-  framework_column: "Framework Name"
+  framework_column: "refcode"
 
   # 输出目录名
-  output_directory: "ZIF8-Rn-raspa2"
+  output_directory: "core25Sc-Rn-raspa2"
 
   # 是否从 CSV 文件读取孔隙率
   use_void_csv: false
@@ -80,8 +80,8 @@ calculation:
   # pyMSER 自动平衡
   mser:
     enable: true
-    target_cycles: 2000
-    add_cycles: 400
+    target_cycles: 5000
+    add_cycles: 900
     max_iter: 20
     uncertainty: "uSD"   # SD, SE, uSD, uSE
     conda_env: "pymser"  # 包含 pymser 的 conda 环境

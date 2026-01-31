@@ -199,14 +199,6 @@ class MOFFilterTool:
         print(f"   保留比例: {len(self.filtered_df)/self.original_count*100:.1f}%")
 
 
-def main() -> int:
-    tool = MOFFilterTool()
-    tool.run()
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 
     def apply_single_filter(self, column, is_numeric):
         """应用单个筛选条件"""
