@@ -4,10 +4,13 @@ import sys
 from raspa_calc.runtime import config as config_module
 
 
-def run_high_throughput():
+def run_high_throughput(config_path=None):
     """Run high-throughput task runner."""
     try:
-        if config_module.config is None:
+        if config_path:
+            os.environ["RASPA_CONFIG"] = os.path.abspath(os.path.expanduser(config_path))
+            config_module.load_runtime_config(config_path=os.environ["RASPA_CONFIG"])
+        elif config_module.config is None:
             config_module.load_runtime_config()
 
         if config_module.config:
@@ -140,22 +143,17 @@ def run_high_throughput():
                 os.environ.pop("RASPA_ENABLE_JOB_LOGS", None)
 
             os.environ["RASPA_TOOL_DIR"] = os.path.expanduser("~/raspa2-calc/.raspa_tools")
-
             os.environ["RASPA_VERSION"] = raspa_version
 
             if raspa_version == "raspa3":
                 if "raspa3_conda_env" in env_config:
                     os.environ["RASPA3_CONDA_ENV"] = env_config["raspa3_conda_env"]
-
                 if "raspa3_json_dir" in env_config and env_config["raspa3_json_dir"]:
                     os.environ["RASPA3_JSON_DIR"] = env_config["raspa3_json_dir"]
-
                 if "raspa3_cif_base_path" in env_config and env_config["raspa3_cif_base_path"]:
                     os.environ["RASPA3_CIF_BASE_PATH"] = env_config["raspa3_cif_base_path"]
-
                 if "raspa3_template_path" in env_config and env_config["raspa3_template_path"]:
                     os.environ["RASPA3_TEMPLATE_PATH"] = env_config["raspa3_template_path"]
-
                 print(f"✅ 已设置 RASPA3 环境变量 (Conda环境: {env_config.get('raspa3_conda_env', 'raspa3')})")
 
             print("✅ 已从配置文件加载计算参数")

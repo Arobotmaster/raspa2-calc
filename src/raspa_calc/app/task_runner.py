@@ -361,6 +361,14 @@ def main():
                                     template_content = f.read()
 
                                 lines = template_content.split("\n")
+                                mser_enable = os.environ.get("RASPA_MSER_ENABLE", "false").lower() == "true"
+                                if mser_enable:
+                                    try:
+                                        mser_add_cycles = int(os.environ.get("RASPA_MSER_ADD_CYCLES", "500"))
+                                    except ValueError:
+                                        mser_add_cycles = 500
+                                else:
+                                    mser_add_cycles = None
 
                                 for i, line in enumerate(lines):
                                     if line.startswith("FrameworkName"):
@@ -369,6 +377,16 @@ def main():
                                         lines[i] = f"UnitCells {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}"
                                     elif line.startswith("HeliumVoidFraction"):
                                         lines[i] = f"HeliumVoidFraction {void_fraction}"
+                                    elif mser_enable and line.lower().startswith("numberofcycles"):
+                                        lines[i] = f"NumberOfCycles                {mser_add_cycles}"
+                                    elif mser_enable and line.lower().startswith("numberofinitializationcycles"):
+                                        lines[i] = "NumberOfInitializationCycles  0"
+                                    elif mser_enable and line.lower().startswith("numberofequilibrationcycles"):
+                                        lines[i] = "NumberOfEquilibrationCycles   0"
+                                    elif mser_enable and line.lower().startswith("printevery"):
+                                        lines[i] = "PrintEvery                    1"
+                                    elif mser_enable and line.lower().startswith("restartfile"):
+                                        lines[i] = "RestartFile no"
                                     elif line.startswith("Component ") and "MoleculeName" in line:
                                         parts = line.split()
                                         if len(parts) >= 3 and parts[0] == "Component" and parts[2] == "MoleculeName":
@@ -384,6 +402,12 @@ def main():
                                                     lines[i] = f"{prefix}   {molecule}"
                                             except (ValueError, IndexError):
                                                 pass
+
+                                if mser_enable:
+                                    if not any(line.lower().startswith("restartfile") for line in lines):
+                                        lines.append("RestartFile no")
+                                    if not any(line.lower().startswith("writebinaryrestartevery") for line in lines):
+                                        lines.append(f"WriteBinaryRestartEvery {max(1, mser_add_cycles)}")
 
                                 print("\n".join(lines[:50]))
                                 if len(lines) > 50:

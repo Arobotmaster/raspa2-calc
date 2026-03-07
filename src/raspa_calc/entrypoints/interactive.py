@@ -1,4 +1,6 @@
+import os
 import sys
+from typing import Optional
 
 from raspa_calc.runtime import config as config_module
 from raspa_calc.runtime import diagnostics
@@ -20,6 +22,30 @@ def _print_help() -> None:
     print("  -h, --help    show help and exit")
     print("  -v, --version show version and exit")
     print("  --no-check    skip environment check")
+
+
+def _prompt_config_path(mode_label: str) -> Optional[str]:
+    print(f"\n📄 {mode_label} 配置选择")
+    print("1. 使用默认配置搜索（当前行为）")
+    print("2. 指定配置文件路径")
+    while True:
+        choice = input("请选择配置方式 (1/2，直接回车默认1): ").strip()
+        if choice in ("", "1"):
+            os.environ.pop("RASPA_CONFIG", None)
+            return None
+        if choice == "2":
+            while True:
+                config_path = input("请输入 config 文件路径: ").strip()
+                if not config_path:
+                    print("未输入路径，请重新输入")
+                    continue
+                expanded = os.path.abspath(os.path.expanduser(config_path))
+                if not os.path.isfile(expanded):
+                    print(f"配置文件不存在: {expanded}")
+                    continue
+                print(f"✅ 本次运行使用配置: {expanded}")
+                return expanded
+        print("无效的选择，请输入1或2")
 
 
 def main():
@@ -79,9 +105,11 @@ def main():
         choice = input("请选择运行模式 (1/2/3/4/5/6): ").strip()
 
         if choice == "1":
-            parameter_screening_cmd.run_parameter_screening()
+            config_path = _prompt_config_path("参数筛选模式")
+            parameter_screening_cmd.run_parameter_screening(config_path=config_path)
         elif choice == "2":
-            high_throughput_cmd.run_high_throughput()
+            config_path = _prompt_config_path("高通量计算模式")
+            high_throughput_cmd.run_high_throughput(config_path=config_path)
         elif choice == "3":
             data_extractor_cmd.run_data_extractor()
         elif choice == "4":

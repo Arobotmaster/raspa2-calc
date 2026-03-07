@@ -176,20 +176,14 @@ def _parse_simulation_input(path: str) -> Tuple[float, float, list[str]]:
 
 
 def _update_simulation_input(path: str, add_cycles: int, restart: bool) -> None:
-    """Increase NumberOfCycles by add_cycles, set restart flags, zero init/equil cycles."""
+    """Set per-run NumberOfCycles to add_cycles, set restart flags, zero init/equil cycles."""
     lines = []
     number_cycles = None
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             if line.lower().startswith("numberofcycles"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    try:
-                        number_cycles = int(parts[1])
-                        number_cycles += add_cycles
-                        line = f"NumberOfCycles {number_cycles}\n"
-                    except ValueError:
-                        pass
+                number_cycles = add_cycles
+                line = f"NumberOfCycles {number_cycles}\n"
             elif line.lower().startswith("numberofinitializationcycles"):
                 line = "NumberOfInitializationCycles 0\n"
             elif line.lower().startswith("numberofequilibrationcycles"):
@@ -206,11 +200,14 @@ def _update_simulation_input(path: str, add_cycles: int, restart: bool) -> None:
         lines.append("RestartFile yes\n")
     if not restart and not any(l.lower().startswith("restartfile") for l in lines):
         lines.append("RestartFile no\n")
+    if not any(l.lower().startswith("numberofcycles") for l in lines):
+        number_cycles = add_cycles
+        lines.append(f"NumberOfCycles {number_cycles}\n")
 
     with open(path, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
-    print(f"[auto-mser] 更新 NumberOfCycles -> {number_cycles}, 追加 {add_cycles} 步；RestartFile {'yes' if restart else 'no'}")
+    print(f"[auto-mser] 设置 NumberOfCycles -> {number_cycles}（每轮固定追加 {add_cycles} 步）；RestartFile {'yes' if restart else 'no'}")
 
 
 def _run_simulate(workdir: str, conda_env: str, simulate_cmd: str, log_path: str) -> int:

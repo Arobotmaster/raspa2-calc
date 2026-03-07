@@ -593,11 +593,15 @@ while :; do
         display_name="mc${mcid#mc}"
     fi
     mark_start "$task_running_dir" "$display_name"
+    SIM_STDOUT_LOG="$task_running_dir/simulate.stdout.log"
+    SIM_STDERR_LOG="$task_running_dir/simulate.stderr.log"
+    : > "$SIM_STDOUT_LOG"
+    : > "$SIM_STDERR_LOG"
 
     # ============ RASPA3 执行命令 ============
     # RASPA3 直接执行 raspa3 命令（不需要参数，会自动读取 simulation.json）
     set +e
-    raspa3
+    raspa3 >"$SIM_STDOUT_LOG" 2>"$SIM_STDERR_LOG"
     RASPA3_EXIT_CODE=$?
     set -e
 
@@ -668,8 +672,9 @@ while :; do
         fi
     else
         # 没有输出文件，视为失败
+        stderr_tail="$(tail -n 20 "$SIM_STDERR_LOG" 2>/dev/null | tr '\n' '|' | sed 's/|$//')"
         mv "${task_running_dir}" "${task_running_dir%__running}__failed"
-        echo " ==> < RASPA3 模拟失败 > in directory ${display_name} on core (${thiscore}). Exit code: ${RASPA3_EXIT_CODE}" >> ${LOGFILE}
+        echo " ==> < RASPA3 模拟失败 > in directory ${display_name} on core (${thiscore}). Exit code: ${RASPA3_EXIT_CODE}. stderr: ${stderr_tail:-N/A}" >> ${LOGFILE}
     fi
 
     CURRENT_TASK_DIR=""

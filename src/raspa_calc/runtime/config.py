@@ -77,8 +77,11 @@ def resolve_config_paths(
     search_mode: str = "default",
     start_dir: Optional[str] = None,
 ) -> List[str]:
+    env_config_path = os.environ.get("RASPA_CONFIG")
     if config_path:
         return _dedupe([config_path])
+    if env_config_path:
+        return _dedupe([env_config_path])
     if search_mode == "upward":
         return search_paths_upward(start_dir)
     return default_search_paths(start_dir)
@@ -120,9 +123,11 @@ def load_runtime_config(
         start_dir=start_dir,
     )
     if config_path:
+        os.environ["RASPA_CONFIG"] = _normalize_path(config_path)
         print(f"✅ 配置文件已加载: {config_path}")
     else:
         config = {}
+        os.environ.pop("RASPA_CONFIG", None)
         print("ℹ️  未找到配置文件，使用默认设置")
     return config, config_path
 

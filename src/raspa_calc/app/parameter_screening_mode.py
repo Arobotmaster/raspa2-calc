@@ -5,10 +5,13 @@ from raspa_calc.app import parameter_screening
 from raspa_calc.runtime import config as config_module
 
 
-def run_parameter_screening():
+def run_parameter_screening(config_path=None):
     """Run parameter screening."""
     try:
-        if config_module.config is None:
+        if config_path:
+            os.environ["RASPA_CONFIG"] = os.path.abspath(os.path.expanduser(config_path))
+            config_module.load_runtime_config(config_path=os.environ["RASPA_CONFIG"])
+        elif config_module.config is None:
             config_module.load_runtime_config()
 
         if config_module.config:

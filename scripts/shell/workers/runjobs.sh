@@ -551,14 +551,20 @@ while :; do
     display_name="mc${mcid#mc}"
   fi
   mark_start "$task_running_dir" "$display_name"
+  SIM_STDOUT_LOG="$task_running_dir/simulate.stdout.log"
+  SIM_STDERR_LOG="$task_running_dir/simulate.stderr.log"
+  : > "$SIM_STDOUT_LOG"
+  : > "$SIM_STDERR_LOG"
   set +e
-  eval $SIMULATE_CMD
+  eval "$SIMULATE_CMD" >"$SIM_STDOUT_LOG" 2>"$SIM_STDERR_LOG"
   simulate_status=$?
   set -e
   if [ $simulate_status -ne 0 ]; then
+    stderr_tail="$(tail -n 20 "$SIM_STDERR_LOG" 2>/dev/null | tr '\n' '|' | sed 's/|$//')"
     mv "${task_running_dir}" "${task_running_dir%__running}__failed"
-    echo " ==> < 模拟失败 > in directory ${display_name} on core (${thiscore})." >> ${LOGILFE}
+    echo " ==> < 模拟失败 > in directory ${display_name} on core (${thiscore}). Exit code: ${simulate_status}. stderr: ${stderr_tail:-N/A}" >> ${LOGILFE}
   else
+    mser_status=0
     if [ "${RASPA_MSER_ENABLE}" = "true" ] && [ -d "$MSER_PYTHONPATH/raspa_calc/domain/algorithms" ]; then
       echo " ==> 运行 pyMSER 自动平衡: ${display_name}"
       # 优先使用 conda run，避免非交互激活失败
@@ -586,10 +592,14 @@ while :; do
         echo " ==> < pyMSER 平衡失败 > in directory ${display_name} on core (${thiscore}) (自动跳过，查看auto_mser.log)" >> ${LOGILFE}
       fi
     fi
-    mv "${task_running_dir}" "${task_running_dir%__running}__done"
-    FRAMEWORK_NAME=$(grep "FrameworkName" simulation.input 2>/dev/null | awk '{print $2}' || true)
-    [ -z "$FRAMEWORK_NAME" ] && FRAMEWORK_NAME="${display_name}"
-    echo " ==> < ${FRAMEWORK_NAME} > is just done on core (${thiscore})." >> ${LOGILFE}
+    if [ $mser_status -ne 0 ]; then
+      mv "${task_running_dir}" "${task_running_dir%__running}__failed"
+    else
+      mv "${task_running_dir}" "${task_running_dir%__running}__done"
+      FRAMEWORK_NAME=$(grep "FrameworkName" simulation.input 2>/dev/null | awk '{print $2}' || true)
+      [ -z "$FRAMEWORK_NAME" ] && FRAMEWORK_NAME="${display_name}"
+      echo " ==> < ${FRAMEWORK_NAME} > is just done on core (${thiscore})." >> ${LOGILFE}
+    fi
   fi
   CURRENT_TASK_DIR=""
   mark_clear
