@@ -125,8 +125,16 @@ SHOULD_EXIT_NOW() {
 
 thiscore=$$
 LOGILFE=${topdir}/log__${subdir}_job_output
-SIMULATE_CMD="$RASPA_DIR/bin/simulate"
-[ -x "$SIMULATE_CMD" ] || SIMULATE_CMD="echo '模拟执行RASPA计算...'; sleep 2"
+
+# 根据 RASPA_VERSION 选择模拟命令
+RASPA_VERSION="${RASPA_VERSION:-raspa2}"
+if [ "$RASPA_VERSION" = "raspa3" ]; then
+  RASPA3_CONDA_ENV="${RASPA3_CONDA_ENV:-raspa3}"
+  SIMULATE_CMD="conda run -n ${RASPA3_CONDA_ENV} raspa3 simulation.json"
+else
+  SIMULATE_CMD="$RASPA_DIR/bin/simulate"
+  [ -x "$SIMULATE_CMD" ] || SIMULATE_CMD="echo '模拟执行RASPA计算...'; sleep 2"
+fi
 MSER_MODULE="raspa_calc.domain.algorithms.auto_mser_raspa2"
 MSER_PYTHONPATH="${RASPA_TOOL_DIR:-$HOME/raspa2-calc/.raspa_tools}/src"
 export PYTHONPATH="${MSER_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}"

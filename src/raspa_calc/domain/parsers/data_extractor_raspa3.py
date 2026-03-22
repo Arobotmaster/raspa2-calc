@@ -124,6 +124,11 @@ class RASPA3_Output_Data:
         r'Average\s+Rosenbluth\s+weight:\s+([\d.eE+-]+|\-nan)\s+\+/-\s+[\d.eE+-]+\s+\[-\]'
     )
 
+    # Widom 插入超额化学势 [kJ/mol] → 零覆盖吸附热 Qst = -μ_excess
+    _re_widom_excess_mu = re.compile(
+        r'Excess\s+chemical\s+potential:\s+([-\d.eE+-]+|\-nan)\s+\+/-\s+[\d.eE+-]+\s+\[kJ/mol\]'
+    )
+
     def __init__(self, output_string):
         """初始化时传入 RASPA3 输出文件的字符串"""
         self.output_string = output_string
@@ -136,6 +141,7 @@ class RASPA3_Output_Data:
         self._he_void_fraction = _UNSET
         self._henry_by_component = None
         self._rosenbluth_by_component = None
+        self._widom_excess_mu_by_component = None
 
     def _get_loadings_section(self):
         """获取 Loadings 部分的内容 (吸附量数据所在位置)"""
@@ -484,6 +490,28 @@ class RASPA3_Output_Data:
 
         return result
 
+    def get_widom_qst(self):
+        """
+        从 Widom 插入超额化学势获取零覆盖吸附热 Qst [kJ/mol]
+        Qst = -μ_excess (符号取反，使吸附热为正值)
+
+        Returns:
+            dict: {组分名: Qst值 [kJ/mol]}
+        """
+        result = {}
+        components = self.get_components()
+
+        if self._widom_excess_mu_by_component is None:
+            self._widom_excess_mu_by_component = self._map_values_by_component_header(self._re_widom_excess_mu)
+        mapped = self._widom_excess_mu_by_component
+        for component in components:
+            value = mapped.get(component)
+            if value is not None:
+                result[component] = -value  # Qst = -μ_excess
+            else:
+                result[component] = None
+
+        return result
 
 def extract_framework_name_from_simulation_json(mc_dir):
     """
@@ -820,6 +848,11 @@ def process_output_file(file_path, mc_number, selected_items, selected_units=Non
             data = raspa_data.get_rosenbluth_weight()
             for comp, value in data.items():
                 result[f'{comp}_rosenbluth_weight'] = value
+
+        if 'widom_qst' in selected_items:
+            data = raspa_data.get_widom_qst()
+            for comp, value in data.items():
+                result[f'{comp}_widom_qst'] = value
 
         if 'pymser_average_adsorption' in selected_items:
             data = extract_pymser_average_adsorption(mc_dir)
@@ -1178,7 +1211,7 @@ def save_results_to_file(results, output_file='raspa3_results.xlsx', format_type
         columns.extend(sorted(pymser_columns))
 
         # 吸附热和亨利系数列
-        other_columns = [col for col in df.columns if '_adsorption_heat' in col or '_henry_coefficient' in col or '_rosenbluth_weight' in col]
+        other_columns = [col for col in df.columns if '_adsorption_heat' in col or '_henry_coefficient' in col or '_rosenbluth_weight' in col or '_widom_qst' in col]
         columns.extend(sorted(other_columns))
 
         # 其他列
@@ -1238,6 +1271,7 @@ def main():
         '5': 'henry_coefficient',
         '6': 'rosenbluth_weight',
         '7': 'pymser_average_adsorption',
+        '8': 'widom_qst',
     }
 
     # 默认选择所有项
@@ -1255,6 +1289,7 @@ def main():
         print("5. Henry Coefficient (亨利系数)")
         print("6. Rosenbluth Weight (Rosenbluth权重)")
         print("7. pyMSER Average Adsorption (pyMSER平均吸附量)")
+        print("8. Widom Qst (零覆盖吸附热, kJ/mol)")
 
         selected_numbers = input("您的选择：").strip()
 

@@ -38,14 +38,14 @@ environment:
   # RASPA3 JSON 文件目录
   # 包含: force_field.json 和分子定义文件 (如 CO2.json, CH4.json 等)
   # 高通量计算时会自动复制到每个任务目录
-  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene"
+  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene-trappe-conventional"
 
   # RASPA3 CIF 文件基础路径
   # 框架名会追加到此路径，例如: {raspa3_cif_base_path}/{框架名}.cif
   raspa3_cif_base_path: "/home/zjp/raspa2-calc/.raspa_tools/cif/12088cif_LCD_5-12"
 
   # RASPA3 simulation.json 模板路径
-  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene/simulation.json"
+  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene-trappe-conventional/simulation.json"
 
 # ============================================================
 #                    计算参数 (通用)
@@ -53,6 +53,11 @@ environment:
 calculation:
   # 默认截断半径 (Å)
   cutoff_radius: 12
+
+  # UnitCells计算时的截断半径缩放系数（仅影响UnitCells，不改写模拟输入里的CutOff）
+  # 有效截断半径 = cutoff_radius * unit_cells_cutoff_scale
+  # 例如: 1.01 表示放大 1%，0.99 表示缩小 1%
+  unit_cells_cutoff_scale: 0.95
 
   # 默认分子 (支持多种气体分子，用空格分隔)
   # RASPA2 示例: "CO2" 或 "CO2 CH4 N2"
@@ -65,7 +70,7 @@ calculation:
   framework_column: "coreid"
 
   # 输出目录名
-  output_directory: "xyleneLCD"
+  output_directory: "xyleneLCD-trappe-conventional"
 
   # 是否从 CSV 文件读取孔隙率
   use_void_csv: true
@@ -135,6 +140,16 @@ parameter_screening:
     # ExternalPressure: [1000000,5000000,10000000,15000000,20000000,25000000,30000000,35000000,40000000]
     # ExternalPressure: [100000]
     ExternalPressure: [100000,200000,400000,600000,800000,1000000,1200000,1400000,1600000,1800000,2000000]
+
+    # 测试不同力场或模拟方法时，取消以下注释并配置路径
+    # raspa3_json_dir:
+    #   - "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene-trappe"
+    #   - "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene-opls"
+    # raspa3_template_path:
+    #   - "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene-trappe-cbmc-swap/simulation.json"
+    #   - "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene-trappe-cfcmc/simulation.json"
+    #   - "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene-trappe-cfcmc-cbmc/simulation.json"
+    #   - "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene-trappe-conventional/simulation.json"
 
     # 温度点 (K) - 可选
     # ExternalTemperature: [323.0]

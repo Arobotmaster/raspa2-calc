@@ -3,7 +3,7 @@
   "NumberOfCycles": 50000,
   "NumberOfInitializationCycles": 0,
   "NumberOfEquilibrationCycles": 0,
-  "PrintEvery": 100,
+  "PrintEvery": 10,
   "Systems": [
     {
       "Type": "Framework",
@@ -16,8 +16,8 @@
       "ChargeMethod": "Ewald",
       "CutOff": 12,
       "UseChargesFrom": "CIF_File",
-      "ExternalTemperature": 323,
-      "ExternalPressure": 100000,
+      "ExternalTemperature": 423,
+      "ExternalPressure": 900000,
       "HeliumVoidFraction": 0.5
     }
   ],

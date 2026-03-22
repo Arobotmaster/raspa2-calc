@@ -28,7 +28,7 @@ calculation:
     enable: true
     target_cycles: 10000
     add_cycles: 5000
-    max_iter: 50
+    max_iter: 200
     uncertainty: "uSD"
     conda_env: "pymser"
     llm: true

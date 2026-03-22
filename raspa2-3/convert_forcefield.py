@@ -285,47 +285,35 @@ def create_forcefield_json(pseudo_atoms, self_interactions, mixing_rule, truncat
             os.makedirs(output_dir)
             print(f"已创建输出目录: {output_dir}")
             
-        # 自定义JSON格式输出，确保参数在同一行
+        # 自定义JSON格式输出，每条记录单行
         json_content = "{\n"
-        
+
         # PseudoAtoms部分
         json_content += '  "PseudoAtoms" :\n  [\n'
         for i, atom in enumerate(pseudo_atoms):
-            json_content += '    {\n'
-            json_content += f'      "name" : "{atom["name"]}",\n'
-            json_content += f'      "framework" : {str(atom["framework"]).lower()},\n'
-            json_content += f'      "print_to_output" : {str(atom["print_to_output"]).lower()},\n'
-            json_content += f'      "element" : "{atom["element"]}",\n'
-            json_content += f'      "print_as" : "{atom["print_as"]}",\n'
-            json_content += f'      "mass" : {atom["mass"]},\n'
-            
-            # 处理charge为最后一个元素的情况
-            if i < len(pseudo_atoms) - 1:
-                json_content += f'      "charge" :  {atom["charge"]}\n    }},\n'
-            else:
-                json_content += f'      "charge" :  {atom["charge"]}\n    }}\n'
-        
+            comma = ',' if i < len(pseudo_atoms) - 1 else ''
+            fw = str(atom["framework"]).lower()
+            pto = str(atom["print_to_output"]).lower()
+            json_content += (
+                f'    {{"name": "{atom["name"]}", "framework": {fw}, '
+                f'"print_to_output": {pto}, "element": "{atom["element"]}", '
+                f'"print_as": "{atom["print_as"]}", "mass": {atom["mass"]}, '
+                f'"charge": {atom["charge"]}}}{comma}\n'
+            )
         json_content += '  ],\n'
-        
+
         # SelfInteractions部分
-        json_content += '  "SelfInteractions" : \n  [\n'
+        json_content += '  "SelfInteractions" :\n  [\n'
         for i, interaction in enumerate(self_interactions):
-            json_content += '    {\n'
-            json_content += f'      "name" : "{interaction["name"]}",\n'
-            json_content += f'      "type" : "{interaction["type"]}",\n'
-            
-            # 处理parameters，根据是否为空列表采用不同的格式
+            comma = ',' if i < len(self_interactions) - 1 else ''
             if interaction["parameters"]:
-                json_content += f'      "parameters" : [{interaction["parameters"][0]}, {interaction["parameters"][1]}],\n'
+                params = f'[{interaction["parameters"][0]}, {interaction["parameters"][1]}]'
             else:
-                json_content += '      "parameters" : [],\n'
-            
-            # 添加source作为最后一个元素
-            if i < len(self_interactions) - 1:
-                json_content += f'      "source" : "{interaction["source"]}"\n    }},\n'
-            else:
-                json_content += f'      "source" : "{interaction["source"]}"\n    }}\n'
-        
+                params = '[]'
+            json_content += (
+                f'    {{"name": "{interaction["name"]}", "type": "{interaction["type"]}", '
+                f'"parameters": {params}, "source": "{interaction["source"]}"}}{comma}\n'
+            )
         json_content += '  ],\n'
         
         # 全局参数

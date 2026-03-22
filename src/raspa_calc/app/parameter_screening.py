@@ -35,6 +35,7 @@ from raspa_calc.runtime import config as common_config
 from raspa_calc.domain.algorithms.calculate_params import (
     format_unitcells_scale_impact_report,
     get_unit_cells_cutoff_scale,
+    is_unit_cells_edge_only_mode,
     process_structure_file,
     get_cif_cell_parameters,
     load_cache,
@@ -1191,6 +1192,11 @@ def main():
         else:
             os.environ.pop("RASPA_UNITCELLS_CUTOFF_SCALE", None)
 
+        if "unit_cells_edge_only" in calc_config:
+            os.environ["RASPA_UNITCELLS_EDGE_ONLY"] = str(calc_config["unit_cells_edge_only"]).lower()
+        else:
+            os.environ.pop("RASPA_UNITCELLS_EDGE_ONLY", None)
+
         # 检测 RASPA 版本
         raspa_version = env_config.get('raspa_version', 'raspa2').lower()
         print(f"\n步骤1：初始化设置 (RASPA版本: {raspa_version.upper()})")
@@ -1361,9 +1367,16 @@ def main():
         logger.info(f"共找到 {len(framework_names)} 个框架对应的CIF文件")
 
         unitcells_scale = get_unit_cells_cutoff_scale()
+        unitcells_edge_only = is_unit_cells_edge_only_mode()
+        print(f"ℹ️  UnitCells cutoff缩放系数: {unitcells_scale}")
         if abs(unitcells_scale - 1.0) > 1e-12:
             try:
                 ref_cutoff, cutoff_source, cutoff_count = resolve_reference_cutoff(param_ranges, calc_config)
+                if unitcells_edge_only and unitcells_scale < 1.0:
+                    print("ℹ️  UnitCells模式: 仅边缘方向降档（每方向最多降低1档）")
+                    print(f"ℹ️  UnitCells边缘阈值: {((1.0 - unitcells_scale) * 100):.2f}% (原始cutoff={ref_cutoff})")
+                else:
+                    print(f"ℹ️  UnitCells实际扩胞cutoff基准: {ref_cutoff * unitcells_scale:.6g} (原始cutoff={ref_cutoff})")
                 if cutoff_count > 1:
                     print(f"ℹ️  UnitCells影响统计使用 {cutoff_source} 的首个值作为基准 cutoff: {ref_cutoff}")
                 cif_paths = list(framework_cif_paths.values())

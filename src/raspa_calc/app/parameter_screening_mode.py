@@ -35,6 +35,11 @@ def run_parameter_screening(config_path=None):
             else:
                 os.environ.pop("RASPA_UNITCELLS_CUTOFF_SCALE", None)
 
+            if "unit_cells_edge_only" in calc_config:
+                os.environ["RASPA_UNITCELLS_EDGE_ONLY"] = str(calc_config["unit_cells_edge_only"]).lower()
+            else:
+                os.environ.pop("RASPA_UNITCELLS_EDGE_ONLY", None)
+
             raspa_ver = env_config.get("raspa_version", "raspa2").lower()
             os.environ["RASPA_VERSION"] = raspa_ver
             if raspa_ver == "raspa3":

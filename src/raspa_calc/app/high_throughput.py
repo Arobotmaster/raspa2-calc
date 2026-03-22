@@ -45,6 +45,11 @@ def run_high_throughput(config_path=None):
             else:
                 os.environ.pop("RASPA_UNITCELLS_CUTOFF_SCALE", None)
 
+            if "unit_cells_edge_only" in calc_config:
+                os.environ["RASPA_UNITCELLS_EDGE_ONLY"] = str(calc_config["unit_cells_edge_only"]).lower()
+            else:
+                os.environ.pop("RASPA_UNITCELLS_EDGE_ONLY", None)
+
             if "default_molecules" in calc_config:
                 os.environ["RASPA_DEFAULT_MOLECULES"] = calc_config["default_molecules"]
 

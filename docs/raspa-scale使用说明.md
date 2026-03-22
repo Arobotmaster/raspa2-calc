@@ -70,7 +70,52 @@
    - **锁超时**：默认 30秒。若作业被杀导致 `mcX.lock` 残留，新 Worker 会在 30s 后自动接管。
    - **指针重置**：若队列指针（`next_id`）已耗尽但仍有大量回滚任务（Pending），`raspa-scale` 会自动删除指针，触发 Worker 全量重新扫描。
 
-### 中断后恢复全量任务的建议流程
+### 任务标记为 __failed 后续算（mser 超出 max_iter）
+
+当 pyMSER 自动平衡因达到 `max_iter` 上限而将任务标记为 `__failed` 时，任务目录内已有 `restart_*.json` 和 `mser_timeseries.csv`，可以直接从断点续算，无需重新提交。
+
+**操作步骤：**
+
+1. **提高 max_iter**：找到任务目录下的配置快照 `.raspa_config.yaml`，将 `mser.max_iter` 改大（如 200）：
+   ```bash
+   # 注意：要改的是任务目录下的快照，不是 .raspa_tools/config/ 下的原始配置
+   # 快照路径示例：
+   /home/zjp/raspa2-calc/work/<output_directory>/.raspa_config.yaml
+   ```
+   修改内容：
+   ```yaml
+   mser:
+     max_iter: 200   # 原来是 50
+   ```
+   Worker 每次迭代都会重新读取此文件，**正在运行的 worker 无需重启**即可生效。
+
+2. **去掉 `__failed` 后缀**，让 worker 重新认领：
+   ```bash
+   # 单个任务
+   mv mc123__failed mc123
+
+   # 批量（所有 failed 任务）
+   for d in mc*__failed; do mv "$d" "${d%__failed}"; done
+
+   # 只 reset 特定压力点（list-mode，COV_* 命名）
+   for p in 1000 3000 5000; do
+     mv COV_12_T_423_P_${p}__failed COV_12_T_423_P_${p}
+   done
+   ```
+
+3. **从正确目录运行 raspa-scale**：必须在包含 `.raspa_queue/` 和 `.raspa_worker_limit` 的那一层目录下运行，而不是子目录：
+   ```bash
+   cd /home/zjp/raspa2-calc/work/<output_directory>
+   raspa-scale
+   ```
+   选 `[1] 自动扩缩容`，输入并发上限，工具会自动补交 worker。
+
+**注意事项：**
+- Worker 会从 `output/restart_*.json` 接续上次的模拟，不会从头重跑。
+- 如果 `mser.enable` 在快照里是 `false`，需要同时改为 `true`，否则 worker 不会调用 pyMSER。
+- list-mode（`COV_*` 命名）的任务队列在 `output_directory` 这一层，不在 `MIL-47_ASR_pacman/` 等子目录下，raspa-scale 要在正确层级运行。
+
+
 1. 进入任务目录：`cd /home/zjp/raspa2-calc/work/<子目录>`。
 2. 查看现状：`raspa-status`。
    - 关注 `运行中` 和 `待处理` 数量。

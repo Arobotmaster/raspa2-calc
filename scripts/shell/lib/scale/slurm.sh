@@ -236,7 +236,7 @@ PY
     if [ "$SUBDIR" = "." ]; then
       job_base_dir="$TARGET_DIR"
     else
-      job_base_dir="$(cd "$TARGET_DIR/.." && pwd -P)"
+      job_base_dir="$BASE_DIR"
     fi
     if [ -n "$NODE_PLAN" ] && [ "$plan_len" -gt 0 ]; then
       if [ "$plan_strict" -eq 1 ] && [ $plan_index -ge $plan_len ]; then

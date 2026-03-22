@@ -1,12 +1,11 @@
 import copy
 import json
 import logging
-import math
 import os
 import subprocess
 
 from raspa_calc.domain.algorithms.calculate_params import (
-    get_adjusted_cutoff_for_unitcells,
+    calculate_unit_cells_from_widths,
     process_structure_file,
 )
 from raspa_calc.domain.algorithms.raspa3_io import (
@@ -255,10 +254,11 @@ def process_framework_raspa3(
                                 cell_params["c"] = float(line.split()[1].split("(")[0])
 
                     if "a" in cell_params and "b" in cell_params and "c" in cell_params:
-                        adjusted_cutoff, _ = get_adjusted_cutoff_for_unitcells(cutoff)
-                        unit_a = max(1, math.ceil(2 * adjusted_cutoff / cell_params["a"]))
-                        unit_b = max(1, math.ceil(2 * adjusted_cutoff / cell_params["b"]))
-                        unit_c = max(1, math.ceil(2 * adjusted_cutoff / cell_params["c"]))
+                        uc_array, _ = calculate_unit_cells_from_widths(
+                            [cell_params["a"], cell_params["b"], cell_params["c"]],
+                            cutoff,
+                        )
+                        unit_a, unit_b, unit_c = map(int, uc_array.tolist())
                         unit_cells = [unit_a, unit_b, unit_c]
                         void_fraction = 0.5
                     else:

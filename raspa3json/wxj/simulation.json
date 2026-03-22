@@ -1,24 +1,41 @@
 {
-"SimulationType" : "MonteCarlo",
-  "NumberOfCycles" : 100000,
-  "NumberOfInitializationCycles" : 0,
-  "NumberOfEquilibrationCycles": 0,
-  "PrintEvery": 1000,
-
+  "SimulationType" : "MonteCarlo",
+  "NumberOfCycles" : 1000000,
+  "NumberOfInitializationCycles" : 100000,
+  "PrintEvery" : 5000,
+  
   "Systems" : [
     {
       "Type" : "Framework",
-      "Name" : "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif/UIO-66_ASR_pacman.cif",
-      "NumberOfUnitCells" : [2, 2, 2],
-      "ExternalTemperature" : 298.0,
+      "Name" : "IRMOF-1",
+      "NumberOfUnitCells" : [1, 1, 1],
+      "HeliumVoidFraction" : 0.81,
       "ChargeMethod" : "Ewald",
-      "HeliumVoidFraction": 0.5
+      "ExternalTemperature" : 298.0,
+      "ExternalPressure" : 10000
     }
   ],
 
   "Components" : [ 
     {
       "Name" : "methylcyclohexane",
+      "MolFraction" : 0.9,
+      "IdealGasRosenbluthWeight" : 1.0,
+      "TranslationProbability" : 0.5,
+      "RotationProbability" : 0.5,
+      "ReinsertionProbability" : 0.5,
+      "SwapProbability" : 1.0,
+      "WidomProbability" : 1.0,
+      "CreateNumberOfMolecules" : 0
+    },
+    {
+      "Name" : "toluene",
+      "MolFraction" : 0.1,
+      "IdealGasRosenbluthWeight" : 1.0,
+      "TranslationProbability" : 0.5,
+      "RotationProbability" : 0.5,
+      "ReinsertionProbability" : 0.5,
+      "SwapProbability" : 1.0,
       "WidomProbability" : 1.0,
       "CreateNumberOfMolecules" : 0
     }

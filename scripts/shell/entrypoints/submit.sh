@@ -38,8 +38,8 @@ export RASPA_TOOL_DIR
 
 # 注：脚本在安装阶段已设置为可执行；避免在 NFS 上频繁 chmod 造成额外延迟
 
-# 检查RASPA_DIR是否设置
-if [ -z "${RASPA_DIR:-}" ]; then
+# 检查RASPA_DIR是否设置（RASPA3 模式下不需要）
+if [ -z "${RASPA_DIR:-}" ] && [ "${RASPA_VERSION:-raspa2}" != "raspa3" ]; then
     echo "错误：RASPA_DIR环境变量未设置"
     echo "请设置RASPA_DIR环境变量指向RASPA安装目录"
     exit 1

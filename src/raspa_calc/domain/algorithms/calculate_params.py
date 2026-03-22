@@ -30,6 +30,14 @@ logger = setup_logging()
 _invalid_cutoff_scale_logged = False
 
 
+def is_unit_cells_edge_only_mode():
+    """是否启用仅边缘降档模式。"""
+    raw = os.environ.get("RASPA_UNITCELLS_EDGE_ONLY", "")
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 def get_unit_cells_cutoff_scale():
     """获取 UnitCells 计算用的截断半径缩放系数。"""
     global _invalid_cutoff_scale_logged
@@ -59,6 +67,45 @@ def get_adjusted_cutoff_for_unitcells(cutoff):
     scale = get_unit_cells_cutoff_scale()
     adjusted_cutoff = float(cutoff) * scale
     return adjusted_cutoff, scale
+
+
+def _compute_unit_cells_from_repeats(raw_repeats, scale=1.0, edge_only=False):
+    """从连续重复数 raw_repeats 计算离散 UnitCells。"""
+    eps = 1e-12
+    raw = np.array(raw_repeats, dtype=float)
+    base_uc = np.maximum(1, np.ceil(raw - eps).astype(int))
+
+    if abs(scale - 1.0) <= eps:
+        return base_uc
+
+    # 放大截断半径或关闭边缘模式时，按全局缩放处理
+    if scale > 1.0 or (not edge_only):
+        return np.maximum(1, np.ceil(raw * scale - eps).astype(int))
+
+    # 仅边缘降档：scale<1 时只允许每个方向最多降 1 档
+    allowed_reduction = 1.0 - scale
+    if allowed_reduction <= eps:
+        return base_uc
+
+    needed_reduction_to_drop_one = (raw - (base_uc - 1)) / raw
+    uc = base_uc.copy()
+    mask = (base_uc > 1) & (needed_reduction_to_drop_one <= allowed_reduction + eps)
+    uc[mask] = base_uc[mask] - 1
+    return uc
+
+
+def calculate_unit_cells_from_widths(widths, cutoff, scale=None, edge_only=None):
+    """基于三个方向宽度计算 UnitCells（支持边缘模式）。"""
+    widths_arr = np.array(widths, dtype=float)
+    repeats = 2.0 * float(cutoff) / widths_arr
+
+    if scale is None:
+        scale = get_unit_cells_cutoff_scale()
+    if edge_only is None:
+        edge_only = is_unit_cells_edge_only_mode()
+
+    uc = _compute_unit_cells_from_repeats(repeats, scale=scale, edge_only=edge_only)
+    return uc, repeats
 
 def check_structure_files(framework_name, cif_dir):
     """检查结构文件是否存在，如果不存在则提示用户重新输入"""
@@ -107,13 +154,19 @@ def get_cif_cell_parameters(cif_file, cutoff=12.0):
     """从 CIF 文件中提取晶胞参数并使用新的算法计算单位晶胞数"""
     try:
         logger.info(f"使用新的calculate_UnitCells算法处理CIF文件: {cif_file}")
-
-        adjusted_cutoff, cutoff_scale = get_adjusted_cutoff_for_unitcells(cutoff)
+        cutoff_scale = get_unit_cells_cutoff_scale()
+        edge_only = is_unit_cells_edge_only_mode()
         if abs(cutoff_scale - 1.0) > 1e-12:
-            logger.info(f"UnitCells截断半径缩放: {cutoff} -> {adjusted_cutoff} (scale={cutoff_scale})")
+            if cutoff_scale < 1.0 and edge_only:
+                logger.info(
+                    f"UnitCells边缘模式启用: scale={cutoff_scale}，仅临界方向可能降1档（基准cutoff={cutoff}）"
+                )
+            else:
+                adjusted_cutoff = cutoff * cutoff_scale
+                logger.info(f"UnitCells全局缩放: {cutoff} -> {adjusted_cutoff} (scale={cutoff_scale})")
 
         # 使用新的算法计算单位晶胞数
-        unit_cells_str = calculate_UnitCells(cif_file, adjusted_cutoff)
+        unit_cells_str = calculate_UnitCells(cif_file, cutoff)
         unit_cells = list(map(int, unit_cells_str.split()))
 
         logger.info(f"新算法计算结果: {unit_cells[0]} x {unit_cells[1]} x {unit_cells[2]}")
@@ -130,15 +183,8 @@ def get_cif_cell_parameters(cif_file, cutoff=12.0):
                 return None
 
             a, b, c, alpha, beta, gamma = params
-
-            adjusted_cutoff, cutoff_scale = get_adjusted_cutoff_for_unitcells(cutoff)
-            if abs(cutoff_scale - 1.0) > 1e-12:
-                logger.info(f"后备方法使用缩放后截断半径: {adjusted_cutoff} (scale={cutoff_scale})")
-
-            # 简单计算方法作为后备
-            unit_cells_a = max(1, int(2 * adjusted_cutoff / a) + 1)
-            unit_cells_b = max(1, int(2 * adjusted_cutoff / b) + 1)
-            unit_cells_c = max(1, int(2 * adjusted_cutoff / c) + 1)
+            uc_array, _ = calculate_unit_cells_from_widths([a, b, c], cutoff)
+            unit_cells_a, unit_cells_b, unit_cells_c = map(int, uc_array.tolist())
 
             logger.info(f"后备方法计算结果: {unit_cells_a} x {unit_cells_b} x {unit_cells_c}")
 
@@ -206,6 +252,7 @@ def summarize_unitcells_scale_impact(cif_files, cutoff, deltas=(0.005, 0.01, 0.0
         return None
 
     scale = get_unit_cells_cutoff_scale()
+    edge_only = is_unit_cells_edge_only_mode()
     if abs(scale - 1.0) <= 1e-12:
         return None
 
@@ -213,7 +260,6 @@ def summarize_unitcells_scale_impact(cif_files, cutoff, deltas=(0.005, 0.01, 0.0
     if not files:
         return None
 
-    # 去重并保持顺序
     uniq_files = list(dict.fromkeys(files))
     direction = 1 if scale > 1.0 else -1
     effective_cutoff = cutoff * scale
@@ -238,8 +284,9 @@ def summarize_unitcells_scale_impact(cif_files, cutoff, deltas=(0.005, 0.01, 0.0
     for cif_path in uniq_files:
         try:
             widths = np.array(calculate_perpendicular_widths(cif_path, log_details=False), dtype=float)
-            base = np.ceil((2.0 * cutoff / widths) - eps).astype(int)
-            conf = np.ceil((2.0 * effective_cutoff / widths) - eps).astype(int)
+            repeats = 2.0 * cutoff / widths
+            base = _compute_unit_cells_from_repeats(repeats, scale=1.0, edge_only=False)
+            conf = _compute_unit_cells_from_repeats(repeats, scale=scale, edge_only=edge_only)
             diff_conf = conf - base
 
             if direction > 0:
@@ -252,8 +299,12 @@ def summarize_unitcells_scale_impact(cif_files, cutoff, deltas=(0.005, 0.01, 0.0
                 configured_dims += int(np.count_nonzero(conf_mask))
 
             for item in benchmark:
-                test_cutoff = cutoff * (1.0 + direction * item["delta"])
-                test = np.ceil((2.0 * test_cutoff / widths) - eps).astype(int)
+                test_scale = 1.0 + direction * item["delta"]
+                test = _compute_unit_cells_from_repeats(
+                    repeats,
+                    scale=test_scale,
+                    edge_only=edge_only,
+                )
                 diff = test - base
                 if direction > 0:
                     mask = diff > 0
@@ -276,6 +327,7 @@ def summarize_unitcells_scale_impact(cif_files, cutoff, deltas=(0.005, 0.01, 0.0
         "scale": scale,
         "effective_cutoff": effective_cutoff,
         "direction": "increase" if direction > 0 else "decrease",
+        "edge_only": bool(edge_only),
         "configured": {
             "delta": abs(scale - 1.0),
             "files": configured_files,
@@ -304,12 +356,15 @@ def format_unitcells_scale_impact_report(summary):
     cutoff = summary.get("cutoff")
     scale = summary.get("scale")
     direction = summary.get("direction")
+    edge_only = bool(summary.get("edge_only", False))
     sign = "+" if direction == "increase" else "-"
     action = "新增" if direction == "increase" else "减少"
     tail = "发生至少一维再跳档" if direction == "increase" else "发生至少一维降档"
 
     lines = []
     lines.append(f"📈 基于当前 {total} 个 CIF 的 UnitCells 阈值统计（基准 cutoff={cutoff}）")
+    if direction == "decrease" and edge_only:
+        lines.append("- 当前策略：仅边缘方向降档（每个方向最多降低1档）")
     lines.append(f"- 当前配置 {sign}{abs(scale - 1.0) * 100:.1f}% cutoff：{action} {summary['configured']['files']} 个 CIF {tail}（{summary['configured']['files_pct']:.2f}%）")
     lines.append("- 参考敏感性：")
 
@@ -346,7 +401,7 @@ def calculate_UnitCells(cif_filename, cutoff):
         p_width_1, p_width_2, p_width_3 = calculate_perpendicular_widths(cif_filename)
 
         # Calculate UnitCells array
-        uc_array = np.ceil(2.0 * cutoff / np.array([p_width_1, p_width_2, p_width_3])).astype(int)
+        uc_array, _ = calculate_unit_cells_from_widths([p_width_1, p_width_2, p_width_3], cutoff)
         unit_cells = ' '.join(map(str, uc_array))
 
         logger.info(f"计算单位晶胞数: {uc_array[0]} x {uc_array[1]} x {uc_array[2]}")
@@ -474,10 +529,12 @@ def calculate_unit_cells(a, b, c, alpha, beta, gamma, r_cut):
         perpendicular_length_y = V / base_area_y
         perpendicular_length_z = V / base_area_z
 
-        # 计算各方向所需单位晶胞数
-        unit_cell_x = max(1, math.ceil(2 * r_cut / perpendicular_length_x))
-        unit_cell_y = max(1, math.ceil(2 * r_cut / perpendicular_length_y))
-        unit_cell_z = max(1, math.ceil(2 * r_cut / perpendicular_length_z))
+        # 计算各方向所需单位晶胞数（支持边缘降档策略）
+        uc_array, _ = calculate_unit_cells_from_widths(
+            [perpendicular_length_x, perpendicular_length_y, perpendicular_length_z],
+            r_cut,
+        )
+        unit_cell_x, unit_cell_y, unit_cell_z = map(int, uc_array.tolist())
 
         # 记录调试信息
         logger.debug(f"晶胞参数: a={a:.3f}, b={b:.3f}, c={c:.3f} Å")
@@ -687,13 +744,18 @@ def process_structure_file(structure_file, r_cut=12.0, result_cache=None, csv_fi
             return False, None, None
 
         _, cutoff_scale = get_adjusted_cutoff_for_unitcells(r_cut)
+        edge_only = is_unit_cells_edge_only_mode()
 
         # 使用缓存避免重复计算（缓存键纳入缩放参数）
         if result_cache is not None:
-            cache_key = f"{structure_file}_{r_cut:.10f}_{cutoff_scale:.10f}"
+            cache_key = f"{structure_file}_{r_cut:.10f}_{cutoff_scale:.10f}_{int(edge_only)}"
             if cache_key in result_cache:
                 logger.debug(f"使用缓存结果: {cache_key}")
                 return result_cache[cache_key]
+            legacy_scale_cache_key = f"{structure_file}_{r_cut:.10f}_{cutoff_scale:.10f}"
+            if legacy_scale_cache_key in result_cache:
+                logger.debug(f"使用旧格式缓存结果: {legacy_scale_cache_key}")
+                return result_cache[legacy_scale_cache_key]
             if abs(cutoff_scale - 1.0) <= 1e-12:
                 legacy_cache_key = f"{structure_file}_{r_cut}"
                 if legacy_cache_key in result_cache:

@@ -13,6 +13,7 @@ import pandas as pd
 from raspa_calc.domain.algorithms.calculate_params import (
     format_unitcells_scale_impact_report,
     get_unit_cells_cutoff_scale,
+    is_unit_cells_edge_only_mode,
     load_cache,
     process_structure_file,
     save_cache,
@@ -271,10 +272,19 @@ def main():
         logger.info(f"- 分子名称: {molecule_name}")
         logger.info(f"- CIF文件目录: {cif_dir}")
         unitcells_scale = get_unit_cells_cutoff_scale()
+        unitcells_edge_only = is_unit_cells_edge_only_mode()
         logger.info(f"- UnitCells cutoff缩放系数: {unitcells_scale}")
-        logger.info(f"- UnitCells实际扩胞cutoff: {cutoff * unitcells_scale:.6g}")
+        if unitcells_edge_only and unitcells_scale < 1.0:
+            logger.info("- UnitCells模式: 仅边缘方向降档（每方向最多降低1档）")
+            logger.info(f"- UnitCells边缘阈值: 允许最多 {((1.0 - unitcells_scale) * 100):.2f}% 的临界回退")
+        else:
+            logger.info(f"- UnitCells实际扩胞cutoff: {cutoff * unitcells_scale:.6g}")
         print(f"ℹ️  UnitCells cutoff缩放系数: {unitcells_scale}")
-        print(f"ℹ️  UnitCells实际扩胞cutoff: {cutoff * unitcells_scale:.6g} (原始cutoff={cutoff})")
+        if unitcells_edge_only and unitcells_scale < 1.0:
+            print("ℹ️  UnitCells模式: 仅边缘方向降档（每方向最多降低1档）")
+            print(f"ℹ️  UnitCells边缘阈值: {((1.0 - unitcells_scale) * 100):.2f}% (原始cutoff={cutoff})")
+        else:
+            print(f"ℹ️  UnitCells实际扩胞cutoff: {cutoff * unitcells_scale:.6g} (原始cutoff={cutoff})")
         if template_path:
             logger.info(f"- 自定义模板路径: {template_path}")
         if void_csv_file and void_fraction_column:
