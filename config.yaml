@@ -58,6 +58,8 @@ calculation:
   # 有效截断半径 = cutoff_radius * unit_cells_cutoff_scale
   # 例如: 1.01 表示放大 1%，0.99 表示缩小 1%
   unit_cells_cutoff_scale: 1.0
+  # 当 scale < 1 时仅对“临界方向”降档（每个方向最多降1档），避免整体缩小全部结构
+  unit_cells_edge_only: true
 
   # 默认分子 (支持多种气体分子，用空格分隔)
   # RASPA2 示例: "CO2" 或 "CO2 CH4 N2"
