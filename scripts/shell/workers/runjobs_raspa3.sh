@@ -80,6 +80,7 @@ if isinstance(mser, dict):
     emit("RASPA_MSER_CONDA_ENV", mser.get("conda_env"))
     emit("RASPA_MSER_LLM", str(mser.get("llm", True)).lower())
     emit("RASPA_MSER_BATCH_SIZE", mser.get("batch_size"))
+    emit("RASPA_MSER_PRINT_EVERY", mser.get("print_every"))
 PY
 )"
 
@@ -622,13 +623,16 @@ while :; do
                 esac
             fi
             [ -n "${RASPA_MSER_BATCH_SIZE:-}" ] && MSER_ARGS+=("--batch-size" "${RASPA_MSER_BATCH_SIZE}")
+            [ -n "${RASPA_MSER_PRINT_EVERY:-}" ] && MSER_ARGS+=("--print-every" "${RASPA_MSER_PRINT_EVERY}")
             if ! wait_for_output_txt; then
                 echo " ==> < pyMSER 跳过 > 未检测到 output/*.txt (等待 ${RASPA_MSER_WAIT_SEC:-10}s)" >> ${LOGFILE}
                 mser_status=1
             else
                 set +e
                 if command -v conda >/dev/null 2>&1; then
-                    conda run -n "${RASPA_MSER_CONDA_ENV:-pymser}" python -m "$MSER_MODULE" \
+                    conda run --no-capture-output -n "${RASPA_MSER_CONDA_ENV:-pymser}" \
+                      env PYTHONPATH="${MSER_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
+                      python -m "$MSER_MODULE" \
                       --workdir "$(pwd)" \
                       --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \
                       --add-cycles "${RASPA_MSER_ADD_CYCLES:-500}" \

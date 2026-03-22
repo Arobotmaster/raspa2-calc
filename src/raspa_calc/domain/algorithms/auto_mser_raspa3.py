@@ -138,7 +138,7 @@ def _write_mser_status_flag(workdir: str, note: str) -> None:
         f.write(note + "\n")
 
 
-def _update_sim_json(workdir: str, add_cycles: int, restart_file: str) -> None:
+def _update_sim_json(workdir: str, add_cycles: int, restart_file: str, print_every: int = None) -> None:
     sim_path = os.path.join(workdir, "simulation.json")
     if not os.path.exists(sim_path):
         raise FileNotFoundError(f"未找到 simulation.json: {sim_path}")
@@ -148,6 +148,8 @@ def _update_sim_json(workdir: str, add_cycles: int, restart_file: str) -> None:
     sim["NumberOfCycles"] = add_cycles
     sim["NumberOfInitializationCycles"] = 0
     sim["NumberOfEquilibrationCycles"] = 0
+    if print_every is not None:
+        sim["PrintEvery"] = print_every
     # 仅使用 JSON 重启，不使用二进制
     sim.pop("RestartFromBinaryFile", None)
     sim.pop("WriteBinaryRestartEvery", None)
@@ -203,6 +205,8 @@ def main():
 
     ap.add_argument("--target-cycles", type=int, default=int(os.environ.get("RASPA_MSER_TARGET_CYCLES", 1000)))
     ap.add_argument("--add-cycles", type=int, default=int(os.environ.get("RASPA_MSER_ADD_CYCLES", 200)))
+    ap.add_argument("--print-every", type=int, default=None,
+                    help="PrintEvery 采样间隔（覆盖 simulation.json 中的值）")
     ap.add_argument("--max-iter", type=int, default=int(os.environ.get("RASPA_MSER_MAX_ITER", 10)))
     ap.add_argument("--uncertainty", default=os.environ.get("RASPA_MSER_UNCERTAINTY", "uSD"), choices=["SD", "SE", "uSD", "uSE"])
     ap.add_argument("--llm", action="store_true", default=env_bool("RASPA_MSER_LLM", True), help="使用 MSER-LLM（默认开启）")
@@ -360,7 +364,7 @@ def main():
             sys.exit(1)
 
         try:
-            _update_sim_json(workdir, args.add_cycles, restart_file)
+            _update_sim_json(workdir, args.add_cycles, restart_file, print_every=args.print_every)
         except Exception as exc:  # noqa: BLE001
             print(f"[auto-mser3] 更新 simulation.json 失败: {exc}")
             sys.exit(1)

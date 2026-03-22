@@ -1,0 +1,33 @@
+{
+  "SimulationType" : "MolecularDynamics",
+  "NumberOfCycles" : 100000,
+  "NumberOfInitializationCycles" : 1000,
+  "NumberOfEquilibrationCycles" : 10000,
+  "PrintEvery" : 5000,
+
+  "Systems" : [
+    {
+      "Type" : "Framework",
+      "Name" : "FRAMEWORK_NAME",
+      "NumberOfUnitCells" : [1, 1, 1],
+      "ChargeMethod" : "Ewald",
+      "CutOff" : 12.0,
+      "ExternalTemperature" : 300.0,
+      "Ensemble" : "NVT",
+      "ComputeMSD" : true,
+      "SampleMSDEvery" : 10,
+      "WriteMSDEvery" : 5000
+    }
+  ],
+
+  "Components" : [
+    {
+      "Name" : "MOLECULE_NAME",
+      "MoleculeDefinition" : "FORCE_FIELD_DIR",
+      "TranslationProbability" : 0.5,
+      "RotationProbability" : 0.5,
+      "ReinsertionProbability" : 0.5,
+      "CreateNumberOfMolecules" : 16
+    }
+  ]
+}

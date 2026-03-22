@@ -39,14 +39,15 @@ def apply_component_names(sim_config, component_names, log=None):
             log.info(f"设置 Components[{i}].Name: {chosen}")
 
 
-def apply_mser_settings(sim_config, mser_enable=False, add_cycles=None):
+def apply_mser_settings(sim_config, mser_enable=False, add_cycles=None, print_every=None):
     if not mser_enable:
         return
-    write_every = max(1, add_cycles or 1)
-    sim_config["NumberOfCycles"] = add_cycles or sim_config.get("NumberOfCycles", write_every)
+    cycles = add_cycles or sim_config.get("NumberOfCycles", 1000)
+    sim_config["NumberOfCycles"] = cycles
     sim_config["NumberOfInitializationCycles"] = 0
     sim_config["NumberOfEquilibrationCycles"] = 0
-    sim_config["PrintEvery"] = 1
+    if print_every is not None:
+        sim_config["PrintEvery"] = print_every
 
 
 def finalize_simulation_config(sim_config):

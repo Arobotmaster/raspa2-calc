@@ -1,0 +1,37 @@
+{
+  "SimulationType": "MonteCarlo",
+  "NumberOfCycles": 50000,
+  "NumberOfInitializationCycles": 0,
+  "NumberOfEquilibrationCycles": 0,
+  "PrintEvery": 1,
+  "Systems": [
+    {
+      "Type": "Framework",
+      "Name": "/home/zjp/raspa2-calc/.raspa_tools/cif/xylene/MIL-47_ASR_pacman.cif",
+      "NumberOfUnitCells": [
+        4,
+        2,
+        2
+      ],
+      "ChargeMethod": "Ewald",
+      "CutOff": 12,
+      "UseChargesFrom": "CIF_File",
+      "ExternalTemperature": 423,
+      "ExternalPressure": 100000,
+      "HeliumVoidFraction": 0.5
+    }
+  ],
+  "Components": [
+    {
+      "Name": "o-xylene",
+      "MoleculeDefinition": "Xylene",
+      "FugacityCoefficient": 1.0,
+      "TranslationProbability": 0.5,
+      "RotationProbability": 0.5,
+      "ReinsertionProbability": 0.5,
+      "CFCMC_SwapProbability": 1.0,
+      "WidomProbability": 1.0,
+      "CreateNumberOfMolecules": 0
+    }
+  ]
+}

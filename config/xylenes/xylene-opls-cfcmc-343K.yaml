@@ -1,0 +1,55 @@
+# RASPA 计算工具配置文件 - 二甲苯异构体等温线验证
+# 力场: OPLS | 方法: cfcmc | 温度: 343K
+
+environment:
+  work_dir: "/home/zjp/raspa2-calc/work"
+  raspa_version: "raspa3"
+
+  raspa_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0"
+  raspa2_cif_dir: "/home/zjp/anaconda3/pkgs/raspa2-2.0.50-h678ec8c_0/share/raspa/structures/cif"
+  template_path: "/home/zjp/raspa2-calc/work/simulation.input"
+
+  raspa3_conda_env: "raspa3"
+  raspa3_json_dir: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene-opls-cfcmc"
+  raspa3_cif_base_path: "/home/zjp/raspa2-calc/.raspa_tools/cif/xylene"
+  raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene-opls-cfcmc/simulation.json"
+
+calculation:
+  cutoff_radius: 12
+  default_molecules: "o-xylene m-xylene p-xylene"
+  csv_file_path: "/home/zjp/raspa2-calc/.raspa_tools/cif/erjiaben-MIL47.csv"
+  framework_column: "refcode"
+  output_directory: "xylene-ff-validation/opls-cfcmc-343K"
+  use_void_csv: true
+  void_csv_file: "/home/zjp/raspa2-calc/.raspa_tools/cif/erjiaben-MIL47.csv"
+  void_column: "vf"
+
+  mser:
+    enable: true
+    target_cycles: 10000
+    add_cycles: 5000
+    max_iter: 50
+    uncertainty: "uSD"
+    conda_env: "pymser"
+    llm: true
+    batch_size: 5
+
+  node_priorities:
+    master-node: 1
+    worker-node-01: 4
+    worker-node-02: 3
+    worker-node-03: 1
+
+parameter_screening:
+  output_directory: "xylene-ff-validation/opls-cfcmc-343K"
+  auto_unit_cells: true
+  auto_clean_cif_labels: true
+
+  parameters:
+    CutOffVDW: [12]
+    ExternalTemperature: [343]
+    ExternalPressure: [0, 5, 10, 20, 50, 100, 200, 300, 400, 500, 700, 1000, 2000, 3000, 4000, 5000, 7000, 10000, 20000, 30000, 40000, 50000, 70000, 100000]
+
+logging:
+  output_dir: "1log"
+  enable_job_logs: true

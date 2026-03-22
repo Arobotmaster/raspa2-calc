@@ -1,0 +1,34 @@
+{
+  "SimulationType" : "MonteCarlo",
+  "NumberOfCycles" : 100000,
+  "NumberOfInitializationCycles" : 0,
+  "NumberOfEquilibrationCycles" : 0,
+  "PrintEvery" : 1000,
+
+  "Systems" : [
+    {
+      "Type" : "Framework",
+      "Name" : "FRAMEWORK_NAME",
+      "NumberOfUnitCells" : [1, 1, 1],
+      "HeliumVoidFraction" : 0.3,
+      "ExternalTemperature" : 300.0,
+      "ExternalPressure" : 1.0e5,
+      "ChargeMethod" : "None",
+      "CutOff" : 12.0
+    }
+  ],
+
+  "Components" : [
+    {
+      "Name" : "MOLECULE_NAME",
+      "MoleculeDefinition" : "FORCE_FIELD_DIR",
+      "FugacityCoefficient" : 1.0,
+      "TranslationProbability" : 0.5,
+      "RotationProbability" : 0.5,
+      "ReinsertionProbability" : 0.5,
+      "SwapConventionalProbability" : 1.0,
+      "WidomProbability" : 1.0,
+      "CreateNumberOfMolecules" : 0
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "SimulationType" : "MonteCarlo",
+  "NumberOfCycles" : 500000,
+  "NumberOfInitializationCycles" : 50000,
+  "NumberOfEquilibrationCycles" : 5000,
+  "PrintEvery" : 1000,
+
+  "Systems" : [
+    {
+      "Type" : "Box",
+      "BoxLengths" : [30.0, 30.0, 30.0],
+      "ExternalTemperature" : 300.0,
+      "ExternalPressure" : 1.0e7,
+      "ChargeMethod" : "Ewald",
+      "VolumeMoveProbability" : 0.05
+    }
+  ],
+
+  "Components" : [
+    {
+      "Name" : "MOLECULE_NAME",
+      "MoleculeDefinition" : "FORCE_FIELD_DIR",
+      "TranslationProbability" : 1.0,
+      "RotationProbability" : 1.0,
+      "ReinsertionProbability" : 1.0,
+      "CreateNumberOfMolecules" : 256
+    }
+  ]
+}

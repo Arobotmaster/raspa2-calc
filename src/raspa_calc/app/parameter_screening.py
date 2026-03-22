@@ -228,14 +228,27 @@ def generate_directory_name(param_combo):
         'TranslationProbability': 'TP',
         'RotationProbability': 'RP',
         'ReinsertionProbability': 'RIP',
+        'raspa3_json_dir': 'FF',
+        'raspa3_template_path': 'TPL',
     }
+
+    # 对路径类参数只取最后一级目录名（去掉完整路径）
+    path_keys = {'raspa3_json_dir', 'raspa3_template_path'}
 
     parts = []
     for key, value in param_combo.items():
         # 使用缩写或原名称
         abbrev = abbrev_map.get(key, key[:3].upper())
-        # 格式化值
-        if isinstance(value, float):
+        # 路径类参数只取最后一级目录/文件名（去掉扩展名）
+        if key in path_keys and isinstance(value, str):
+            # 对于文件路径，取父目录名（更有区分度）；对于目录路径，取目录名
+            stripped = value.rstrip('/')
+            basename = os.path.basename(stripped)
+            if os.path.splitext(basename)[1]:  # 是文件（有扩展名）
+                value_str = os.path.basename(os.path.dirname(stripped))
+            else:
+                value_str = basename
+        elif isinstance(value, float):
             if value >= 1000 or value < 0.01:
                 value_str = f"{value:.1e}".replace('+', '')
             else:
@@ -362,6 +375,7 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
         mser_settings = mser_config or {}
         mser_enable = bool(mser_settings.get('enable', False))
         mser_add_cycles = int(mser_settings.get('add_cycles', 500)) if mser_enable else None
+        mser_print_every = int(mser_settings['print_every']) if mser_enable and 'print_every' in mser_settings else None
 
         # 读取模板文件
         with open(template_path, 'r', encoding='utf-8') as f:
@@ -444,7 +458,7 @@ def create_simulation_json(template_path, params, cif_path, output_path, config=
 
         # pyMSER 续跑需要重启文件；若启用则补足配置并按追加步数启动（与高通量模式一致）
         if mser_enable:
-            apply_mser_settings(sim_config, mser_enable=mser_enable, add_cycles=mser_add_cycles)
+            apply_mser_settings(sim_config, mser_enable=mser_enable, add_cycles=mser_add_cycles, print_every=mser_print_every)
 
         # 统一移除二进制重启相关字段，使用 JSON RestartFileName 续跑
         finalize_simulation_config(sim_config)
@@ -506,8 +520,27 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
     # 处理每个参数组合
     tasks = []
     for combo in combinations:
-        # 生成参数组合目录名
+        # 先生成目录名（包含路径类参数的缩写），再 pop 环境级参数
         param_dir_name = generate_directory_name(combo)
+
+        # 从 combo 中提取环境级特殊参数（不写入 simulation.json）
+        combo_json_dir = combo.pop('raspa3_json_dir', None) or json_dir
+        combo_template_path = combo.pop('raspa3_template_path', None) or template_path
+
+        # 若 template_path 随 combo 变化，重新读取组件名
+        if combo_template_path != template_path:
+            try:
+                with open(combo_template_path, 'r', encoding='utf-8') as f:
+                    _td = json.load(f)
+                    combo_component_names = list(set(
+                        c.get('Name', '') for c in _td.get('Components', []) if c.get('Name')
+                    ))
+            except Exception:
+                combo_component_names = template_component_names
+        else:
+            combo_component_names = template_component_names
+
+        # 生成参数组合目录名（已在 pop 前完成）
         param_dir = os.path.join(framework_dir, param_dir_name)
         os.makedirs(param_dir, exist_ok=True)
         try:
@@ -519,7 +552,7 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
             pass
 
         # 组件名称覆盖：优先组合中的 Name，其次模板中的组件
-        component_names = template_component_names
+        component_names = combo_component_names
         if 'Name' in combo:
             val = combo['Name']
             if isinstance(val, (list, tuple)):
@@ -528,8 +561,8 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
                 component_names = parse_molecule_names(val)
 
         # 复制 RASPA3 JSON 文件（按框架/组分筛选力场）
-        if json_dir:
-            copy_raspa3_json_files(json_dir, param_dir, component_names, cif_path)
+        if combo_json_dir:
+            copy_raspa3_json_files(combo_json_dir, param_dir, component_names, cif_path)
 
         # 准备参数字典
         sim_params = combo.copy()
@@ -540,7 +573,7 @@ def process_parameter_combinations_raspa3(framework, cif_path, param_ranges, tem
 
         try:
             if create_simulation_json(
-                template_path,
+                combo_template_path,
                 sim_params,
                 cif_path,
                 sim_json_path,
