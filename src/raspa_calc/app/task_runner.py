@@ -10,12 +10,19 @@ from contextlib import nullcontext
 
 import pandas as pd
 
-from raspa_calc.domain.algorithms.calculate_params import load_cache, process_structure_file, save_cache
+from raspa_calc.domain.algorithms.calculate_params import (
+    format_unitcells_scale_impact_report,
+    get_unit_cells_cutoff_scale,
+    load_cache,
+    process_structure_file,
+    save_cache,
+    summarize_unitcells_scale_impact,
+)
 from raspa_calc.infra.runner import state
 from raspa_calc.infra.runner.cif import count_numbered_labels, locate_cif_file
 from raspa_calc.infra.runner.env import _env_flag, _positive_int, get_raspa_version_from_env, load_raspa3_config
 from raspa_calc.infra.runner.framework import _process_framework_wrapper, check_structure_files
-from raspa_calc.infra.runner.inputs import get_computation_setup, get_directory_setup
+from raspa_calc.infra.runner.inputs import get_cpu_cores_with_plan, get_directory_setup, get_simulation_setup
 from raspa_calc.infra.runner.logging_utils import logger, quiet_console, setup_logging
 from raspa_calc.infra.runner.submit_utils import _parse_submit_index, _should_print_submit_line
 from raspa_calc.infra.runner.templates import update_all_files
@@ -99,7 +106,6 @@ def main():
                     framework_names = df[column_number].dropna().tolist()
                 else:
                     logger.error(f"列名 '{column_number}' 不存在于CSV文件中")
-                    logger.info(f"可用的列名: {list(df.columns)}")
                     sys.exit(1)
 
             framework_names = [name for name in framework_names if str(name).strip()]
@@ -255,23 +261,35 @@ def main():
             logger.debug(traceback.format_exc())
             sys.exit(1)
 
-        cpu_cores, cutoff, void_csv_file, void_fraction_column, template_path, molecule_name, _ = get_computation_setup(
-            total_tasks, cif_dir
-        )
+        cutoff, void_csv_file, void_fraction_column, template_path, molecule_name, _ = get_simulation_setup(cif_dir)
 
         print("\n步骤3：配置摘要")
         logger.info("计算参数:")
         logger.info(f"- 输出目录: {subdir}")
         logger.info(f"- 处理框架数: {total_tasks}")
-        logger.info(f"- CPU核心数: {cpu_cores}")
         logger.info(f"- 截断半径: {cutoff}")
         logger.info(f"- 分子名称: {molecule_name}")
         logger.info(f"- CIF文件目录: {cif_dir}")
+        unitcells_scale = get_unit_cells_cutoff_scale()
+        logger.info(f"- UnitCells cutoff缩放系数: {unitcells_scale}")
+        logger.info(f"- UnitCells实际扩胞cutoff: {cutoff * unitcells_scale:.6g}")
+        print(f"ℹ️  UnitCells cutoff缩放系数: {unitcells_scale}")
+        print(f"ℹ️  UnitCells实际扩胞cutoff: {cutoff * unitcells_scale:.6g} (原始cutoff={cutoff})")
         if template_path:
             logger.info(f"- 自定义模板路径: {template_path}")
         if void_csv_file and void_fraction_column:
             logger.info(f"- 孔隙率CSV文件: {void_csv_file}")
             logger.info(f"- 孔隙率列名: {void_fraction_column}")
+        if abs(unitcells_scale - 1.0) > 1e-12:
+            try:
+                cif_paths = list(framework_cif_paths.values())
+                impact = summarize_unitcells_scale_impact(cif_paths, cutoff)
+                report = format_unitcells_scale_impact_report(impact)
+                if report:
+                    print("\n" + report)
+                    logger.info("已输出 unit_cells_cutoff_scale 的 UnitCells 跳档影响统计")
+            except Exception as e:
+                logger.info(f"跳过 UnitCells 缩放影响统计: {e}")
 
         if raspa_version == "raspa3":
             print("\n=== 生成的 simulation.json 示例 (RASPA3) ===\n")
@@ -430,6 +448,13 @@ def main():
             logger.info("程序已终止")
             sys.exit(0)
 
+        print("\n步骤4：集群资源与并发设置")
+        plan_path = None
+        if state.CURRENT_TOPDIR and state.CURRENT_SUBDIR:
+            plan_path = os.path.join(state.CURRENT_TOPDIR, state.CURRENT_SUBDIR, ".raspa_node_plan")
+        cpu_cores = get_cpu_cores_with_plan(total_tasks, plan_path=plan_path)
+        logger.info(f"- CPU核心数: {cpu_cores}")
+
         use_cache = _env_flag("RASPA_USE_CIF_CACHE", False)
         result_cache = None
         cache_file = os.environ.get("RASPA_CIF_CACHE_PATH") or os.path.join(topdir, "params_cache.json")
@@ -441,7 +466,7 @@ def main():
             else:
                 logger.info(f"启用 CIF 参数缓存 (无现有缓存) | 路径: {cache_file}")
 
-        print(f"\n步骤4：处理结构文件 ({raspa_version.upper()})")
+        print(f"\n步骤5：处理结构文件 ({raspa_version.upper()})")
         successful_structures = 0
         from tqdm import tqdm
 
@@ -514,7 +539,7 @@ def main():
         if use_cache and result_cache is not None:
             save_cache(result_cache, cache_file)
 
-        print("\n步骤5：处理结果")
+        print("\n步骤6：处理结果")
         if successful_structures == 0:
             logger.error("没有成功处理任何结构文件，无法继续计算")
             logger.error("请确保wei目录或cif目录中存在所需的结构文件")
@@ -530,7 +555,7 @@ def main():
             sys.exit(1)
         logger.info("配置文件更新完成")
 
-        print("\n步骤6：执行总结")
+        print("\n步骤7：执行总结")
         logger.info("计算任务设置完成:")
         logger.info(f"- 原始结构数: {initial_total_tasks}")
         logger.info(f"- 成功处理: {successful_structures} 个结构")
@@ -545,7 +570,7 @@ def main():
             if isinstance(f, _AbortOnWarningFilter):
                 logging.getLogger().removeFilter(f)
 
-        print("\n步骤7：提交计算任务")
+        print("\n步骤8：提交计算任务")
         try:
             tool_dir = os.path.expanduser("~/raspa2-calc/.raspa_tools")
             tasksrun_script = os.path.join(tool_dir, "scripts", "shell", "entrypoints", "submit.sh")

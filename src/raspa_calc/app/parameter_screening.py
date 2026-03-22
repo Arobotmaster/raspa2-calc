@@ -33,10 +33,13 @@ from raspa_calc.runtime import config as common_config
 
 # 导入calculate_params模块中的必要函数
 from raspa_calc.domain.algorithms.calculate_params import (
+    format_unitcells_scale_impact_report,
+    get_unit_cells_cutoff_scale,
     process_structure_file,
     get_cif_cell_parameters,
     load_cache,
     save_cache,
+    summarize_unitcells_scale_impact,
 )
 from raspa_calc.domain.algorithms.raspa3_io import (
     apply_component_names,
@@ -102,6 +105,30 @@ def load_config(config_path=None):
             logger.info(f"配置文件已加载: {used_path}")
         return config
     return None
+
+
+def resolve_reference_cutoff(param_ranges, calc_config=None):
+    """解析用于 UnitCells 缩放影响统计的参考 cutoff。"""
+    calc_config = calc_config or {}
+    for key in ("CutOff", "CutOffVDW", "cutoff"):
+        if key not in (param_ranges or {}):
+            continue
+        raw = param_ranges.get(key)
+        values = raw if isinstance(raw, (list, tuple)) else [raw]
+        valid_values = []
+        for value in values:
+            try:
+                valid_values.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        if valid_values:
+            return valid_values[0], key, len(valid_values)
+
+    fallback = calc_config.get("cutoff_radius", 12.0)
+    try:
+        return float(fallback), "calculation.cutoff_radius", 1
+    except (TypeError, ValueError):
+        return 12.0, "default", 1
 
 def get_mser_settings(config):
     """合并 pyMSER 配置（parameter_screening 优先，其次 calculation）"""
@@ -1159,6 +1186,11 @@ def main():
         calc_config = config.get('calculation', {})
         mser_config = get_mser_settings(config)
 
+        if "unit_cells_cutoff_scale" in calc_config:
+            os.environ["RASPA_UNITCELLS_CUTOFF_SCALE"] = str(calc_config["unit_cells_cutoff_scale"])
+        else:
+            os.environ.pop("RASPA_UNITCELLS_CUTOFF_SCALE", None)
+
         # 检测 RASPA 版本
         raspa_version = env_config.get('raspa_version', 'raspa2').lower()
         print(f"\n步骤1：初始化设置 (RASPA版本: {raspa_version.upper()})")
@@ -1327,6 +1359,21 @@ def main():
             logger.error("所有框架均缺少CIF文件，无法继续计算。")
             return 1
         logger.info(f"共找到 {len(framework_names)} 个框架对应的CIF文件")
+
+        unitcells_scale = get_unit_cells_cutoff_scale()
+        if abs(unitcells_scale - 1.0) > 1e-12:
+            try:
+                ref_cutoff, cutoff_source, cutoff_count = resolve_reference_cutoff(param_ranges, calc_config)
+                if cutoff_count > 1:
+                    print(f"ℹ️  UnitCells影响统计使用 {cutoff_source} 的首个值作为基准 cutoff: {ref_cutoff}")
+                cif_paths = list(framework_cif_paths.values())
+                impact = summarize_unitcells_scale_impact(cif_paths, ref_cutoff)
+                report = format_unitcells_scale_impact_report(impact)
+                if report:
+                    print("\n" + report)
+                    logger.info("已输出 unit_cells_cutoff_scale 的 UnitCells 跳档影响统计")
+            except Exception as e:
+                logger.info(f"跳过 UnitCells 缩放影响统计: {e}")
 
         if raspa_version == 'raspa3':
             label_issues = []

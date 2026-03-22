@@ -40,6 +40,11 @@ def run_high_throughput(config_path=None):
             if "cutoff_radius" in calc_config:
                 os.environ["RASPA_CUTOFF_RADIUS"] = str(calc_config["cutoff_radius"])
 
+            if "unit_cells_cutoff_scale" in calc_config:
+                os.environ["RASPA_UNITCELLS_CUTOFF_SCALE"] = str(calc_config["unit_cells_cutoff_scale"])
+            else:
+                os.environ.pop("RASPA_UNITCELLS_CUTOFF_SCALE", None)
+
             if "default_molecules" in calc_config:
                 os.environ["RASPA_DEFAULT_MOLECULES"] = calc_config["default_molecules"]
 

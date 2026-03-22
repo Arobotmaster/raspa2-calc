@@ -74,10 +74,6 @@ def get_framework_data():
     df = df.dropna(subset=[df.columns[0]])
     columns = df.columns.tolist()
 
-    logger.info("可用的列名:")
-    for i, col in enumerate(columns):
-        print(f"{i+1}. {col}")
-
     framework_column_env = os.environ.get("RASPA_FRAMEWORK_COLUMN")
     if framework_column_env:
         if framework_column_env in columns:
@@ -224,20 +220,10 @@ def get_cpu_cores_with_plan(total_tasks, cluster_info=None, plan_path=None):
     return cpu_cores
 
 
-def get_computation_setup(total_tasks, cif_dir=None):
-    """Get computation settings."""
+def get_simulation_setup(cif_dir=None):
+    """Get simulation settings except CPU core selection."""
     logger.info("=== 步骤3：设置计算参数 ===")
-
-    cluster_info = get_slurm_cluster_resources()
-    globals()["LAST_CLUSTER_INFO"] = cluster_info
-    plan_path = None
-    if state.CURRENT_TOPDIR and state.CURRENT_SUBDIR:
-        plan_path = os.path.join(state.CURRENT_TOPDIR, state.CURRENT_SUBDIR, ".raspa_node_plan")
-    cpu_cores = get_cpu_cores_with_plan(
-        total_tasks,
-        cluster_info=cluster_info,
-        plan_path=plan_path,
-    )
+    raspa_version = os.environ.get("RASPA_VERSION", "raspa2").lower()
 
     while True:
         try:
@@ -336,10 +322,6 @@ def get_computation_setup(total_tasks, cif_dir=None):
             df = read_csv_with_fallbacks(void_csv_file)
             columns = df.columns.tolist()
 
-            logger.info("可用的列名:")
-            for i, col in enumerate(columns):
-                print(f"{i+1}. {col}")
-
             if void_column_env:
                 if void_column_env in columns:
                     void_fraction_column = void_column_env
@@ -368,5 +350,24 @@ def get_computation_setup(total_tasks, cif_dir=None):
             logger.error(f"读取CSV文件时出错: {e}")
             void_csv_file = None
             void_fraction_column = None
+
+    return cutoff, void_csv_file, void_fraction_column, template_path, molecule_name, cif_dir
+
+
+def get_computation_setup(total_tasks, cif_dir=None):
+    """Backward-compatible wrapper with CPU core selection."""
+    cutoff, void_csv_file, void_fraction_column, template_path, molecule_name, cif_dir = get_simulation_setup(cif_dir)
+
+    cluster_info = get_slurm_cluster_resources()
+    globals()["LAST_CLUSTER_INFO"] = cluster_info
+    plan_path = None
+    if state.CURRENT_TOPDIR and state.CURRENT_SUBDIR:
+        plan_path = os.path.join(state.CURRENT_TOPDIR, state.CURRENT_SUBDIR, ".raspa_node_plan")
+
+    cpu_cores = get_cpu_cores_with_plan(
+        total_tasks,
+        cluster_info=cluster_info,
+        plan_path=plan_path,
+    )
 
     return cpu_cores, cutoff, void_csv_file, void_fraction_column, template_path, molecule_name, cif_dir

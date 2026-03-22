@@ -30,6 +30,11 @@ def run_parameter_screening(config_path=None):
             if "cache_dir" in calc_config and calc_config["cache_dir"]:
                 os.environ["RASPA_CACHE_DIR"] = calc_config["cache_dir"]
 
+            if "unit_cells_cutoff_scale" in calc_config:
+                os.environ["RASPA_UNITCELLS_CUTOFF_SCALE"] = str(calc_config["unit_cells_cutoff_scale"])
+            else:
+                os.environ.pop("RASPA_UNITCELLS_CUTOFF_SCALE", None)
+
             raspa_ver = env_config.get("raspa_version", "raspa2").lower()
             os.environ["RASPA_VERSION"] = raspa_ver
             if raspa_ver == "raspa3":

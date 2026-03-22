@@ -27,6 +27,38 @@ def setup_logging():
 
 # 初始化日志系统
 logger = setup_logging()
+_invalid_cutoff_scale_logged = False
+
+
+def get_unit_cells_cutoff_scale():
+    """获取 UnitCells 计算用的截断半径缩放系数。"""
+    global _invalid_cutoff_scale_logged
+    raw_scale = os.environ.get("RASPA_UNITCELLS_CUTOFF_SCALE")
+    if raw_scale is None or str(raw_scale).strip() == "":
+        return 1.0
+
+    try:
+        scale = float(raw_scale)
+    except (TypeError, ValueError):
+        if not _invalid_cutoff_scale_logged:
+            logger.warning(f"无效的 RASPA_UNITCELLS_CUTOFF_SCALE={raw_scale}，将使用默认值 1.0")
+            _invalid_cutoff_scale_logged = True
+        return 1.0
+
+    if scale <= 0:
+        if not _invalid_cutoff_scale_logged:
+            logger.warning(f"RASPA_UNITCELLS_CUTOFF_SCALE 必须大于 0，当前为 {scale}，将使用默认值 1.0")
+            _invalid_cutoff_scale_logged = True
+        return 1.0
+
+    return scale
+
+
+def get_adjusted_cutoff_for_unitcells(cutoff):
+    """根据配置缩放 UnitCells 计算使用的截断半径。"""
+    scale = get_unit_cells_cutoff_scale()
+    adjusted_cutoff = float(cutoff) * scale
+    return adjusted_cutoff, scale
 
 def check_structure_files(framework_name, cif_dir):
     """检查结构文件是否存在，如果不存在则提示用户重新输入"""
@@ -75,40 +107,48 @@ def get_cif_cell_parameters(cif_file, cutoff=12.0):
     """从 CIF 文件中提取晶胞参数并使用新的算法计算单位晶胞数"""
     try:
         logger.info(f"使用新的calculate_UnitCells算法处理CIF文件: {cif_file}")
-        
+
+        adjusted_cutoff, cutoff_scale = get_adjusted_cutoff_for_unitcells(cutoff)
+        if abs(cutoff_scale - 1.0) > 1e-12:
+            logger.info(f"UnitCells截断半径缩放: {cutoff} -> {adjusted_cutoff} (scale={cutoff_scale})")
+
         # 使用新的算法计算单位晶胞数
-        unit_cells_str = calculate_UnitCells(cif_file, cutoff)
+        unit_cells_str = calculate_UnitCells(cif_file, adjusted_cutoff)
         unit_cells = list(map(int, unit_cells_str.split()))
-        
+
         logger.info(f"新算法计算结果: {unit_cells[0]} x {unit_cells[1]} x {unit_cells[2]}")
-        
+
         return unit_cells
-        
+
     except Exception as e:
         logger.error(f"新算法计算失败，使用后备方法: {e}")
-        
+
         # 后备方法：使用原来的简单计算
         try:
             params = read_cif_params(cif_file)
             if params is None:
                 return None
-                
+
             a, b, c, alpha, beta, gamma = params
-            
+
+            adjusted_cutoff, cutoff_scale = get_adjusted_cutoff_for_unitcells(cutoff)
+            if abs(cutoff_scale - 1.0) > 1e-12:
+                logger.info(f"后备方法使用缩放后截断半径: {adjusted_cutoff} (scale={cutoff_scale})")
+
             # 简单计算方法作为后备
-            unit_cells_a = max(1, int(2 * cutoff / a) + 1)
-            unit_cells_b = max(1, int(2 * cutoff / b) + 1) 
-            unit_cells_c = max(1, int(2 * cutoff / c) + 1)
-            
+            unit_cells_a = max(1, int(2 * adjusted_cutoff / a) + 1)
+            unit_cells_b = max(1, int(2 * adjusted_cutoff / b) + 1)
+            unit_cells_c = max(1, int(2 * adjusted_cutoff / c) + 1)
+
             logger.info(f"后备方法计算结果: {unit_cells_a} x {unit_cells_b} x {unit_cells_c}")
-            
+
             return [unit_cells_a, unit_cells_b, unit_cells_c]
-            
+
         except Exception as fallback_error:
             logger.error(f"后备方法也失败: {fallback_error}")
             return None
 
-def calculate_perpendicular_widths(cif_filename: str) -> tuple:
+def calculate_perpendicular_widths(cif_filename: str, log_details: bool = True) -> tuple:
     """
     Calculate the perpendicular widths of the unit cell using precise vector calculations.
     RASPA considers the perpendicular directions as the directions perpendicular to the `ab`,
@@ -149,10 +189,140 @@ def calculate_perpendicular_widths(cif_filename: str) -> tuple:
     p_width_2 = V / np.linalg.norm(cxa)
     p_width_3 = V / np.linalg.norm(axb)
 
-    logger.info(f"晶胞体积: {V:.2f} Å³")
-    logger.info(f"垂直宽度: {p_width_1:.2f}, {p_width_2:.2f}, {p_width_3:.2f} Å")
+    if log_details:
+        logger.info(f"晶胞体积: {V:.2f} Å³")
+        logger.info(f"垂直宽度: {p_width_1:.2f}, {p_width_2:.2f}, {p_width_3:.2f} Å")
 
     return p_width_1, p_width_2, p_width_3
+
+
+def summarize_unitcells_scale_impact(cif_files, cutoff, deltas=(0.005, 0.01, 0.02, 0.05)):
+    """统计 unit_cells_cutoff_scale 对 UnitCells 阈值跳变的影响。"""
+    try:
+        cutoff = float(cutoff)
+    except (TypeError, ValueError):
+        return None
+    if cutoff <= 0:
+        return None
+
+    scale = get_unit_cells_cutoff_scale()
+    if abs(scale - 1.0) <= 1e-12:
+        return None
+
+    files = [str(p) for p in (cif_files or []) if p]
+    if not files:
+        return None
+
+    # 去重并保持顺序
+    uniq_files = list(dict.fromkeys(files))
+    direction = 1 if scale > 1.0 else -1
+    effective_cutoff = cutoff * scale
+    eps = 1e-12
+
+    benchmark = []
+    for d in deltas:
+        d = float(d)
+        if d <= 0:
+            continue
+        benchmark.append({
+            "delta": d,
+            "files": 0,
+            "dims": 0,
+        })
+
+    configured_files = 0
+    configured_dims = 0
+    failed = 0
+    processed = 0
+
+    for cif_path in uniq_files:
+        try:
+            widths = np.array(calculate_perpendicular_widths(cif_path, log_details=False), dtype=float)
+            base = np.ceil((2.0 * cutoff / widths) - eps).astype(int)
+            conf = np.ceil((2.0 * effective_cutoff / widths) - eps).astype(int)
+            diff_conf = conf - base
+
+            if direction > 0:
+                conf_mask = diff_conf > 0
+            else:
+                conf_mask = diff_conf < 0
+
+            if np.any(conf_mask):
+                configured_files += 1
+                configured_dims += int(np.count_nonzero(conf_mask))
+
+            for item in benchmark:
+                test_cutoff = cutoff * (1.0 + direction * item["delta"])
+                test = np.ceil((2.0 * test_cutoff / widths) - eps).astype(int)
+                diff = test - base
+                if direction > 0:
+                    mask = diff > 0
+                else:
+                    mask = diff < 0
+                if np.any(mask):
+                    item["files"] += 1
+                    item["dims"] += int(np.count_nonzero(mask))
+
+            processed += 1
+        except Exception:
+            failed += 1
+
+    denominator = processed if processed > 0 else len(uniq_files)
+    summary = {
+        "total_files": len(uniq_files),
+        "processed_files": processed,
+        "failed_files": failed,
+        "cutoff": cutoff,
+        "scale": scale,
+        "effective_cutoff": effective_cutoff,
+        "direction": "increase" if direction > 0 else "decrease",
+        "configured": {
+            "delta": abs(scale - 1.0),
+            "files": configured_files,
+            "dims": configured_dims,
+            "files_pct": (configured_files / denominator * 100.0) if denominator else 0.0,
+        },
+        "benchmarks": [
+            {
+                "delta": item["delta"],
+                "files": item["files"],
+                "dims": item["dims"],
+                "files_pct": (item["files"] / denominator * 100.0) if denominator else 0.0,
+            }
+            for item in benchmark
+        ],
+    }
+    return summary
+
+
+def format_unitcells_scale_impact_report(summary):
+    """格式化 unit_cells_cutoff_scale 影响统计输出。"""
+    if not summary:
+        return ""
+
+    total = summary.get("processed_files", 0)
+    cutoff = summary.get("cutoff")
+    scale = summary.get("scale")
+    direction = summary.get("direction")
+    sign = "+" if direction == "increase" else "-"
+    action = "新增" if direction == "increase" else "减少"
+    tail = "发生至少一维再跳档" if direction == "increase" else "发生至少一维降档"
+
+    lines = []
+    lines.append(f"📈 基于当前 {total} 个 CIF 的 UnitCells 阈值统计（基准 cutoff={cutoff}）")
+    lines.append(f"- 当前配置 {sign}{abs(scale - 1.0) * 100:.1f}% cutoff：{action} {summary['configured']['files']} 个 CIF {tail}（{summary['configured']['files_pct']:.2f}%）")
+    lines.append("- 参考敏感性：")
+
+    for item in summary.get("benchmarks", []):
+        lines.append(
+            f"- {sign}{item['delta'] * 100:.1f}% cutoff：{action} {item['files']} 个 CIF {tail}（{item['files_pct']:.2f}%）"
+        )
+
+    failed = summary.get("failed_files", 0)
+    if failed:
+        lines.append(f"- 解析失败 CIF: {failed} 个（已自动跳过）")
+
+    return "\n".join(lines)
 
 def calculate_UnitCells(cif_filename, cutoff):
     """
@@ -412,7 +582,6 @@ def get_void_fraction_from_csv(framework_name, csv_file=None, void_fraction_colu
                 logger.info(f"使用指定的框架列名: {framework_column_name}")
             else:
                 logger.error(f"指定的框架列名 '{framework_column}' 在CSV文件中不存在")
-                logger.info(f"CSV文件中可用的列名: {list(df.columns)}")
                 return None
         else:
             # 如果没有指定，使用默认查找逻辑（保持向后兼容）
@@ -506,13 +675,6 @@ def process_structure_file(structure_file, r_cut=12.0, result_cache=None, csv_fi
     Returns:
         tuple: (success, unit_cells, void_fraction)
     """
-    # 使用缓存避免重复计算
-    if result_cache is not None:
-        cache_key = f"{structure_file}_{r_cut}"
-        if cache_key in result_cache:
-            logger.debug(f"使用缓存结果: {cache_key}")
-            return result_cache[cache_key]
-
     try:
         # 检查截断半径参数
         try:
@@ -523,6 +685,20 @@ def process_structure_file(structure_file, r_cut=12.0, result_cache=None, csv_fi
         except ValueError:
             logger.error(f"截断半径必须为数值: {r_cut}")
             return False, None, None
+
+        _, cutoff_scale = get_adjusted_cutoff_for_unitcells(r_cut)
+
+        # 使用缓存避免重复计算（缓存键纳入缩放参数）
+        if result_cache is not None:
+            cache_key = f"{structure_file}_{r_cut:.10f}_{cutoff_scale:.10f}"
+            if cache_key in result_cache:
+                logger.debug(f"使用缓存结果: {cache_key}")
+                return result_cache[cache_key]
+            if abs(cutoff_scale - 1.0) <= 1e-12:
+                legacy_cache_key = f"{structure_file}_{r_cut}"
+                if legacy_cache_key in result_cache:
+                    logger.debug(f"使用旧格式缓存结果: {legacy_cache_key}")
+                    return result_cache[legacy_cache_key]
 
         # 判断文件类型
         file_ext = os.path.splitext(structure_file)[1].lower()

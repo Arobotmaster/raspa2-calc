@@ -5,7 +5,10 @@ import math
 import os
 import subprocess
 
-from raspa_calc.domain.algorithms.calculate_params import process_structure_file
+from raspa_calc.domain.algorithms.calculate_params import (
+    get_adjusted_cutoff_for_unitcells,
+    process_structure_file,
+)
 from raspa_calc.domain.algorithms.raspa3_io import (
     apply_component_names,
     apply_mser_settings,
@@ -252,9 +255,10 @@ def process_framework_raspa3(
                                 cell_params["c"] = float(line.split()[1].split("(")[0])
 
                     if "a" in cell_params and "b" in cell_params and "c" in cell_params:
-                        unit_a = max(1, math.ceil(2 * cutoff / cell_params["a"]))
-                        unit_b = max(1, math.ceil(2 * cutoff / cell_params["b"]))
-                        unit_c = max(1, math.ceil(2 * cutoff / cell_params["c"]))
+                        adjusted_cutoff, _ = get_adjusted_cutoff_for_unitcells(cutoff)
+                        unit_a = max(1, math.ceil(2 * adjusted_cutoff / cell_params["a"]))
+                        unit_b = max(1, math.ceil(2 * adjusted_cutoff / cell_params["b"]))
+                        unit_c = max(1, math.ceil(2 * adjusted_cutoff / cell_params["c"]))
                         unit_cells = [unit_a, unit_b, unit_c]
                         void_fraction = 0.5
                     else:
