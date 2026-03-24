@@ -5,7 +5,7 @@
 ### 能解决什么问题
 - **动态扩缩容**：运行过程中临时增加/减少并发，避免手工 scancel/重提。
 - **自动补救**：节点或队列异常导致作业被取消时，自动识别缺口并补交。
-- **配置继承**：确保补交作业继承原始高通量配置（`.raspa_config.yaml` 会被自动保存/读取）。
+- **配置继承**：确保补交作业继承原始高通量配置；恢复时优先读取任务目录下的 `.raspa_config.yaml`。
 - **资源优化**：在超线程节点上，自动将多个 Worker 打包进单个 SLURM Job，充分利用 ThreadsPerCore 资源。
 - **死锁自愈**：自动清理因强制中断（如 scancel）导致的陈旧锁文件和卡死的队列指针。
 
@@ -13,9 +13,9 @@
 在任务子目录（含 `mc*` 任务）下执行：
 - `raspa-scale`：默认先展示资源与任务概览，然后进入模式选择（含查看任务状态入口）。
 - `raspa-scale -i`：强制进入交互模式（与默认行为一致，适合脚本显式说明）。
-- `raspa-scale <并发数> -a`：直接写入上限并自动扩/缩容。
-- `raspa-scale <并发数> --limit-only`：只写入 `.raspa_worker_limit`，不提交流程变更。
-- `-y`：无交互自动采用推荐并发并执行自动扩/缩容（适合无终端或 CI）。
+- `raspa-scale -a <并发数>`：直接写入上限并自动扩/缩容。
+- `raspa-scale --limit-only <并发数>`：只写入 `.raspa_worker_limit`，不提交流程变更。
+- `raspa-scale -y`：无交互自动采用推荐并发并执行自动扩/缩容（适合无终端或 CI）；默认会把“当前目录运行中 + 集群估计空闲线程数”写入 `.raspa_worker_limit`。
 - `RASPA_SCALE_RECOMMEND=auto|run_idle|idle|full`：控制“推荐并发”策略；默认 auto（按“当前目录运行中 + 集群空闲”推荐，且不超过任务总数）。
 - `RASPA_SCALE_SCAN_JOBS=<N>`：并行扫描任务目录的线程数（默认自动使用最多 32 线程；设为 1 可禁用并行）。
 - `RASPA_SCALE_SCAN_MODE=auto|fast|verify`：任务统计模式；auto 在任务很多时自动切换到 fast（不逐目录检查 simulation.*）。
@@ -33,6 +33,9 @@
 - `raspa-scale kill -l <id1,id2,...>`：按作业ID列表终止。
 
 示例：
+- `raspa-scale -a 256`
+- `raspa-scale --limit-only 128`
+- `raspa-scale -y`
 - `raspa-scale kill -n worker-node-01:10,worker-node-02:5`
 - `raspa-scale kill -n worker-node-01,worker-node-02 -c 3`
 
@@ -44,6 +47,21 @@
 - 提交脚本默认使用 `RASPA_TOOL_DIR/scripts/shell/entrypoints/submit.sh`，不再复制 `scripts/shell` 下脚本到工作目录。
 - Worker 执行脚本优先来自 `RASPA_TOOL_DIR/scripts/shell/workers/runjobs*.sh`，可通过 `RASPA_TOOL_DIR` 覆盖工具目录。
 - 工作目录主要保留队列与任务数据：`.raspa_queue`、`.raspa_worker_limit`、`.raspa_jobs.list`、`mc*` 等。
+
+### 节点优先级配置（node_priorities）
+
+`raspa-scale` 在生成节点分配计划时，**只读取任务目录下的 `.raspa_config.yaml`**，不再回退到其他路径。
+
+配置示例（`.raspa_config.yaml`）：
+```yaml
+calculation:
+  node_priorities:
+    master-node: 1
+    worker-node-01: 3
+    worker-node-02: 2
+    worker-node-03: 4
+```
+数值越大优先级越高。若 `.raspa_config.yaml` 不存在或未配置 `node_priorities`，工具会在终端输出提示，并按集群可用线程数自动分配。
 
 ### 状态监控与排查 (raspa-status)
 `raspa-status` 现已升级，能区分“实际运行”与“SLURM调度”状态：
@@ -58,15 +76,19 @@
 2. **作业追踪**：
    - 追踪文件 `.raspa_jobs.list` 记录 JobId→Worker编号（支持 1:N 打包映射）。
    - 自动识别“孤儿目录”（有 `__running` 但无对应 SLURM 作业），并将其回滚为待处理。
-3. **打包策略 (Packing)**：
+3. **配置读取优先级**：
+   - Worker 恢复任务时，优先读取当前任务根目录下的 `.raspa_config.yaml`。
+   - 若不存在，再尝试当前目录 `config.yaml`，最后才回退到 `~/.raspa_tools/config.yaml`。
+   - 因此恢复历史任务时，应该修改工作目录中的配置快照，而不是只改工具目录里的原始配置。
+4. **打包策略 (Packing)**：
    - 在支持超线程的节点（如 ThreadsPerCore=2），`raspa-scale` 会自动生成 `pack_size=2` 的作业。
    - 例如：提交 1 个 SLURM Job，申请 2 个 CPU 线程，内部启动 2 个 Worker 并发计算。
    - 日志会显示：`节点分配计划(线程->作业): nodeA:20 -> nodeA:10`。
-4. **线程 vs 物理核显示**：
+5. **线程 vs 物理核显示**：
    - 资源与推荐并发默认以 **CPU线程数=worker并发数** 统计。
    - 若节点为超线程（ThreadsPerCore>1），日志会显示 `线程/核` 形式，例如：  
      `总256线程/128核, 已分配144线程/72核, 估计可用112线程/56核`。
-4. **死锁处理**：
+6. **死锁处理**：
    - **锁超时**：默认 30秒。若作业被杀导致 `mcX.lock` 残留，新 Worker 会在 30s 后自动接管。
    - **指针重置**：若队列指针（`next_id`）已耗尽但仍有大量回滚任务（Pending），`raspa-scale` 会自动删除指针，触发 Worker 全量重新扫描。
 
@@ -89,6 +111,14 @@
    ```
    Worker 每次迭代都会重新读取此文件，**正在运行的 worker 无需重启**即可生效。
 
+   如果还要同时调整 `target_cycles`、`add_cycles`、`uncertainty` 等参数，也应当改这一份快照，例如：
+   ```yaml
+   mser:
+     target_cycles: 1000
+     add_cycles: 600
+     max_iter: 200
+   ```
+
 2. **去掉 `__failed` 后缀**，让 worker 重新认领：
    ```bash
    # 单个任务
@@ -103,28 +133,84 @@
    done
    ```
 
-3. **从正确目录运行 raspa-scale**：必须在包含 `.raspa_queue/` 和 `.raspa_worker_limit` 的那一层目录下运行，而不是子目录：
+3. **如需按 `mser_timeseries.csv` 的最大 `cycle` 直接判定完成，先统一筛一遍所有非 `__done` 目录**：
+   - 适用于你已经接受“达到某个 cycle 阈值即可视为完成”的场景。
+   - 建议先把 `__running` / `__failed` 恢复为无后缀目录，再统一处理，避免漏掉已经回滚成 `mcX` 的目录。
+   - 下例会把所有“非 `__done` 且 `mser_timeseries.csv` 中最大 `cycle > THRESHOLD`”的目录改成 `__done`：
+   ```bash
+   THRESHOLD=12000
+   python - <<'PY'
+   import csv, glob, os
+
+   threshold = float(os.environ.get("THRESHOLD", "12000"))
+   for d in sorted(glob.glob("mc[0-9]*")):
+       if d.endswith("__done"):
+           continue
+       csv_path = os.path.join(d, "mser_timeseries.csv")
+       if not os.path.isfile(csv_path):
+           continue
+
+       mx = None
+       with open(csv_path, newline="", encoding="utf-8") as fh:
+           reader = csv.reader(fh)
+           header = next(reader, None)
+           idx = None
+           if header:
+               for i, key in enumerate(header):
+                   if str(key).strip().lower() == "cycle":
+                       idx = i
+                       break
+           if idx is None:
+               continue
+
+           for row in reader:
+               if idx >= len(row):
+                   continue
+               value = str(row[idx]).strip()
+               if not value:
+                   continue
+               try:
+                   val = float(value)
+               except Exception:
+                   continue
+               if mx is None or val > mx:
+                   mx = val
+
+       if mx is not None and mx > threshold:
+           dst = d + "__done"
+           if not os.path.exists(dst):
+               os.rename(d, dst)
+               print(f"{d} -> {dst} (max_cycle={mx})")
+   PY
+   ```
+
+4. **从正确目录运行 raspa-scale**：必须在包含 `.raspa_queue/` 和 `.raspa_worker_limit` 的那一层目录下运行，而不是子目录：
    ```bash
    cd /home/zjp/raspa2-calc/work/<output_directory>
-   raspa-scale
+   raspa-scale -y
    ```
-   选 `[1] 自动扩缩容`，输入并发上限，工具会自动补交 worker。
+   - `raspa-scale -y`：按当前集群剩余可用线程数自动写入 `.raspa_worker_limit` 并补交。
+   - `raspa-scale -a <并发数>`：手工指定并发上限。
+   - 交互模式也可以：`raspa-scale` 或 `raspa-scale -i`。
 
 **注意事项：**
 - Worker 会从 `output/restart_*.json` 接续上次的模拟，不会从头重跑。
 - 如果 `mser.enable` 在快照里是 `false`，需要同时改为 `true`，否则 worker 不会调用 pyMSER。
 - list-mode（`COV_*` 命名）的任务队列在 `output_directory` 这一层，不在 `MIL-47_ASR_pacman/` 等子目录下，raspa-scale 要在正确层级运行。
+- 文档示例统一使用“选项在前”的形式，例如 `raspa-scale -a 256`。
 
 
 1. 进入任务目录：`cd /home/zjp/raspa2-calc/work/<子目录>`。
 2. 查看现状：`raspa-status`。
    - 关注 `运行中` 和 `待处理` 数量。
    - 确认 `SLURM活跃` 是否符合预期。
-3. 执行恢复并设定目标并发：`raspa-scale -i -a`。
+3. 如需修改恢复参数，先编辑 `./.raspa_config.yaml`，不要只改 `.raspa_tools/config/` 下的原始配置。
+4. 如需按 `cycle` 阈值直接收敛为完成态，先执行上面的 `mser_timeseries.csv` 筛选脚本。
+5. 执行恢复并设定目标并发：`raspa-scale -y`、`raspa-scale -a <并发数>` 或 `raspa-scale -i`。
    - 工具会自动检测环境、清理死锁指针、重建 `.raspa_jobs.list`、补齐缺口编号。
    - 如果之前有大量任务被 `scancel`，工具会提示 `自动重置指针以加速认领`。
    - 也可直接运行 `raspa-scale` 后选择模式 `1` 进入扩缩容流程。
-4. 验证效果：
+6. 验证效果：
    - 等待约 10-30 秒。
    - 再次运行 `raspa-status`，确认 `运行中` 数量开始上升并接近 `SLURM活跃` 数。
 
