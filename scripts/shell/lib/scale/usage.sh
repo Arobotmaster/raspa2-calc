@@ -38,6 +38,8 @@ usage() {
   echo "                           任务统计缓存秒数（默认 15，避免重复扫描）"
   echo "  RASPA_SLURM_FREE_POLICY=alloc_ht|alloc|min|load"
   echo "                           可用线程数估算策略（默认 alloc_ht：超线程节点取 min(alloc,load)）"
+  echo "  RASPA_ALLOWED_NODES=nodeA,nodeB"
+  echo "                           节点白名单；扩容仅在这些节点补交，缩容时优先清掉白名单外节点作业"
   echo "  RASPA_SCALE_KILL_FORCE=1 跳过缩容确认（非交互场景强制执行）"
   echo ""
   echo "示例:"

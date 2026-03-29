@@ -40,30 +40,49 @@ calculation:
   # 默认截断半径 (Å)
   cutoff_radius: 12.8
 
+  # UnitCells计算时的截断半径缩放系数（仅影响UnitCells，不改写模拟输入里的CutOff）
+  # - 垂直宽度: 10.023862, 10.023862, 16.253514
+  # - 原始连续 repeat: 2.394287, 2.394287, 1.476604
+  # - 基准 UnitCells: [3, 3, 2]
+  # - scale=0.95 + edge_only=true 后结果: 仍然是 [3, 3, 2]
+  # 每个方向如果想“降 1 档”，所需缩减比例分别是：
+  # - a: 16.47%
+  # - b: 16.47%
+  # - c: 32.28%
+  # 而这次只允许 5% 回退，所以 a/b/c 都不满足降档条件。
+  # 当前代码也确实是“只降对应方向”，不是整组一起降，逻辑在 src/raspa_calc/domain/algorithms/
+  # calculate_params.py:72：
+  # - 先分别算三个方向的 raw_repeats
+  # - 再逐方向生成 mask
+  # - 只有满足条件的那个方向才 -1
+  # 例如: 1.01 表示放大 1%，0.99 表示缩小 1%
+  unit_cells_cutoff_scale: 0.95
+  unit_cells_edge_only: true 
+
   # 默认分子 (支持多种气体分子，用空格分隔)
   # RASPA3 示例: "p-xylene" 或 "CO2"
   default_molecules: "methylcyclohexane toluene"
 
   # CSV 文件路径 (用于批量处理，指定框架列表)
-  csv_file_path: "/home/zjp/raspa2-calc/filter/wxj-3442.csv"
+  csv_file_path: "/home/zjp/raspa2-calc/filter/wxj-3442_complete.csv"
   # 框架名称列名（必须与 CSV 文件中的列名完全一致）
   framework_column: "refcode"
 
   # 输出目录名
-  output_directory: "wxj-3442_Ndes"
+  output_directory: "wxj-3442_Nads"
 
   # 是否从 CSV 文件读取孔隙率
   use_void_csv: true
 
   # 孔隙率 CSV 文件路径
-  void_csv_file: "/home/zjp/raspa2-calc/filter/wxj-3442.csv"
+  void_csv_file: "/home/zjp/raspa2-calc/filter/wxj-3442_complete.csv"
 
   # 孔隙率列名
   void_column: "VF"
 
   # pyMSER 自动平衡
   mser:
-    enable: true
+    enable: false
     target_cycles: 10000
     add_cycles: 3000
     max_iter: 50
@@ -87,7 +106,7 @@ calculation:
 # - RASPA3: 修改 simulation.json JSON 文件
 parameter_screening:
   # 输出目录名
-  output_directory: "wxi-3442_Ndes"
+  output_directory: "wxj-3442_Nads"
 
   # 是否自动计算 UnitCells
   auto_unit_cells: true
@@ -109,7 +128,7 @@ parameter_screening:
   # 注意: 大部分参数名在两个版本间兼容，程序会自动映射
   parameters:
 
-    Name: [ECH] # 仅 RASPA3
+    # 仅 RASPA3
     # MoleculeName: [CO2, CH4, N2]  # 仅 RASPA2
 
     # 重要: 如果启用 auto_unit_cells，必须包含截断半径参数

@@ -3,7 +3,7 @@
   "NumberOfCycles": 50000,
   "NumberOfInitializationCycles": 0,
   "NumberOfEquilibrationCycles": 0,
-  "PrintEvery": 10,
+  "PrintEvery": 1,
   "Systems": [
     {
       "Type": "Framework",

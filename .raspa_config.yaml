@@ -70,7 +70,7 @@ calculation:
   framework_column: "refcode"
 
   # 输出目录名
-  output_directory: "wxj-3442-Sdes"
+  output_directory: "wxj-3442-Henry"
 
   # 是否启用 CIF 参数缓存 (避免重复计算 UnitCells/VoidFraction)
   # 缓存文件: params_cache.json

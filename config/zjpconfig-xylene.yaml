@@ -42,7 +42,7 @@ environment:
 
   # RASPA3 CIF 文件基础路径
   # 框架名会追加到此路径，例如: {raspa3_cif_base_path}/{框架名}.cif
-  raspa3_cif_base_path: "/home/zjp/raspa2-calc/.raspa_tools/cif/12088cif_LCD_5-12"
+  raspa3_cif_base_path: "/home/zjp/raspa2-calc/.raspa_tools/cif/843pld大于5"
 
   # RASPA3 simulation.json 模板路径
   raspa3_template_path: "/home/zjp/raspa2-calc/.raspa_tools/raspa3json/xylene-trappe-conventional/simulation.json"
@@ -55,9 +55,23 @@ calculation:
   cutoff_radius: 12
 
   # UnitCells计算时的截断半径缩放系数（仅影响UnitCells，不改写模拟输入里的CutOff）
-  # 有效截断半径 = cutoff_radius * unit_cells_cutoff_scale
+  # - 垂直宽度: 10.023862, 10.023862, 16.253514
+  # - 原始连续 repeat: 2.394287, 2.394287, 1.476604
+  # - 基准 UnitCells: [3, 3, 2]
+  # - scale=0.95 + edge_only=true 后结果: 仍然是 [3, 3, 2]
+  # 每个方向如果想“降 1 档”，所需缩减比例分别是：
+  # - a: 16.47%
+  # - b: 16.47%
+  # - c: 32.28%
+  # 而这次只允许 5% 回退，所以 a/b/c 都不满足降档条件。
+  # 当前代码也确实是“只降对应方向”，不是整组一起降，逻辑在 src/raspa_calc/domain/algorithms/
+  # calculate_params.py:72：
+  # - 先分别算三个方向的 raw_repeats
+  # - 再逐方向生成 mask
+  # - 只有满足条件的那个方向才 -1
   # 例如: 1.01 表示放大 1%，0.99 表示缩小 1%
   unit_cells_cutoff_scale: 0.95
+  unit_cells_edge_only: true 
 
   # 默认分子 (支持多种气体分子，用空格分隔)
   # RASPA2 示例: "CO2" 或 "CO2 CH4 N2"
@@ -65,15 +79,15 @@ calculation:
   default_molecules: "m-xylene o-xylene p-xylene"
 
   # CSV 文件路径 (用于批量处理，指定框架列表)
-  csv_file_path: "/home/zjp/raspa2-calc/.raspa_tools/cif/LCD_5-12_filtered.csv"
+  csv_file_path: "/home/zjp/raspa2-calc/.raspa_tools/cif/PLD_gt5_only843_not_in_LCD_5-12.csv"
   # 框架名称列名（必须与 CSV 文件中的列名完全一致）
   framework_column: "coreid"
 
   # 输出目录名
-  output_directory: "xyleneLCD-trappe-conventional"
+  output_directory: "xylene-PLD_gt5_only843_not_in_LCD_5-12"
 
   # 是否从 CSV 文件读取孔隙率
-  use_void_csv: true
+  use_void_csv: false
 
   # 孔隙率 CSV 文件路径
   void_csv_file: "/home/zjp/raspa2-calc/.raspa_tools/cif/LCD_5-12_filtered.csv"
@@ -84,8 +98,8 @@ calculation:
   # pyMSER 自动平衡
   mser:
     enable: True
-    target_cycles: 6000
-    add_cycles: 1000
+    target_cycles: 10000
+    add_cycles: 2000
     max_iter: 50
     uncertainty: "uSD"   # SD, SE, uSD, uSE
     conda_env: "pymser"  # 包含 pymser 的 conda 环境

@@ -24,6 +24,7 @@ source "$LIB_DIR/status.sh"
 : "${RASPA_OUTPUT_DIR:=}"
 : "${RASPA_NODE_PLAN:=}"
 : "${RASPA_NODE_PRIORITIES:=}"
+: "${RASPA_ALLOWED_NODES:=}"
 
 if [ $# -ge 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
   usage_short
@@ -43,6 +44,7 @@ APPLY_ACTIONS=0
 LIMIT_ONLY=0
 RAW_LIMIT=""
 RAW_SUBDIR=""
+POSITIONAL=()
 
 while [ $# -ge 1 ]; do
   case "${1:-}" in
@@ -56,23 +58,35 @@ while [ $# -ge 1 ]; do
       APPLY_ACTIONS=1; shift || true ;;
     --limit-only)
       LIMIT_ONLY=1; shift || true ;;
-    *) break ;;
+    --)
+      shift || true
+      while [ $# -ge 1 ]; do
+        POSITIONAL+=("$1")
+        shift || true
+      done
+      ;;
+    *)
+      POSITIONAL+=("$1")
+      shift || true ;;
   esac
 done
 
-if [ $# -ge 1 ]; then
-  if [[ "$1" =~ ^[0-9]+$ ]]; then
-    RAW_LIMIT="$1"
-    shift || true
+if [ ${#POSITIONAL[@]} -ge 1 ]; then
+  if [[ "${POSITIONAL[0]}" =~ ^[0-9]+$ ]]; then
+    RAW_LIMIT="${POSITIONAL[0]}"
+    POSITIONAL=("${POSITIONAL[@]:1}")
   fi
 fi
 
-RAW_SUBDIR=${1:-""}
+RAW_SUBDIR="${POSITIONAL[0]:-""}"
 
 ABS_PWD="$(pwd -P)"
 
 # 尝试从配置读取节点优先级，供后续重排/生成计划（支持无 PyYAML 场景的简易解析）
 load_node_priorities
+if [ -n "${RASPA_ALLOWED_NODES:-}" ]; then
+  echo "限制节点白名单: ${RASPA_ALLOWED_NODES}"
+fi
 
 prepare_target_dir
 
@@ -217,19 +231,24 @@ fi
 
 PLAN_FILE="$TARGET_DIR/.raspa_node_plan"
 NODE_PLAN="${RASPA_NODE_PLAN:-}"
+PLAN_REBUILT_ATTEMPTED=0
 # 若用户未显式指定 NODE_PLAN，优先刷新集群信息并基于最新负载生成计划
 if [ "$DO_AUTOSCALE" -eq 1 ]; then
   PY_RES_JSON=$(fetch_cluster_info_json)
 fi
 if [ "$DO_AUTOSCALE" -eq 1 ] && [ -z "$NODE_PLAN" ] && [ -n "$PY_RES_JSON" ]; then
+  PLAN_REBUILT_ATTEMPTED=1
   PLAN_REBUILT=$(build_node_plan "$NEW_LIMIT" "$RASPA_NODE_PRIORITIES" "$PY_RES_JSON" "$NODE_PLAN_MODE")
   if [ -n "$PLAN_REBUILT" ]; then
     NODE_PLAN="$PLAN_REBUILT"
     echo "$NODE_PLAN" > "$PLAN_FILE"
     echo "$(ts) - INFO - 重建节点分配计划: $NODE_PLAN (用于节点倾向分配，不代表本次新增数量)"
+  elif [ -n "${RASPA_ALLOWED_NODES:-}" ]; then
+    rm -f "$PLAN_FILE" 2>/dev/null || true
+    echo "$(ts) - INFO - 限定节点(${RASPA_ALLOWED_NODES}) 当前无可用资源，未生成新的节点分配计划。"
   fi
 fi
-if [ -z "$NODE_PLAN" ] && [ -f "$PLAN_FILE" ]; then
+if [ -z "$NODE_PLAN" ] && [ -f "$PLAN_FILE" ] && ! { [ "$PLAN_REBUILT_ATTEMPTED" -eq 1 ] && [ -n "${RASPA_ALLOWED_NODES:-}" ]; }; then
   NODE_PLAN="$(tr -d ' \t\r\n' < "$PLAN_FILE")"
 fi
 

@@ -63,6 +63,37 @@ calculation:
 ```
 数值越大优先级越高。若 `.raspa_config.yaml` 不存在或未配置 `node_priorities`，工具会在终端输出提示，并按集群可用线程数自动分配。
 
+### 限定节点范围（allowed_nodes）
+
+如果你不是想“优先用某些节点”，而是想“只能在某些节点上跑”，请在任务目录下的 `.raspa_config.yaml` 增加 `allowed_nodes`。
+
+配置示例（只允许一个节点）：
+```yaml
+calculation:
+  allowed_nodes:
+    - worker-node-01
+```
+
+配置示例（允许多个节点，并在允许范围内继续按优先级排序）：
+```yaml
+calculation:
+  allowed_nodes:
+    - worker-node-01
+    - worker-node-03
+  node_priorities:
+    worker-node-03: 4
+    worker-node-01: 2
+```
+
+说明：
+- `allowed_nodes` 是白名单，未列出的节点不会进入 `raspa-scale` 的节点分配计划。
+- `node_priorities` 只在白名单内部生效；它不能代替白名单。
+- 若白名单节点当前都没有可用资源，`raspa-scale` 不会回退到其他节点补交。
+- 也可用环境变量临时覆盖：`export RASPA_ALLOWED_NODES=\"worker-node-01,worker-node-03\"`。
+- 该白名单同时作用于高通量模式和参数筛选模式的小批量初始提交。
+- 当 `raspa-scale` 发现你设置的目标并发低于当前 `__running`，且配置了 `allowed_nodes` 时，会先优先终止白名单外节点上的当前项目作业，再决定是否继续缩容或回补到白名单节点。
+- 当目标并发高于当前 `__running` 时，`raspa-scale` 只会把新增作业补到白名单节点上，用这些节点的空闲核补足并发。
+
 ### 状态监控与排查 (raspa-status)
 `raspa-status` 现已升级，能区分“实际运行”与“SLURM调度”状态：
 - **运行中(__running)**：实际已成功抢到任务锁并开始计算的目录数。

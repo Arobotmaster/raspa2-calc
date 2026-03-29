@@ -30,6 +30,33 @@ def run_parameter_screening(config_path=None):
             if "cache_dir" in calc_config and calc_config["cache_dir"]:
                 os.environ["RASPA_CACHE_DIR"] = calc_config["cache_dir"]
 
+            node_pri_cfg = env_config.get("node_priorities")
+            if (not node_pri_cfg) and isinstance(calc_config.get("node_priorities"), dict):
+                node_pri_cfg = calc_config.get("node_priorities")
+            if isinstance(node_pri_cfg, dict) and node_pri_cfg:
+                parts = []
+                for k, v in node_pri_cfg.items():
+                    try:
+                        parts.append(f"{k}:{int(v)}")
+                    except Exception:
+                        continue
+                if parts:
+                    os.environ["RASPA_NODE_PRIORITIES"] = ",".join(parts)
+
+            allowed_nodes_cfg = (
+                calc_config.get("allowed_nodes")
+                or env_config.get("allowed_nodes")
+                or calc_config.get("node_allowlist")
+                or env_config.get("node_allowlist")
+            )
+            allowed_parts = []
+            if isinstance(allowed_nodes_cfg, str):
+                allowed_parts = [item.strip() for item in allowed_nodes_cfg.split(",") if item.strip()]
+            elif isinstance(allowed_nodes_cfg, (list, tuple)):
+                allowed_parts = [str(item).strip() for item in allowed_nodes_cfg if str(item).strip()]
+            if allowed_parts:
+                os.environ["RASPA_ALLOWED_NODES"] = ",".join(dict.fromkeys(allowed_parts))
+
             if "unit_cells_cutoff_scale" in calc_config:
                 os.environ["RASPA_UNITCELLS_CUTOFF_SCALE"] = str(calc_config["unit_cells_cutoff_scale"])
             else:

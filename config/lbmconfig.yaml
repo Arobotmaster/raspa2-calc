@@ -65,7 +65,7 @@ calculation:
   framework_column: "refcode"
 
   # 输出目录名
-  output_directory: "lbm3775"
+  output_directory: "lbm3775_0.1bar"
 
   # 是否从 CSV 文件读取孔隙率
   use_void_csv: false

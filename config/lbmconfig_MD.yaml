@@ -60,7 +60,7 @@ calculation:
   default_molecules: "Xe Kr"
 
   # CSV 文件路径 (用于批量处理，指定框架列表)
-  csv_file_path: "/home/zjp/raspa2-calc/work/result_3.8_5.2.csv"
+  csv_file_path: "/home/zjp/raspa2-calc/work/lbm3774_MD.csv"
   # 框架名称列名（必须与 CSV 文件中的列名完全一致）
   framework_column: "refcode"
 
@@ -78,7 +78,7 @@ calculation:
 
   # pyMSER 自动平衡
   mser:
-    enable: True
+    enable: false
     target_cycles: 10000
     add_cycles: 3000
     max_iter: 50

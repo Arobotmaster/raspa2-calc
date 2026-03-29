@@ -1,0 +1,33 @@
+{
+  "SimulationType": "MonteCarlo",
+  "NumberOfCycles": 200000,
+  "NumberOfInitializationCycles": 0,
+  "NumberOfEquilibrationCycles": 0,
+  "PrintEvery": 1000,
+  "ForceField": ".",
+  "Systems": [
+    {
+      "Type": "Framework",
+      "Name": "UIO-66_ASR_pacman",
+      "NumberOfUnitCells": [
+        2,
+        2,
+        2
+      ],
+      "ExternalTemperature": 298.0,
+      "ExternalPressure": 100000.0,
+      "ChargeMethod": "None",
+      "HeliumVoidFraction": 0.5
+    }
+  ],
+  "Components": [
+    {
+      "Name": "ECH",
+      "TranslationProbability": 0.5,
+      "RotationProbability": 0.5,
+      "ReinsertionProbability": 0.5,
+      "SwapProbability": 1.0,
+      "CreateNumberOfMolecules": 0
+    }
+  ]
+}

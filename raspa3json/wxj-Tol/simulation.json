@@ -1,0 +1,31 @@
+{
+  "SimulationType" : "MonteCarlo",
+  "NumberOfCycles" : 50000,
+  "NumberOfInitializationCycles" : 10000,
+  "PrintEvery" : 5000,
+  
+  "Systems" : [
+    {
+      "Type" : "Framework",
+      "Name" : "IRMOF-1",
+      "NumberOfUnitCells" : [1, 1, 1],
+      "HeliumVoidFraction" : 0.81,
+      "ChargeMethod" : "Ewald",
+      "ExternalTemperature" : 298.0,
+      "ExternalPressure" : 10000
+    }
+  ],
+
+   "Components" : [ 
+    {
+      "Name" : "toluene",
+      "FugacityCoefficient" : 1.0,
+      "IdealGasRosenbluthWeight" : 1.0,
+      "TranslationProbability" : 0.5,
+      "ReinsertionProbability" : 0.5,
+      "SwapProbability" : 1.0,
+      "WidomProbability" : 1.0,
+      "CreateNuMberofmolecules" : 0
+    }
+  ]
+}

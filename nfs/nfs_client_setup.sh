@@ -45,10 +45,11 @@ done
 echo "=== 配置/修复 NFS 客户端 ==="
 
 NFS_SERVER="${NFS_SERVER:-10.10.14.12}"
-NFS_EXPORT="${NFS_EXPORT:-/shared/raspa2-calc}"
+NFS_EXPORT="${NFS_EXPORT:-/srv/raspa2-calc}"
 MOUNTPOINT="${MOUNTPOINT:-/home/zjp/raspa2-calc}"
 WORK_DIR="${WORK_DIR:-${MOUNTPOINT}/work}"
-NFS_WORK_EXPORT="${NFS_WORK_EXPORT:-}"
+# work 目录使用 Mount Overlay：挂载到 /srv/raspa2-calc-work，覆盖 /srv/raspa2-calc 下的空 work 子目录
+NFS_WORK_EXPORT="${NFS_WORK_EXPORT:-/srv/raspa2-calc-work}"
 NFS_WORK_MOUNT="${NFS_WORK_MOUNT:-${MOUNTPOINT}/work}"
 DEFAULT_MOUNT_OPTS="rw,relatime,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,local_lock=none,noatime,nodiratime"
 MOUNT_OPTS_PREFERRED="${DEFAULT_MOUNT_OPTS},nconnect=4"
@@ -56,6 +57,14 @@ MOUNT_OPTS_FINAL=""
 
 is_mounted() {
   grep -qsE "^[^ ]+ ${MOUNTPOINT} " /proc/mounts
+}
+
+is_work_mounted() {
+  grep -qsE "^[^ ]+ ${NFS_WORK_MOUNT} " /proc/mounts
+}
+
+is_work_healthy() {
+  timeout 2 ls -ld "${NFS_WORK_MOUNT}" >/dev/null 2>&1
 }
 
 is_healthy() {
@@ -78,8 +87,20 @@ if is_mounted; then
   if [[ "${RECOVER}" = "1" ]] || ! is_healthy; then
     echo "检测到挂载异常/需要恢复，执行重挂载（可能修复 Stale file handle）..."
     sudo umount -fl "${MOUNTPOINT}" || sudo umount -l "${MOUNTPOINT}" || true
+    # 同时处理 work 目录的 overlay 挂载
+    if is_work_mounted || [[ -n "${NFS_WORK_EXPORT}" ]]; then
+      echo "  同步处理 work 目录挂载..."
+      sudo umount -fl "${NFS_WORK_MOUNT}" || sudo umount -l "${NFS_WORK_MOUNT}" || true
+    fi
   else
     echo "已挂载且状态正常，跳过重挂载。"
+    # 即使主挂载健康，也检查 work 目录是否缺失 overlay
+    if [[ -n "${NFS_WORK_EXPORT}" ]] && ! is_work_mounted; then
+      echo "  [警告] work 目录挂载缺失，将重新挂载..."
+      sudo mkdir -p "${NFS_WORK_MOUNT}"
+      sudo mount -t nfs4 -o "${DEFAULT_MOUNT_OPTS}" \
+        "${NFS_SERVER}:${NFS_WORK_EXPORT}" "${NFS_WORK_MOUNT}" || true
+    fi
   fi
 fi
 

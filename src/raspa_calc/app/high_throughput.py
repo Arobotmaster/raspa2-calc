@@ -117,6 +117,21 @@ def run_high_throughput(config_path=None):
                     if parts:
                         os.environ["RASPA_NODE_PRIORITIES"] = ",".join(parts)
 
+            if "RASPA_ALLOWED_NODES" not in os.environ:
+                allowed_nodes_cfg = (
+                    calc_config.get("allowed_nodes")
+                    or env_config.get("allowed_nodes")
+                    or calc_config.get("node_allowlist")
+                    or env_config.get("node_allowlist")
+                )
+                allowed_parts = []
+                if isinstance(allowed_nodes_cfg, str):
+                    allowed_parts = [item.strip() for item in allowed_nodes_cfg.split(",") if item.strip()]
+                elif isinstance(allowed_nodes_cfg, (list, tuple)):
+                    allowed_parts = [str(item).strip() for item in allowed_nodes_cfg if str(item).strip()]
+                if allowed_parts:
+                    os.environ["RASPA_ALLOWED_NODES"] = ",".join(dict.fromkeys(allowed_parts))
+
             if "use_void_csv" in calc_config:
                 os.environ["RASPA_USE_VOID_CSV"] = str(calc_config["use_void_csv"]).lower()
 

@@ -8,7 +8,7 @@ build_node_plan() {
   local py_json="$3"
   local mode="$4"
 
-  NODE_PLAN_LIMIT="$limit" PRIORITIES="$priorities" PY_JSON="$py_json" PLAN_MODE="$mode" python - <<'PY' 2>/dev/null || true
+  NODE_PLAN_LIMIT="$limit" PRIORITIES="$priorities" ALLOWED_NODES="${RASPA_ALLOWED_NODES:-}" PY_JSON="$py_json" PLAN_MODE="$mode" python - <<'PY' 2>/dev/null || true
 import os, json, math
 
 def parse_prio(raw):
@@ -26,13 +26,26 @@ def parse_prio(raw):
             continue
     return pr
 
+def parse_allowed(raw):
+    allowed = []
+    if not raw:
+        return allowed
+    for part in raw.split(','):
+        name = part.strip()
+        if name:
+            allowed.append(name)
+    return list(dict.fromkeys(allowed))
+
 data = os.environ.get("PY_JSON", "")
 limit = int(os.environ.get("NODE_PLAN_LIMIT", "0") or 0)
 prio = parse_prio(os.environ.get("PRIORITIES", ""))
+allowed = set(parse_allowed(os.environ.get("ALLOWED_NODES", "")))
 if not data or limit <= 0:
     raise SystemExit
 info = json.loads(data)
 nodes = info.get("nodes") or []
+if allowed:
+    nodes = [n for n in nodes if (n.get("node") or "") in allowed]
 if not nodes:
     raise SystemExit
 

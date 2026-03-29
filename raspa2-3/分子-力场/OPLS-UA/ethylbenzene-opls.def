@@ -1,0 +1,44 @@
+# critical constants: Temperature [T], Pressure [Pa], and Acentric factor [-]. Created by AutoFF
+617.12
+3622400.00
+0.3050
+#Number Of Atoms
+13
+#Number Of Group
+1
+# ethy-group
+rigid
+#number of atoms
+13
+# atomic positions
+0      C_aro         0.5807   -0.0130    0.2884
+1      C_aro        -0.0924    1.2082    0.1621
+2      C_aro        -1.4683    1.2256   -0.0960
+3      C_aro        -1.4981   -1.1991   -0.1015
+4      C_aro        -2.1712    0.0220   -0.2278
+5      C_aro        -0.1222   -1.2166    0.1566
+6      CH2_aro       2.0941   -0.0323    0.5725
+7      CH3_sp3       2.9692   -0.0403   -0.6947
+8      H_aro         0.4501    2.1366    0.2621
+9      H_aro        -1.9874    2.1676   -0.1939
+10     H_aro        -3.2325    0.0355   -0.4272
+11     H_aro        -2.0402   -2.1276   -0.2037
+12     H_aro         0.3973   -2.1586    0.2523
+# Chiralcenters Bond BondDipoles Bend UrayBradley InvBend Torsion Imp.Torsion Bond/Bond Stretch/Bend Bend/Bend Stretch/Torsion Bend/Torsion IntraVDW IntraCoulomb
+0  13  0  0  0  0  0  0  0  0  0  0  0  0
+# Bond stretch: atom n1-n2, type, parameters
+0          1          RIGID_BOND
+1          2          RIGID_BOND
+2          3          RIGID_BOND
+3          4          RIGID_BOND
+4          5          RIGID_BOND
+5          0          RIGID_BOND
+0          6          RIGID_BOND
+6          7          RIGID_BOND
+1          8          RIGID_BOND
+2          9          RIGID_BOND
+3          10         RIGID_BOND
+4          11         RIGID_BOND
+5          12         RIGID_BOND
+# Number of config moves
+0

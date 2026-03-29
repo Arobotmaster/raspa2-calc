@@ -78,6 +78,12 @@ submit_missing() {
   if [ -z "$NODE_PLAN" ] && [ -n "$PY_RES_JSON" ] && [ "$NEW_LIMIT" -gt 0 ]; then
     NODE_PLAN=$(build_node_plan "$NEW_LIMIT" "$RASPA_NODE_PRIORITIES" "$PY_RES_JSON" "$NODE_PLAN_MODE")
   fi
+  if [ -z "$NODE_PLAN" ] && [ -n "${RASPA_ALLOWED_NODES:-}" ]; then
+    echo "提示: 限定节点(${RASPA_ALLOWED_NODES}) 当前无可用资源，本轮不补交新作业。"
+    rm -f "$JOBS_BUF" 2>/dev/null || true
+    rm -f "$TMP_SCRIPT" 2>/dev/null || true
+    return 0
+  fi
   if [ -n "$NODE_PLAN" ]; then
     local PRIORITY_RAW="${RASPA_NODE_PRIORITIES:-}"
     # 构建 TPC_MAP 字符串供 Python 使用
@@ -374,55 +380,34 @@ PY
   rm -f "$TMP_SCRIPT" 2>/dev/null || true
 }
 
-# 读取当前活跃作业列表，并估算活跃 worker 数
-LIVE=0
-LIST_FILE="$TARGET_DIR/.raspa_queue/tasks.list"
-LIST_MODE=0
-if [ -f "$LIST_FILE" ] && grep -q '[^[:space:]]' "$LIST_FILE" 2>/dev/null; then
-  LIST_MODE=1
-fi
-if [ "$LIST_MODE" -eq 1 ]; then
-  INITIAL_RUNNING=$(LIST_FILE="$LIST_FILE" TARGET_DIR="$TARGET_DIR" python - <<'PY' 2>/dev/null || true
-import os
-
-base = os.environ.get("TARGET_DIR", "")
-list_file = os.environ.get("LIST_FILE", "")
-count = 0
-if base and list_file and os.path.isfile(list_file):
-    try:
-        with open(list_file, "r", encoding="utf-8") as fh:
-            for line in fh:
-                rel = line.strip()
-                if not rel:
-                    continue
-                run_path = os.path.join(base, rel.rstrip("/")) + "__running"
-                if os.path.isdir(run_path):
-                    count += 1
-    except Exception:
-        pass
-print(count)
-PY
-  )
-else
-  INITIAL_RUNNING=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}' || true)
-fi
-if ! [[ "${INITIAL_RUNNING:-}" =~ ^[0-9]+$ ]]; then
-  INITIAL_RUNNING=0
-fi
-ACTIVE_FILE="$WORKERS_DIR/.active_jobs.tsv"
-ACTIVE_WORKERS_FILE="$WORKERS_DIR/.active_workers.list"
-ACTIVE_RUN_FILE="$WORKERS_DIR/.active_jobs_running.tsv"
-: > "$ACTIVE_FILE"
-: > "$ACTIVE_WORKERS_FILE"
-: > "$ACTIVE_RUN_FILE"
-SQUEUE_OK=0
-if command -v squeue >/dev/null 2>&1; then
-  if squeue -u "$USER" -h -o "%i" >/dev/null 2>&1; then
-    SQUEUE_OK=1
+SCALE_KILL_APPROVED=0
+confirm_scale_kill() {
+  local prompt="$1"
+  if [ "$SCALE_KILL_APPROVED" -eq 1 ]; then
+    return 0
   fi
-fi
-if [ "$SQUEUE_OK" -eq 1 ]; then
-  PY_TARGET="$TARGET_DIR" PY_USER="$USER" python - <<'PY' 2>/dev/null > "$ACTIVE_FILE" || true
+  if [ "${RASPA_SCALE_KILL_FORCE:-0}" -eq 1 ]; then
+    SCALE_KILL_APPROVED=1
+    return 0
+  fi
+  if [ -t 0 ]; then
+    read -r -p "$prompt [y/N]: " confirm
+    if [[ "${confirm:-}" =~ ^[Yy]$ ]]; then
+      SCALE_KILL_APPROVED=1
+      return 0
+    fi
+    return 1
+  fi
+  echo "提示: 非交互模式默认不执行缩容（可设置 RASPA_SCALE_KILL_FORCE=1 强制执行）"
+  return 1
+}
+
+refresh_active_tracking() {
+  : > "$ACTIVE_FILE"
+  : > "$ACTIVE_WORKERS_FILE"
+  : > "$ACTIVE_RUN_FILE"
+  if [ "$SQUEUE_OK" -eq 1 ]; then
+    PY_TARGET="$TARGET_DIR" PY_USER="$USER" python - <<'PY' 2>/dev/null > "$ACTIVE_FILE" || true
 import os, subprocess, sys
 
 target = os.environ.get("PY_TARGET", "").rstrip("/") + "/"
@@ -448,7 +433,7 @@ for raw in out.splitlines():
   if stdout.startswith(target):
       print(f"{jid} {name} {stdout}")
 PY
-  PY_TARGET="$TARGET_DIR" PY_USER="$USER" SQUEUE_STATE="R" python - <<'PY' 2>/dev/null > "$ACTIVE_RUN_FILE" || true
+    PY_TARGET="$TARGET_DIR" PY_USER="$USER" SQUEUE_STATE="R" python - <<'PY' 2>/dev/null > "$ACTIVE_RUN_FILE" || true
 import os, subprocess, sys
 
 target = os.environ.get("PY_TARGET", "").rstrip("/") + "/"
@@ -474,14 +459,14 @@ for raw in out.splitlines():
   if stdout.startswith(target):
       print(f"{jid} {name} {stdout}")
 PY
-fi
-LIVE_WORKERS=0
-LIVE_JOBS=0
-EXPANDED_THIS_ROUND=0
-if [ -s "$ACTIVE_FILE" ]; then
-  LIVE_JOBS=$(wc -l < "$ACTIVE_FILE" 2>/dev/null || echo 0)
-  LIVE=$(wc -l < "$ACTIVE_FILE" 2>/dev/null || echo 0)
-  LIVE_WORKERS=$(ACTIVE_PATH="$ACTIVE_FILE" JOBS_PATH="$JOBS_FILE" DUMP_PATH="$ACTIVE_WORKERS_FILE" python - <<'PY' 2>/dev/null || true
+  fi
+  LIVE_WORKERS=0
+  LIVE_JOBS=0
+  LIVE=0
+  if [ -s "$ACTIVE_FILE" ]; then
+    LIVE_JOBS=$(wc -l < "$ACTIVE_FILE" 2>/dev/null || echo 0)
+    LIVE=$(wc -l < "$ACTIVE_FILE" 2>/dev/null || echo 0)
+    LIVE_WORKERS=$(ACTIVE_PATH="$ACTIVE_FILE" JOBS_PATH="$JOBS_FILE" DUMP_PATH="$ACTIVE_WORKERS_FILE" python - <<'PY' 2>/dev/null || true
 import os, re
 
 active_path = os.environ.get("ACTIVE_PATH", "")
@@ -522,29 +507,74 @@ if dump_path:
       pass
 print(len(ids))
 PY
-  )
-fi
-# 若过滤列表为空，则回退到 .raspa_jobs 与 squeue 的交集估计
-if [ "$LIVE" -le 0 ] && [ -f "$JOBS_FILE" ] && [ "$SQUEUE_OK" -eq 1 ]; then
-  mapfile -t ALL_MY_JOBS < <(squeue -u "$USER" -h -o "%i" 2>/dev/null | sort -u || true)
-  mapfile -t TRACKED < <(awk '{print $1}' "$JOBS_FILE" | sort -u || true)
-  if [ ${#ALL_MY_JOBS[@]} -gt 0 ] && [ ${#TRACKED[@]} -gt 0 ]; then
-    LIVE=$(comm -12 <(printf "%s\n" "${ALL_MY_JOBS[@]}") <(printf "%s\n" "${TRACKED[@]}" ) | wc -l || true)
-    if ! [[ "${LIVE:-}" =~ ^[0-9]+$ ]]; then
-      LIVE=0
+    )
+  fi
+  if [ "$LIVE" -le 0 ] && [ -f "$JOBS_FILE" ] && [ "$SQUEUE_OK" -eq 1 ]; then
+    mapfile -t ALL_MY_JOBS < <(squeue -u "$USER" -h -o "%i" 2>/dev/null | sort -u || true)
+    mapfile -t TRACKED < <(awk '{print $1}' "$JOBS_FILE" | sort -u || true)
+    if [ ${#ALL_MY_JOBS[@]} -gt 0 ] && [ ${#TRACKED[@]} -gt 0 ]; then
+      LIVE=$(comm -12 <(printf "%s\n" "${ALL_MY_JOBS[@]}") <(printf "%s\n" "${TRACKED[@]}" ) | wc -l || true)
+      if ! [[ "${LIVE:-}" =~ ^[0-9]+$ ]]; then
+        LIVE=0
+      fi
     fi
   fi
+  if [ "$LIVE_WORKERS" -gt 0 ]; then
+    LIVE=$LIVE_WORKERS
+  elif [ "$SQUEUE_OK" -eq 0 ] && [ "${INITIAL_RUNNING:-0}" -gt "$LIVE" ]; then
+    LIVE=$INITIAL_RUNNING
+  fi
+  if [ "$LIVE_WORKERS" -le 0 ] && [ "$LIVE" -gt 0 ]; then
+    LIVE_WORKERS="$LIVE"
+  fi
+}
+
+# 读取当前活跃作业列表，并估算活跃 worker 数
+LIVE=0
+LIST_FILE="$TARGET_DIR/.raspa_queue/tasks.list"
+LIST_MODE=0
+if [ -f "$LIST_FILE" ] && grep -q '[^[:space:]]' "$LIST_FILE" 2>/dev/null; then
+  LIST_MODE=1
 fi
-# 若仍为0，则用 __running 目录兜底；否则优先使用 worker 计数
-if [ "$LIVE_WORKERS" -gt 0 ]; then
-  LIVE=$LIVE_WORKERS
-elif [ "$SQUEUE_OK" -eq 0 ] && [ "$INITIAL_RUNNING" -gt "$LIVE" ]; then
-  LIVE=$INITIAL_RUNNING
+if [ "$LIST_MODE" -eq 1 ]; then
+  INITIAL_RUNNING=$(LIST_FILE="$LIST_FILE" TARGET_DIR="$TARGET_DIR" python - <<'PY' 2>/dev/null || true
+import os
+
+base = os.environ.get("TARGET_DIR", "")
+list_file = os.environ.get("LIST_FILE", "")
+count = 0
+if base and list_file and os.path.isfile(list_file):
+    try:
+        with open(list_file, "r", encoding="utf-8") as fh:
+            for line in fh:
+                rel = line.strip()
+                if not rel:
+                    continue
+                run_path = os.path.join(base, rel.rstrip("/")) + "__running"
+                if os.path.isdir(run_path):
+                    count += 1
+    except Exception:
+        pass
+print(count)
+PY
+  )
+else
+  INITIAL_RUNNING=$(find "$TARGET_DIR" -maxdepth 1 -type d -name 'mc*__running' 2>/dev/null | wc -l | awk '{print $1}' || true)
 fi
-# 补充 worker 计数，确保后续缩容按“实际 worker 数”计算
-if [ "$LIVE_WORKERS" -le 0 ] && [ "$LIVE" -gt 0 ]; then
-  LIVE_WORKERS="$LIVE"
+if ! [[ "${INITIAL_RUNNING:-}" =~ ^[0-9]+$ ]]; then
+  INITIAL_RUNNING=0
 fi
+ACTIVE_FILE="$WORKERS_DIR/.active_jobs.tsv"
+ACTIVE_WORKERS_FILE="$WORKERS_DIR/.active_workers.list"
+ACTIVE_RUN_FILE="$WORKERS_DIR/.active_jobs_running.tsv"
+SQUEUE_OK=0
+if command -v squeue >/dev/null 2>&1; then
+  if squeue -u "$USER" -h -o "%i" >/dev/null 2>&1; then
+    SQUEUE_OK=1
+  fi
+fi
+refresh_active_tracking
+EXPANDED_THIS_ROUND=0
 TOTAL_LIVE_WORKERS="$LIVE_WORKERS"
 
 # 若调度器未发现任何相关作业，但目录中仍有 __running 标记，视为孤儿并恢复为待处理
@@ -775,6 +805,111 @@ if [ -s "$JOBS_FILE" ]; then
   fi
 fi
 
+# 白名单收敛：当用户下调并发且配置了 allowed_nodes 时，优先清理白名单外节点上的运行中作业
+DISALLOWED_JOBS_FILE="$WORKERS_DIR/.kill_jobs_disallowed.tsv"
+: > "$DISALLOWED_JOBS_FILE"
+DISALLOWED_JOB_COUNT=0
+DISALLOWED_WORKERS=0
+DISALLOWED_NODE_SUMMARY=""
+if [ -n "${RASPA_ALLOWED_NODES:-}" ] && [ "$NEW_LIMIT" -lt "$RUNNING_COUNT" ] && [ -s "$JOBS_FILE" ] && [ "$SQUEUE_OK" -eq 1 ]; then
+  TARGET_DIR_ENV="$TARGET_DIR" JOBS_PATH_ENV="$JOBS_FILE" ALLOWED_NODES_ENV="$RASPA_ALLOWED_NODES" PY_USER="$USER" python - "$DISALLOWED_JOBS_FILE" <<'PY' 2>/dev/null || true
+import os
+import re
+import subprocess
+import sys
+
+out_path = sys.argv[1]
+target_dir = os.environ.get("TARGET_DIR_ENV", "").rstrip("/")
+jobs_path = os.environ.get("JOBS_PATH_ENV", "")
+allowed_raw = os.environ.get("ALLOWED_NODES_ENV", "")
+user = os.environ.get("PY_USER", "")
+csv_re = re.compile(r"^[0-9]+(,[0-9]+)*$")
+
+def normalize_nodes(text):
+    return {item.strip() for item in text.split(",") if item.strip()}
+
+allowed_nodes = normalize_nodes(allowed_raw)
+target_prefix = target_dir + "/"
+
+tracked_jobs = {}
+array_jobs = set()
+if jobs_path and os.path.exists(jobs_path):
+    with open(jobs_path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            parts = raw.strip().split()
+            if len(parts) < 2:
+                continue
+            jid, name = parts[0], parts[1]
+            worker_csv = parts[3] if len(parts) >= 4 else ""
+            ids = []
+            if worker_csv and csv_re.match(worker_csv):
+                ids = [int(x) for x in worker_csv.split(",") if x.isdigit()]
+            elif name.isdigit():
+                ids = [int(name)]
+            tracked_jobs[jid] = ids
+            if worker_csv == "array":
+                array_jobs.add(jid)
+
+try:
+    out = subprocess.check_output(
+        ["squeue", "-u", user, "-h", "-t", "R", "-O", "jobid:30,nodelist:80,stdout:400"],
+        stderr=subprocess.DEVNULL,
+    ).decode(errors="ignore")
+except Exception:
+    sys.exit(0)
+
+rows = []
+seen = set()
+for raw in out.splitlines():
+    parts = raw.strip().split(None, 2)
+    if len(parts) < 3:
+        continue
+    jid, node, stdout = parts[0], parts[1], parts[2]
+    if not stdout.startswith(target_prefix):
+        continue
+    base_jid = jid.split("_", 1)[0]
+    if tracked_jobs and jid not in tracked_jobs and base_jid not in tracked_jobs and base_jid not in array_jobs:
+        continue
+    node_name = node.split(",", 1)[0].split("+", 1)[0].strip()
+    if not node_name or node_name in ("N/A", "(null)", "None"):
+        continue
+    if node_name in allowed_nodes:
+        continue
+    ids = tracked_jobs.get(jid) or tracked_jobs.get(base_jid) or []
+    worker_count = len(ids) if ids else 1
+    if jid in seen:
+        continue
+    seen.add(jid)
+    rows.append((jid, node_name, worker_count))
+
+with open(out_path, "w", encoding="utf-8") as fh:
+    for jid, node_name, worker_count in rows:
+        fh.write(f"{jid} {node_name} {worker_count}\n")
+PY
+  if [ -s "$DISALLOWED_JOBS_FILE" ]; then
+    DISALLOWED_JOB_COUNT=$(wc -l < "$DISALLOWED_JOBS_FILE" 2>/dev/null || echo 0)
+    DISALLOWED_WORKERS=$(awk '{s+=$3} END{print s+0}' "$DISALLOWED_JOBS_FILE" 2>/dev/null || echo 0)
+    DISALLOWED_NODE_SUMMARY=$(awk '{c[$2]++} END {sep=""; for (n in c) {printf "%s%s:%d", sep, n, c[n]; sep=","}}' "$DISALLOWED_JOBS_FILE" 2>/dev/null || true)
+    echo "节点收敛: 白名单(${RASPA_ALLOWED_NODES}) 外仍有运行中作业 job=${DISALLOWED_JOB_COUNT}, worker≈${DISALLOWED_WORKERS}${DISALLOWED_NODE_SUMMARY:+, 节点=${DISALLOWED_NODE_SUMMARY}}"
+    if ! confirm_scale_kill "确认按节点白名单优先回收这些白名单外作业？"; then
+      echo "已取消缩容/节点收敛（未执行 scancel）。"
+      exit 0
+    fi
+    while read -r jid node_name worker_count; do
+      [ -n "$jid" ] || continue
+      echo "节点收敛: scancel $jid  # node=$node_name worker≈$worker_count"
+      scancel "$jid" || true
+    done < "$DISALLOWED_JOBS_FILE"
+    SCANCEL_WAIT="${RASPA_SCALE_SCANCEL_WAIT:-2}"
+    if [ -n "$SCANCEL_WAIT" ] && [[ "$SCANCEL_WAIT" =~ ^[0-9]+([.][0-9]+)?$ ]] && [ "$SCANCEL_WAIT" != "0" ] && [ "$SCANCEL_WAIT" != "0.0" ]; then
+      sleep "$SCANCEL_WAIT"
+    fi
+    refresh_active_tracking
+    scan_task_counts "$TARGET_DIR"
+    echo "节点收敛: 已提交终止 ${DISALLOWED_JOB_COUNT} 个白名单外作业，当前活跃worker=${LIVE_WORKERS:-0}, __running=${RUNNING_COUNT}"
+  fi
+fi
+
 # 缩容：按运行中或活跃 worker 数计算缺口，优先回收 worker_id 大于目标的作业
 SHRINK_MODE_RAW="${RASPA_SCALE_SHRINK_MODE:-running}"
 SHRINK_MODE="$(printf "%s" "$SHRINK_MODE_RAW" | tr '[:upper:]' '[:lower:]')"
@@ -806,17 +941,9 @@ fi
 if [ -s "$JOBS_FILE" ] && [ "$EXCESS_WORKERS" -gt 0 ]; then
 
   SKIP_SHRINK=0
-  if [ "${RASPA_SCALE_KILL_FORCE:-0}" -ne 1 ]; then
-    if [ -t 0 ]; then
-      read -r -p "确认缩容并终止约 ${EXCESS_WORKERS} 个 worker 对应作业? [y/N]: " confirm
-      if [[ ! "${confirm:-}" =~ ^[Yy]$ ]]; then
-        echo "已取消缩容（未执行 scancel）。"
-        SKIP_SHRINK=1
-      fi
-    else
-      echo "提示: 非交互模式默认不执行缩容（可设置 RASPA_SCALE_KILL_FORCE=1 强制执行）"
-      SKIP_SHRINK=1
-    fi
+  if ! confirm_scale_kill "确认缩容并终止约 ${EXCESS_WORKERS} 个 worker 对应作业?"; then
+    echo "已取消缩容（未执行 scancel）。"
+    SKIP_SHRINK=1
   fi
   if [ "$SKIP_SHRINK" -eq 1 ]; then
     # 不缩容时直接跳过终止逻辑
@@ -961,79 +1088,7 @@ PY
     if [ -n "$SCANCEL_WAIT" ] && [[ "$SCANCEL_WAIT" =~ ^[0-9]+([.][0-9]+)?$ ]] && [ "$SCANCEL_WAIT" != "0" ] && [ "$SCANCEL_WAIT" != "0.0" ]; then
       sleep "$SCANCEL_WAIT"
     fi
-    : > "$ACTIVE_FILE"
-    : > "$ACTIVE_WORKERS_FILE"
-    if [ "$SQUEUE_OK" -eq 1 ]; then
-      PY_TARGET="$TARGET_DIR" PY_USER="$USER" python - <<'PY' 2>/dev/null > "$ACTIVE_FILE" || true
-import os, subprocess, sys
-
-target = os.environ.get("PY_TARGET", "").rstrip("/") + "/"
-user = os.environ.get("PY_USER", "")
-if not target or not user:
-  sys.exit(0)
-
-try:
-  out = subprocess.check_output(
-      ["squeue", "-u", user, "-h", "-O", "jobid:20,name:40,stdout:400"],
-      stderr=subprocess.DEVNULL,
-  ).decode(errors="ignore")
-except Exception:
-  sys.exit(0)
-
-for raw in out.splitlines():
-  parts = raw.strip().split(None, 2)
-  if len(parts) < 3:
-      continue
-  jid, name, stdout = parts[0], parts[1], parts[2]
-  if stdout.startswith(target):
-      print(f"{jid} {name} {stdout}")
-PY
-    fi
-    if [ -s "$ACTIVE_FILE" ]; then
-      LIVE_JOBS=$(wc -l < "$ACTIVE_FILE" 2>/dev/null || echo 0)
-      LIVE_WORKERS=$(ACTIVE_PATH="$ACTIVE_FILE" JOBS_PATH="$JOBS_FILE" DUMP_PATH="$ACTIVE_WORKERS_FILE" python - <<'PY' 2>/dev/null || true
-import os, re
-
-active_path = os.environ.get("ACTIVE_PATH", "")
-jobs_path = os.environ.get("JOBS_PATH", "")
-dump_path = os.environ.get("DUMP_PATH", "")
-csv_re = re.compile(r"^[0-9]+(,[0-9]+)*$")
-
-job_map = {}
-if jobs_path and os.path.exists(jobs_path):
-  with open(jobs_path, "r", encoding="utf-8") as fh:
-      for raw in fh:
-          parts = raw.strip().split()
-          if len(parts) < 2:
-              continue
-          jid = parts[0]
-          worker_csv = parts[3] if len(parts) >= 4 else ""
-          job_map[jid] = worker_csv or parts[1]
-
-ids = set()
-if active_path and os.path.exists(active_path):
-  with open(active_path, "r", encoding="utf-8") as fh:
-      for raw in fh:
-          parts = raw.strip().split()
-          if len(parts) < 2:
-              continue
-          jid, name = parts[0], parts[1]
-          csv_val = job_map.get(jid, "")
-          if csv_val and csv_re.match(csv_val):
-              ids.update(int(x) for x in csv_val.split(",") if x.isdigit())
-          elif name.isdigit():
-              ids.add(int(name))
-if dump_path:
-  try:
-      with open(dump_path, "w", encoding="utf-8") as fh:
-          for i in sorted(ids):
-              fh.write(f"{i}\n")
-  except Exception:
-      pass
-print(len(ids))
-PY
-      )
-    fi
+    refresh_active_tracking
   else
     echo "缩容: 未找到可终止的作业条目（可能未在调度器中找到 StdOut 位于本目录的作业）。"
   fi

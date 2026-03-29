@@ -7,6 +7,15 @@ from raspa_calc.runtime import config as common_config
 from .logging_utils import logger
 
 
+def _normalize_node_list(value):
+    nodes = []
+    if isinstance(value, str):
+        nodes = [item.strip() for item in value.split(",") if item.strip()]
+    elif isinstance(value, (list, tuple)):
+        nodes = [str(item).strip() for item in value if str(item).strip()]
+    return list(dict.fromkeys(nodes))
+
+
 def parse_node_priorities(raw=None):
     """Parse node priorities from env string 'node:priority,...'."""
     text = raw if raw is not None else os.environ.get("RASPA_NODE_PRIORITIES", "")
@@ -77,6 +86,70 @@ def parse_node_priorities(raw=None):
         if name:
             priorities[name] = prio
     return priorities
+
+
+def parse_allowed_nodes(raw=None):
+    """Parse allowed nodes from env string or config."""
+    text = raw if raw is not None else os.environ.get("RASPA_ALLOWED_NODES", "")
+    allowed_nodes = _normalize_node_list(text)
+    if allowed_nodes:
+        return allowed_nodes
+
+    config, _ = common_config.load_config()
+    if config:
+        env = config.get("environment") or {}
+        calc = config.get("calculation") or {}
+        allowed = (
+            calc.get("allowed_nodes")
+            or env.get("allowed_nodes")
+            or calc.get("node_allowlist")
+            or env.get("node_allowlist")
+        )
+        allowed_nodes = _normalize_node_list(allowed)
+        if allowed_nodes:
+            return allowed_nodes
+
+    for path in common_config.resolve_config_paths():
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+        except Exception:
+            continue
+
+        inside = False
+        indent = None
+        inline_nodes = []
+        list_nodes = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            cur_indent = len(line) - len(line.lstrip())
+            if "allowed_nodes:" in line or "node_allowlist:" in line:
+                inside = True
+                indent = cur_indent
+                inline_nodes = _normalize_node_list(line.split(":", 1)[1].strip())
+                list_nodes = []
+                if inline_nodes:
+                    break
+                continue
+            if not inside:
+                continue
+            if indent is not None and cur_indent <= indent:
+                break
+            if stripped.startswith("- "):
+                item = stripped[2:].strip()
+                if item:
+                    list_nodes.append(item)
+            elif ":" in stripped:
+                break
+        allowed_nodes = _normalize_node_list(inline_nodes or list_nodes)
+        if allowed_nodes:
+            return allowed_nodes
+
+    return []
 
 
 def _get_slurm_summary():
@@ -155,6 +228,7 @@ def get_slurm_cluster_resources():
         total_cpus = allocated_cpus = other_cpus = 0
         total_free_cpus = 0
         nodes = []
+        seen_nodes = set()
 
         for line in result.stdout.strip().splitlines():
             parts = line.strip().split("|")
@@ -162,6 +236,10 @@ def get_slurm_cluster_resources():
                 continue
 
             node_name = parts[0]
+            # sinfo 在部分环境会为同一节点输出多行（例如多分区），避免重复计入
+            if node_name in seen_nodes:
+                continue
+            seen_nodes.add(node_name)
             try:
                 node_total = int(parts[1])
             except ValueError:
@@ -281,9 +359,17 @@ def build_node_plan(cluster_info, cpu_cores):
         return "", []
 
     priority_map = parse_node_priorities()
+    allowed_nodes = parse_allowed_nodes()
     if priority_map:
         ordered_items = ", ".join(f"{name}:{prio}" for name, prio in sorted(priority_map.items(), key=lambda x: -x[1]))
         logger.info(f"应用节点优先级: {ordered_items}")
+    if allowed_nodes:
+        logger.info(f"限制可用节点: {', '.join(allowed_nodes)}")
+        allowed_set = set(allowed_nodes)
+        nodes = [node for node in nodes if node.get("node") in allowed_set]
+        if not nodes:
+            logger.warning("限定节点列表内没有可用节点，节点分配计划为空")
+            return "", []
 
     def node_priority(node):
         return priority_map.get(node.get("node"), 0)
@@ -351,25 +437,29 @@ def build_node_plan(cluster_info, cpu_cores):
         ),
     )
     plan_counts = OrderedDict()
-    plan_queue = []
+    assigned_by_node = {}
     remaining = cpu_cores
 
+    # 第一轮：按有效容量（更保守）分配
     for node in ordered_nodes:
         if remaining <= 0:
             break
-        cap = int(node.get("_effective_free", 0) or 0)
-        if cap < 0:
-            cap = 0
-        if cap <= 0:
+        node_name = node["node"]
+        cap = max(0, int(node.get("_effective_free", 0) or 0))
+        if cap == 0:
             continue
         take = min(cap, remaining)
-        plan_queue.extend([node["node"]] * take)
+        if take > 0:
+            assigned_by_node[node_name] = assigned_by_node.get(node_name, 0) + take
+            plan_counts[node_name] = assigned_by_node[node_name]
         remaining -= take
 
+    # 第二轮：若仍有剩余，按更宽松容量补分配，但必须扣除第一轮已分配
     if remaining > 0:
         for node in ordered_nodes:
             if remaining <= 0:
                 break
+            node_name = node["node"]
             cap = int(node.get("free_cpus", 0) or 0)
             total = int(node.get("_total_cpus", 0) or 0)
             load_ratio = float(node.get("_load_ratio", 0.0) or 0.0)
@@ -378,16 +468,15 @@ def build_node_plan(cluster_info, cpu_cores):
                 cap = 0
             elif load_ratio >= 0.70 or alloc_ratio >= 0.85:
                 cap = int(cap * 0.5)
-            if cap < 0:
-                cap = 0
-            take = min(cap, remaining)
+            cap = max(0, cap)
+            already = assigned_by_node.get(node_name, 0)
+            residual_cap = max(0, cap - already)
+            take = min(residual_cap, remaining)
             if take <= 0:
                 continue
-            plan_queue.extend([node["node"]] * take)
+            assigned_by_node[node_name] = already + take
+            plan_counts[node_name] = assigned_by_node[node_name]
             remaining -= take
-
-    for node_name in plan_queue:
-        plan_counts[node_name] = plan_counts.get(node_name, 0) + 1
 
     plan_pairs = [(node, count) for node, count in plan_counts.items() if count > 0]
     plan_string = ",".join(f"{node}:{count}" for node, count in plan_pairs)
