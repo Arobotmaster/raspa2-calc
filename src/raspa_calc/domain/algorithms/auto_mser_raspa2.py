@@ -21,6 +21,10 @@ import subprocess
 import sys
 from typing import Optional, Tuple
 
+# pyMSER/PyTorch may pick an incompatible GPU on newer cards. Default to CPU
+# unless the caller explicitly sets CUDA_VISIBLE_DEVICES.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+
 import pandas as pd
 import pymser
 
@@ -235,6 +239,12 @@ def main():
     parser.add_argument("--max-iter", type=int, default=20, help="最多追加次数")
     parser.add_argument("--uncertainty", default="uSD", choices=["SD", "SE", "uSD", "uSE"])
     parser.add_argument("--conda-env", default="pymser", help="包含 pymser+raspa2 的 conda 环境名")
+    parser.add_argument(
+        "--extend-until-target",
+        action="store_true",
+        default=os.environ.get("RASPA_MSER_EXTEND_UNTIL_TARGET", "false").lower() not in ("false", "0", "no", "n"),
+        help="将 target_cycles 作为续跑目标；默认关闭，pyMSER 成功后直接写 stats",
+    )
     args = parser.parse_args()
 
     workdir = os.path.abspath(args.workdir)
@@ -303,8 +313,17 @@ def main():
         with open(log_path, "a", encoding="utf-8") as lf:
             lf.write(msg + "\n")
 
-        if prod_samples >= args.target_cycles:
-            print("[auto-mser] 达到目标生产步数，输出统计...")
+        if prod_samples >= args.target_cycles or not args.extend_until_target:
+            if prod_samples >= args.target_cycles:
+                print("[auto-mser] 达到目标生产步数，输出统计...")
+            else:
+                msg = (
+                    f"[auto-mser] 平衡后样本低于 target_cycles，但 pyMSER 已成功，"
+                    f"直接输出统计: {prod_samples}/{args.target_cycles}"
+                )
+                print(msg)
+                with open(log_path, "a", encoding="utf-8") as lf:
+                    lf.write(msg + "\n")
             stats = {}
             for gas in gas_comp:
                 col = f"{gas}_[mol/kg]"
@@ -331,7 +350,7 @@ def main():
             print(f"[auto-mser] 已保存统计: {stats_path}")
             return
 
-        msg = f"[auto-mser] 未达标，将追加 {args.add_cycles} 周期并重启模拟..."
+        msg = f"[auto-mser] extend_until_target=true，未达标，将追加 {args.add_cycles} 周期并重启模拟..."
         print(msg)
         with open(log_path, "a", encoding="utf-8") as lf:
             lf.write(msg + "\n")
@@ -350,11 +369,35 @@ def main():
             print(f"[auto-mser] simulate 失败，返回码 {ret}，详见 {os.path.join(workdir, 'auto_mser_raspa.log')}")
             sys.exit(ret)
 
-    msg = "[auto-mser] 达到最大迭代次数，仍未满足生产步数要求，标记失败。"
+    msg = "[auto-mser] 达到最大迭代次数仍未满足 target_cycles；保留最后一次 pyMSER 统计并返回成功。"
     print(msg)
     with open(log_path, "a", encoding="utf-8") as lf:
         lf.write(msg + "\n")
-    sys.exit(2)
+    stats = {}
+    for gas in gas_comp:
+        col = f"{gas}_[mol/kg]"
+        if col in df.columns:
+            avg, unc = pymser.calc_equilibrated_average(
+                data=df[col].to_numpy(),
+                eq_index=t0,
+                uncertainty=args.uncertainty,
+                ac_time=ac_time,
+            )
+            stats[col] = {"average": float(avg), "uncertainty": float(unc)}
+    stats_path = os.path.join(workdir, f"stats_{temp:.6f}_{pressure:.0f}.json")
+    with open(stats_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "t0": int(t0),
+                "ac_time": ac_time,
+                "basis": combined_label,
+                "stats": stats,
+            },
+            f,
+            indent=2,
+        )
+    print(f"[auto-mser] 已保存统计: {stats_path}")
+    return
 
 
 if __name__ == "__main__":

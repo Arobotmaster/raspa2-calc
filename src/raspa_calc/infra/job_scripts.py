@@ -29,6 +29,7 @@ def create_job_script_raspa3(param_dir, job_name, scheduler_type="slurm", conda_
     mser_max_iter = int(mser_settings.get('max_iter', 20)) if mser_enable else None
     mser_uncertainty = mser_settings.get('uncertainty', 'uSD') if mser_enable else 'uSD'
     mser_conda_env = mser_settings.get('conda_env', 'pymser') if mser_enable else 'pymser'
+    mser_extend_until_target = str(mser_settings.get('extend_until_target', False)).lower() if mser_enable else 'false'
 
     status_file = "status.txt"
     orig_dir = param_dir
@@ -47,6 +48,7 @@ export RASPA_MSER_ADD_CYCLES={mser_add_cycles}
 export RASPA_MSER_MAX_ITER={mser_max_iter}
 export RASPA_MSER_UNCERTAINTY={mser_uncertainty}
 export RASPA_MSER_CONDA_ENV={mser_conda_env}
+export RASPA_MSER_EXTEND_UNTIL_TARGET={mser_extend_until_target}
 export RASPA3_CONDA_ENV={conda_env}
 """
 
@@ -59,7 +61,7 @@ fi
 if [ $output_count -gt 0 ] && [ -d "$MSER_PYTHONPATH/raspa_calc/domain/algorithms" ]; then
     echo " ==> 运行 pyMSER 自动平衡"
     if command -v conda >/dev/null 2>&1; then
-        conda run -n "{mser_conda_env}" python -m "$MSER_MODULE" \\
+        conda run -n "{mser_conda_env}" env CUDA_VISIBLE_DEVICES="" python -m "$MSER_MODULE" \\
           --workdir "$(pwd)" \\
           --target-cycles "{mser_target_cycles}" \\
           --add-cycles "{mser_add_cycles}" \\
@@ -68,7 +70,7 @@ if [ $output_count -gt 0 ] && [ -d "$MSER_PYTHONPATH/raspa_calc/domain/algorithm
           --conda-env "{mser_conda_env}" \\
           --raspa3-conda-env "{conda_env}"
     else
-        python -m "$MSER_MODULE" \\
+        CUDA_VISIBLE_DEVICES="" python -m "$MSER_MODULE" \\
           --workdir "$(pwd)" \\
           --target-cycles "{mser_target_cycles}" \\
           --add-cycles "{mser_add_cycles}" \\
@@ -286,6 +288,7 @@ def create_job_script(param_dir, job_name, scheduler_type="pbs", mser_config=Non
     mser_max_iter = int(mser_settings.get('max_iter', 20)) if mser_enable else None
     mser_uncertainty = mser_settings.get('uncertainty', 'uSD') if mser_enable else 'uSD'
     mser_conda_env = mser_settings.get('conda_env', 'pymser') if mser_enable else 'pymser'
+    mser_extend_until_target = str(mser_settings.get('extend_until_target', False)).lower() if mser_enable else 'false'
 
     status_file = "status.txt"
     orig_dir = param_dir
@@ -304,13 +307,14 @@ export RASPA_MSER_ADD_CYCLES={mser_add_cycles}
 export RASPA_MSER_MAX_ITER={mser_max_iter}
 export RASPA_MSER_UNCERTAINTY={mser_uncertainty}
 export RASPA_MSER_CONDA_ENV={mser_conda_env}
+export RASPA_MSER_EXTEND_UNTIL_TARGET={mser_extend_until_target}
 """
         mser_run_block = f"""
 if [ $sim_exit_code -eq 0 ] && [ -d "$MSER_PYTHONPATH/raspa_calc/domain/algorithms" ]; then
   echo " ==> 运行 pyMSER 自动平衡"
   mser_status=0
   if command -v conda >/dev/null 2>&1; then
-    conda run -n "{mser_conda_env}" python -m "$MSER_MODULE" \\
+    conda run -n "{mser_conda_env}" env CUDA_VISIBLE_DEVICES="" python -m "$MSER_MODULE" \\
       --workdir "$(pwd)" \\
       --target-cycles "{mser_target_cycles}" \\
       --add-cycles "{mser_add_cycles}" \\
@@ -318,7 +322,7 @@ if [ $sim_exit_code -eq 0 ] && [ -d "$MSER_PYTHONPATH/raspa_calc/domain/algorith
       --uncertainty "{mser_uncertainty}" \\
       --conda-env "{mser_conda_env}"
   else
-    python -m "$MSER_MODULE" \\
+    CUDA_VISIBLE_DEVICES="" python -m "$MSER_MODULE" \\
       --workdir "$(pwd)" \\
       --target-cycles "{mser_target_cycles}" \\
       --add-cycles "{mser_add_cycles}" \\

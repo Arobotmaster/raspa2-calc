@@ -81,6 +81,7 @@ if isinstance(mser, dict):
     emit("RASPA_MSER_LLM", str(mser.get("llm", True)).lower())
     emit("RASPA_MSER_BATCH_SIZE", mser.get("batch_size"))
     emit("RASPA_MSER_PRINT_EVERY", mser.get("print_every"))
+    emit("RASPA_MSER_EXTEND_UNTIL_TARGET", str(mser.get("extend_until_target", False)).lower())
 PY
 )"
 
@@ -631,7 +632,7 @@ while :; do
                 set +e
                 if command -v conda >/dev/null 2>&1; then
                     conda run --no-capture-output -n "${RASPA_MSER_CONDA_ENV:-pymser}" \
-                      env PYTHONPATH="${MSER_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
+                      env CUDA_VISIBLE_DEVICES="" PYTHONPATH="${MSER_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
                       python -m "$MSER_MODULE" \
                       --workdir "$(pwd)" \
                       --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \
@@ -642,6 +643,7 @@ while :; do
                       --raspa3-conda-env "${RASPA3_CONDA_ENV:-raspa3}" \
                       "${MSER_ARGS[@]}"
                 else
+                    export CUDA_VISIBLE_DEVICES=""
                     python3 -m "$MSER_MODULE" \
                       --workdir "$(pwd)" \
                       --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \

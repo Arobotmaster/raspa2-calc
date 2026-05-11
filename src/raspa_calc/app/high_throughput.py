@@ -93,6 +93,8 @@ def run_high_throughput(config_path=None):
                     os.environ["RASPA_MSER_LLM"] = str(mser_config.get("llm", True)).lower()
                 if "batch_size" in mser_config:
                     os.environ["RASPA_MSER_BATCH_SIZE"] = str(mser_config.get("batch_size", 5))
+                if "extend_until_target" in mser_config:
+                    os.environ["RASPA_MSER_EXTEND_UNTIL_TARGET"] = str(mser_config.get("extend_until_target", False)).lower()
 
             raspa_version = env_config.get("raspa_version", "raspa2").lower()
 

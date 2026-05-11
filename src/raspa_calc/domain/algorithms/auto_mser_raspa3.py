@@ -26,10 +26,21 @@ import re
 import shutil
 import subprocess
 import sys
+import traceback
 from typing import Dict, List
+
+# pyMSER/PyTorch may pick an incompatible GPU on newer cards. Default to CPU
+# unless the caller explicitly sets CUDA_VISIBLE_DEVICES.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 import pandas as pd
 import pymser
+
+
+def _log(path: str, message: str) -> None:
+    print(message)
+    with open(path, "a", encoding="utf-8") as lf:
+        lf.write(message + "\n")
 
 
 def _find_latest_restart(workdir: str) -> str:
@@ -44,6 +55,18 @@ def _find_latest_restart(workdir: str) -> str:
     if not candidates:
         raise FileNotFoundError("未找到 restart_*.json，请确认 RASPA 已输出 JSON 重启文件（output/restart_*.json）。")
     return max(candidates, key=os.path.getmtime)
+
+
+def _latest_output_mtime(workdir: str) -> float:
+    outdir = os.path.join(workdir, "output")
+    if not os.path.isdir(outdir):
+        return 0.0
+    mtimes = [
+        os.path.getmtime(os.path.join(outdir, name))
+        for name in os.listdir(outdir)
+        if name.endswith(".txt") or name.startswith("restart_")
+    ]
+    return max(mtimes) if mtimes else 0.0
 
 
 def _parse_output_to_timeseries(workdir: str) -> pd.DataFrame:
@@ -138,6 +161,40 @@ def _write_mser_status_flag(workdir: str, note: str) -> None:
         f.write(note + "\n")
 
 
+def _missing_framework_paths(workdir: str) -> List[str]:
+    sim_path = os.path.join(workdir, "simulation.json")
+    if not os.path.exists(sim_path):
+        return []
+    try:
+        with open(sim_path, "r", encoding="utf-8") as f:
+            sim = json.load(f)
+    except Exception:
+        return []
+
+    missing = []
+    for system in sim.get("Systems", []):
+        name = system.get("Name")
+        if isinstance(name, str) and name.endswith(".cif") and not os.path.exists(name):
+            missing.append(name)
+    return missing
+
+
+def _write_stats(workdir: str, t0: int, ac_time: float, basis: str, df: pd.DataFrame, molkg_cols: List[str], uncertainty: str) -> str:
+    stats = {}
+    for col in molkg_cols:
+        avg, unc = pymser.calc_equilibrated_average(
+            data=df[col].to_numpy(),
+            eq_index=t0,
+            uncertainty=uncertainty,
+            ac_time=ac_time,
+        )
+        stats[col] = {"average": float(avg), "uncertainty": float(unc)}
+    stats_path = os.path.join(workdir, "stats.json")
+    with open(stats_path, "w", encoding="utf-8") as f:
+        json.dump({"t0": t0, "ac_time": ac_time, "basis": basis, "stats": stats}, f, indent=2)
+    return stats_path
+
+
 def _update_sim_json(workdir: str, add_cycles: int, restart_file: str, print_every: int = None) -> None:
     sim_path = os.path.join(workdir, "simulation.json")
     if not os.path.exists(sim_path):
@@ -213,6 +270,12 @@ def main():
     ap.add_argument("--no-llm", dest="llm", action="store_false", help="关闭 MSER-LLM")
     ap.add_argument("--batch-size", type=int, default=env_int("RASPA_MSER_BATCH_SIZE", 5), help="MSER 批大小，默认 5（更平滑）")
     ap.add_argument(
+        "--extend-until-target",
+        action="store_true",
+        default=env_bool("RASPA_MSER_EXTEND_UNTIL_TARGET", False),
+        help="将 target_cycles 作为续跑目标；默认关闭，pyMSER 成功后直接写 stats.json",
+    )
+    ap.add_argument(
         "--tail-rel-std",
         type=float,
         default=env_float("RASPA_MSER_TAIL_REL_STD", 0.0),
@@ -248,33 +311,32 @@ def main():
     combined_csv = os.path.join(workdir, "mser_timeseries.csv")
 
     if (args.tail_rel_std and args.tail_rel_std > 0) or (args.min_t0_frac and args.min_t0_frac > 0) or os.environ.get("RASPA_MSER_TAIL_WINDOW"):
-        msg = "[auto-mser3] 已忽略 tail_rel_std/tail_window/min_t0_frac（已弃用），仅使用 pyMSER 默认平衡截断点 t0。"
-        print(msg)
-        with open(mser_log, "a", encoding="utf-8") as lf:
-            lf.write(msg + "\n")
+        _log(mser_log, "[auto-mser3] 已忽略 tail_rel_std/tail_window/min_t0_frac（已弃用），仅使用 pyMSER 默认平衡截断点 t0。")
 
     for it in range(1, args.max_iter + 1):
-        msg = f"[auto-mser3] 迭代 {it}/{args.max_iter}，解析输出并判定平衡..."
-        print(msg)
-        with open(mser_log, "a", encoding="utf-8") as lf:
-            lf.write(msg + "\n")
+        _log(mser_log, f"[auto-mser3] 迭代 {it}/{args.max_iter}，解析输出并判定平衡...")
 
-        try:
-            df_new = _parse_output_to_timeseries(workdir)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[auto-mser3] 解析输出失败: {exc}")
-            sys.exit(1)
-
-        if os.path.exists(combined_csv):
-            df_old = pd.read_csv(combined_csv)
-            try:
-                offset = int(df_old["cycle"].max())
-            except Exception:
-                offset = 0
-            df_new["cycle"] = df_new["cycle"].astype(int) + offset
-            df = pd.concat([df_old, df_new], ignore_index=True)
+        if os.path.exists(combined_csv) and os.path.getmtime(combined_csv) >= _latest_output_mtime(workdir):
+            df = pd.read_csv(combined_csv)
         else:
-            df = df_new
+            try:
+                df_new = _parse_output_to_timeseries(workdir)
+            except Exception as exc:  # noqa: BLE001
+                _log(mser_log, f"[auto-mser3] 解析输出失败: {exc}")
+                with open(mser_log, "a", encoding="utf-8") as lf:
+                    lf.write(traceback.format_exc())
+                sys.exit(1)
+
+            if os.path.exists(combined_csv):
+                df_old = pd.read_csv(combined_csv)
+                try:
+                    offset = int(df_old["cycle"].max())
+                except Exception:
+                    offset = 0
+                df_new["cycle"] = df_new["cycle"].astype(int) + offset + 1
+                df = pd.concat([df_old, df_new], ignore_index=True)
+            else:
+                df = df_new
         # 去重并排序，保证 cycle 连续增长
         df = df.drop_duplicates(subset=["cycle"], keep="first").sort_values("cycle").reset_index(drop=True)
         df.to_csv(combined_csv, index=False)
@@ -319,44 +381,59 @@ def main():
                 print(warn)
                 with open(mser_log, "a", encoding="utf-8") as lf:
                     lf.write(warn + "\n")
+        except Exception as exc:  # noqa: BLE001
+            _log(mser_log, f"[auto-mser3] pyMSER 判定失败: {exc}")
+            with open(mser_log, "a", encoding="utf-8") as lf:
+                lf.write(traceback.format_exc())
+            try:
+                _write_mser_status_flag(workdir, "mser_equilibrate_error")
+                _write_status_note(workdir, "mser_equilibrate_error")
+            except Exception:
+                pass
+            sys.exit(1)
         n_samples = len(series)
 
         # 合法化 t0 范围
         t0 = min(max(t0, 0), max(0, n_samples - 1))
 
         prod = n_samples - t0
-        # 如果产线样本不足，不再强制提前 t0；保留 pyMSER 给出的平衡点，追加循环来补足样本
-        if prod < args.target_cycles:
-            with open(mser_log, "a", encoding="utf-8") as lf:
-                lf.write(
-                    f"[auto-mser3] t0={t0} 产线样本 {prod}/{args.target_cycles} 不足，保留原 t0，继续续跑以补足样本\n"
-                )
-        msg = f"[auto-mser3] t0={t0} 基于 {basis}，平衡后样本={prod}/{args.target_cycles}"
-        print(msg)
-        with open(mser_log, "a", encoding="utf-8") as lf:
-            lf.write(msg + "\n")
+        _log(mser_log, f"[auto-mser3] t0={t0} 基于 {basis}，平衡后样本={prod}/{args.target_cycles}")
 
-        if prod >= args.target_cycles:
-            stats = {}
-            for col in molkg_cols:
-                avg, unc = pymser.calc_equilibrated_average(
-                    data=df[col].to_numpy(),
-                    eq_index=t0,
-                    uncertainty=args.uncertainty,
-                    ac_time=ac_time,
-                )
-                stats[col] = {"average": float(avg), "uncertainty": float(unc)}
-            stats_path = os.path.join(workdir, "stats.json")
-            with open(stats_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    {"t0": t0, "ac_time": ac_time, "basis": basis, "stats": stats},
-                    f,
-                    indent=2,
-                )
+        if prod >= args.target_cycles or not args.extend_until_target:
+            if prod < args.target_cycles:
+                note = f"mser_stats_below_target:{prod}/{args.target_cycles}"
+                _log(mser_log, f"[auto-mser3] 平衡后样本低于 target_cycles，但 pyMSER 已成功，直接输出统计: {note}")
+                try:
+                    _write_mser_status_flag(workdir, note)
+                    _write_status_note(workdir, note)
+                except Exception:
+                    pass
+            try:
+                stats_path = _write_stats(workdir, t0, ac_time, basis, df, molkg_cols, args.uncertainty)
+            except Exception as exc:  # noqa: BLE001
+                _log(mser_log, f"[auto-mser3] 写入统计失败: {exc}")
+                with open(mser_log, "a", encoding="utf-8") as lf:
+                    lf.write(traceback.format_exc())
+                sys.exit(1)
             print(f"[auto-mser3] 达标，已保存统计: {stats_path}")
             return
 
         # 未达标：更新 simulation.json 并续跑
+        with open(mser_log, "a", encoding="utf-8") as lf:
+            lf.write(
+                f"[auto-mser3] extend_until_target=true，产线样本 {prod}/{args.target_cycles} 不足，继续续跑以补足样本\n"
+            )
+        missing_paths = _missing_framework_paths(workdir)
+        if missing_paths:
+            msg = "[auto-mser3] 续跑所需 CIF 路径不存在，无法自动续跑: " + "; ".join(missing_paths)
+            _log(mser_log, msg)
+            try:
+                _write_mser_status_flag(workdir, "mser_cannot_extend_missing_cif")
+                _write_status_note(workdir, "mser_cannot_extend_missing_cif")
+            except Exception:
+                pass
+            sys.exit(1)
+
         try:
             restart_file = _find_latest_restart(workdir)
         except Exception as exc:  # noqa: BLE001
@@ -374,11 +451,19 @@ def main():
             print(f"[auto-mser3] raspa3 运行失败，返回码 {ret}，详见 {log_path}")
             sys.exit(ret)
 
-    msg = "[auto-mser3] 达到最大迭代次数仍未达标，标记失败（未满足 target_cycles）。"
-    print(msg)
-    with open(mser_log, "a", encoding="utf-8") as lf:
-        lf.write(msg + "\n")
-    sys.exit(2)
+    msg = "[auto-mser3] 达到最大迭代次数仍未满足 target_cycles；保留最后一次 pyMSER 统计并返回成功。"
+    _log(mser_log, msg)
+    try:
+        stats_path = _write_stats(workdir, t0, ac_time, basis, df, molkg_cols, args.uncertainty)
+        _write_mser_status_flag(workdir, f"mser_max_iter_below_target:{prod}/{args.target_cycles}")
+        _write_status_note(workdir, f"mser_max_iter_below_target:{prod}/{args.target_cycles}")
+        print(f"[auto-mser3] 已保存统计: {stats_path}")
+        return
+    except Exception as exc:  # noqa: BLE001
+        _log(mser_log, f"[auto-mser3] 最大迭代后写入统计失败: {exc}")
+        with open(mser_log, "a", encoding="utf-8") as lf:
+            lf.write(traceback.format_exc())
+        sys.exit(1)
 
 
 if __name__ == "__main__":

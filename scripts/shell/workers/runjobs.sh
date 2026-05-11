@@ -73,6 +73,7 @@ if isinstance(mser, dict):
     emit("RASPA_MSER_MAX_ITER", mser.get("max_iter"))
     emit("RASPA_MSER_UNCERTAINTY", mser.get("uncertainty"))
     emit("RASPA_MSER_CONDA_ENV", mser.get("conda_env"))
+    emit("RASPA_MSER_EXTEND_UNTIL_TARGET", str(mser.get("extend_until_target", False)).lower())
 PY
 )"
 
@@ -578,7 +579,7 @@ while :; do
       # 优先使用 conda run，避免非交互激活失败
       set +e
       if command -v conda >/dev/null 2>&1; then
-        conda run -n "${RASPA_MSER_CONDA_ENV:-pymser}" python -m "$MSER_MODULE" \
+        conda run -n "${RASPA_MSER_CONDA_ENV:-pymser}" env CUDA_VISIBLE_DEVICES="" python -m "$MSER_MODULE" \
           --workdir "$(pwd)" \
           --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \
           --add-cycles "${RASPA_MSER_ADD_CYCLES:-500}" \
@@ -586,6 +587,7 @@ while :; do
           --uncertainty "${RASPA_MSER_UNCERTAINTY:-uSD}" \
           --conda-env "${RASPA_MSER_CONDA_ENV:-pymser}"
       else
+        export CUDA_VISIBLE_DEVICES=""
         python -m "$MSER_MODULE" \
           --workdir "$(pwd)" \
           --target-cycles "${RASPA_MSER_TARGET_CYCLES:-1000}" \

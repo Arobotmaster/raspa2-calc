@@ -123,13 +123,26 @@ calculation:
    - **锁超时**：默认 30秒。若作业被杀导致 `mcX.lock` 残留，新 Worker 会在 30s 后自动接管。
    - **指针重置**：若队列指针（`next_id`）已耗尽但仍有大量回滚任务（Pending），`raspa-scale` 会自动删除指针，触发 Worker 全量重新扫描。
 
-### 任务标记为 __failed 后续算（mser 超出 max_iter）
+### 任务标记为 __failed 后续算（pyMSER / 模拟异常）
 
-当 pyMSER 自动平衡因达到 `max_iter` 上限而将任务标记为 `__failed` 时，任务目录内已有 `restart_*.json` 和 `mser_timeseries.csv`，可以直接从断点续算，无需重新提交。
+当前默认策略下，pyMSER 成功写出统计后会返回成功；即使平衡后样本数低于 `target_cycles`，也只会记录 `mser_stats_below_target:当前/目标`，不会因此标记为 `__failed`。
+
+只有以下情况通常会产生 `__failed`：
+- RASPA 模拟本身失败或没有输出文件。
+- pyMSER 解析/统计异常（查看 `auto_mser.log` 中的 traceback）。
+- 显式设置 `extend_until_target: true` 后，自动续跑过程失败。
+
+如果已启用 `extend_until_target: true`，任务目录内已有 `restart_*.json` 和 `mser_timeseries.csv` 时，可以直接从断点续算，无需重新生成输入。
 
 **操作步骤：**
 
-1. **提高 max_iter**：找到任务目录下的配置快照 `.raspa_config.yaml`，将 `mser.max_iter` 改大（如 200）：
+1. **确认是否真的需要强制补足 target_cycles**：多数筛选任务只需要 pyMSER 的 `t0`、平均值和不确定度，不需要强制补足生产样本数。此时保持：
+   ```yaml
+   mser:
+     extend_until_target: false
+   ```
+
+2. **如果需要续跑补足 target_cycles**：找到任务目录下的配置快照 `.raspa_config.yaml`，设置 `extend_until_target: true`，并将 `mser.max_iter` 改大（如 200）：
    ```bash
    # 注意：要改的是任务目录下的快照，不是 .raspa_tools/config/ 下的原始配置
    # 快照路径示例：
@@ -138,6 +151,7 @@ calculation:
    修改内容：
    ```yaml
    mser:
+     extend_until_target: true
      max_iter: 200   # 原来是 50
    ```
    Worker 每次迭代都会重新读取此文件，**正在运行的 worker 无需重启**即可生效。
@@ -145,12 +159,13 @@ calculation:
    如果还要同时调整 `target_cycles`、`add_cycles`、`uncertainty` 等参数，也应当改这一份快照，例如：
    ```yaml
    mser:
+     extend_until_target: true
      target_cycles: 1000
      add_cycles: 600
      max_iter: 200
    ```
 
-2. **去掉 `__failed` 后缀**，让 worker 重新认领：
+3. **去掉 `__failed` 后缀**，让 worker 重新认领：
    ```bash
    # 单个任务
    mv mc123__failed mc123
@@ -164,7 +179,7 @@ calculation:
    done
    ```
 
-3. **如需按 `mser_timeseries.csv` 的最大 `cycle` 直接判定完成，先统一筛一遍所有非 `__done` 目录**：
+4. **如需按 `mser_timeseries.csv` 的最大 `cycle` 直接判定完成，先统一筛一遍所有非 `__done` 目录**：
    - 适用于你已经接受“达到某个 cycle 阈值即可视为完成”的场景。
    - 建议先把 `__running` / `__failed` 恢复为无后缀目录，再统一处理，避免漏掉已经回滚成 `mcX` 的目录。
    - 下例会把所有“非 `__done` 且 `mser_timeseries.csv` 中最大 `cycle > THRESHOLD`”的目录改成 `__done`：
