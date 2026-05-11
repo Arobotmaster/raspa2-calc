@@ -152,6 +152,37 @@ def parse_allowed_nodes(raw=None):
     return []
 
 
+def filter_cluster_info_by_allowed_nodes(cluster_info, allowed_nodes=None):
+    """Return a whitelist-filtered cluster view for logging and planning."""
+    if not cluster_info:
+        return cluster_info
+
+    allowed_nodes = _normalize_node_list(allowed_nodes if allowed_nodes is not None else parse_allowed_nodes())
+    if not allowed_nodes:
+        filtered = dict(cluster_info)
+        filtered["allowed_nodes"] = []
+        filtered["restricted_by_allowed_nodes"] = False
+        return filtered
+
+    nodes = cluster_info.get("nodes") or []
+    allowed_set = set(allowed_nodes)
+    filtered_nodes = [dict(node) for node in nodes if node.get("node") in allowed_set]
+
+    filtered = dict(cluster_info)
+    filtered["allowed_nodes"] = allowed_nodes
+    filtered["restricted_by_allowed_nodes"] = True
+
+    if not nodes:
+        return filtered
+
+    filtered["nodes"] = filtered_nodes
+    filtered["total_cpus"] = int(sum(int(node.get("total_cpus", 0) or 0) for node in filtered_nodes))
+    filtered["allocated_cpus"] = int(sum(int(node.get("allocated_cpus", 0) or 0) for node in filtered_nodes))
+    filtered["other_cpus"] = int(sum(int(node.get("other_cpus", 0) or 0) for node in filtered_nodes))
+    filtered["available_cpus"] = int(sum(int(node.get("free_cpus", 0) or 0) for node in filtered_nodes))
+    return filtered
+
+
 def _get_slurm_summary():
     """Fallback SLURM summary."""
     try:

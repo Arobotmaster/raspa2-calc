@@ -48,7 +48,13 @@ def locate_cif_file(framework_name, cif_dir):
 
 
 def count_numbered_labels(cif_path):
-    """Count labels that contain numeric suffixes in a CIF file."""
+    """Count numbered atom-site tokens in a CIF file.
+
+    Historically this check only scanned `_atom_site_label`, but some CIF files
+    store numbered values in `_atom_site_type_symbol` (e.g. `Mg0`, `C10`,
+    `Zr12`). Those values later get treated as framework atom types during the
+    RASPA3 force-field filtering step, so they must be detected here as well.
+    """
     try:
         with open(cif_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
@@ -71,30 +77,38 @@ def count_numbered_labels(cif_path):
                 else:
                     break
 
-            if any(tag.startswith("_atom_site_label") for tag in tags):
+            target_indices = []
+            for target_tag in (
+                "_atom_site_label",
+                "_atom_site_type_symbol",
+                "_atom_type_symbol",
+            ):
                 try:
-                    label_idx = tags.index("_atom_site_label")
+                    target_indices.append(tags.index(target_tag))
                 except ValueError:
-                    label_idx = -1
-
-                if label_idx >= 0:
-                    k = i
-                    while k < len(lines):
-                        row = lines[k].strip()
-                        if not row or row.startswith("#"):
-                            k += 1
-                            continue
-                        if row.startswith("loop_") or row.startswith("_"):
-                            break
-
-                        parts = row.split()
-                        if len(parts) > label_idx:
-                            label = parts[label_idx].strip().strip("'\"")
-                            if any(ch.isdigit() for ch in label):
-                                count += 1
-                        k += 1
-                    i = k
                     continue
+
+            if target_indices:
+                k = i
+                while k < len(lines):
+                    row = lines[k].strip()
+                    if not row or row.startswith("#"):
+                        k += 1
+                        continue
+                    if row.startswith("loop_") or row.startswith("_"):
+                        break
+
+                    parts = row.split()
+                    for idx in target_indices:
+                        if len(parts) <= idx:
+                            continue
+                        value = parts[idx].strip().strip("'\"")
+                        if any(ch.isdigit() for ch in value):
+                            count += 1
+                    k += 1
+                i = k
+                continue
+            continue
         i += 1
 
     return count

@@ -6,7 +6,7 @@ import pandas as pd
 
 from .csv_utils import read_csv_with_fallbacks
 from .logging_utils import logger
-from .scheduler import build_node_plan, get_slurm_cluster_resources
+from .scheduler import build_node_plan, filter_cluster_info_by_allowed_nodes, get_slurm_cluster_resources
 from . import state
 
 
@@ -173,14 +173,28 @@ def get_cpu_cores_with_plan(total_tasks, cluster_info=None, plan_path=None):
     if cluster_info is None:
         cluster_info = get_slurm_cluster_resources()
 
-    if cluster_info.get("available"):
-        logger.info(f"SLURM集群总 CPU核心数: {cluster_info.get('total_cpus')}")
-        logger.info(f"SLURM集群已分配 CPU核心数: {cluster_info.get('allocated_cpus')}")
-        logger.info(f"SLURM集群当前可用 CPU核心数: {cluster_info.get('available_cpus')}")
+    display_cluster_info = filter_cluster_info_by_allowed_nodes(cluster_info)
 
-        if cluster_info.get("nodes"):
+    if cluster_info.get("available"):
+        if display_cluster_info.get("restricted_by_allowed_nodes"):
+            allowed_nodes = display_cluster_info.get("allowed_nodes") or []
+            logger.info(f"限制可用节点: {', '.join(allowed_nodes)}")
+            logger.info(f"白名单范围总 CPU核心数: {display_cluster_info.get('total_cpus')}")
+            logger.info(f"白名单范围已分配 CPU核心数: {display_cluster_info.get('allocated_cpus')}")
+            logger.info(f"白名单范围当前可用 CPU核心数: {display_cluster_info.get('available_cpus')}")
+            all_nodes = cluster_info.get("nodes") or []
+            filtered_nodes = display_cluster_info.get("nodes") or []
+            skipped_nodes = [node.get("node") for node in all_nodes if node.get("node") not in {n.get('node') for n in filtered_nodes}]
+            if skipped_nodes:
+                logger.info(f"已忽略白名单外节点: {', '.join(skipped_nodes)}")
+        else:
+            logger.info(f"SLURM集群总 CPU核心数: {display_cluster_info.get('total_cpus')}")
+            logger.info(f"SLURM集群已分配 CPU核心数: {display_cluster_info.get('allocated_cpus')}")
+            logger.info(f"SLURM集群当前可用 CPU核心数: {display_cluster_info.get('available_cpus')}")
+
+        if display_cluster_info.get("nodes"):
             logger.info("节点资源详情（线程总数/负载/建议可用线程）：")
-            for node in cluster_info["nodes"]:
+            for node in display_cluster_info["nodes"]:
                 load_txt = f"{node['load']:.2f}" if node.get("load") is not None else "未知"
                 topo_txt = node.get("topology") or "?"
                 free_cpus = node.get("free_cpus", 0)
@@ -196,11 +210,17 @@ def get_cpu_cores_with_plan(total_tasks, cluster_info=None, plan_path=None):
                         f"CPULoad={load_txt}, 估计可用={free_cpus}"
                     )
 
-        recommended_cores = min(int(cluster_info.get("available_cpus") or 0), total_tasks)
+        recommended_cores = min(int(display_cluster_info.get("available_cpus") or 0), total_tasks)
         if recommended_cores > 0:
-            logger.info(f"建议使用CPU核心数: {recommended_cores} (基于集群空闲资源)")
+            if display_cluster_info.get("restricted_by_allowed_nodes"):
+                logger.info(f"建议使用CPU核心数: {recommended_cores} (基于白名单节点空闲资源)")
+            else:
+                logger.info(f"建议使用CPU核心数: {recommended_cores} (基于集群空闲资源)")
         else:
-            logger.info("集群当前无空闲CPU资源，请谨慎选择使用数量")
+            if display_cluster_info.get("restricted_by_allowed_nodes"):
+                logger.info("白名单节点当前无空闲CPU资源，请谨慎选择使用数量")
+            else:
+                logger.info("集群当前无空闲CPU资源，请谨慎选择使用数量")
     else:
         logger.info("未检测到SLURM集群环境，使用当前节点信息")
 

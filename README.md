@@ -6,6 +6,24 @@
 
 **高性能 RASPA 分子模拟计算平台** - 支持 RASPA2/RASPA3 双版本、参数筛选、高通量计算、数据处理、警告恢复、等温线绘制
 
+## 文档入口
+
+这份 README 只负责：
+
+- 项目总览
+- 安装与快速开始
+- 功能概览
+
+详细部署、集群构建、存储架构、调度逻辑和各模式用法，统一看：
+
+- [docs/README.md](/home/zjp/raspa2-calc/.raspa_tools/docs/README.md)
+
+推荐阅读顺序：
+
+1. [docs/SLURM集群基础构建与维护.md](/home/zjp/raspa2-calc/.raspa_tools/docs/SLURM集群基础构建与维护.md)
+2. [docs/CLUSTER_DEPLOYMENT_GUIDE.md](/home/zjp/raspa2-calc/.raspa_tools/docs/CLUSTER_DEPLOYMENT_GUIDE.md)
+3. [docs/README.md](/home/zjp/raspa2-calc/.raspa_tools/docs/README.md)
+
 ## v2.5.0 核心特性（2025-12）
 
 | 特性 | 说明 | 性能提升 |
@@ -55,8 +73,10 @@
 - *警告处理* (`python -m raspa_calc.entrypoints.warning_processor`)：提取失败任务、CSV数据替换
 - *等温线绘制* (`python -m raspa_calc.entrypoints.isotherm_plotter`)：可视化吸附数据
 - *CSV/CIF 筛选* (`python -m raspa_calc.entrypoints.ciffilter`)：交互式按条件/refcode筛选CSV，可复制匹配的CIF
-####
- **详细指南** 参考`docs/`（各个功能使用说明）
+
+对应详细用法统一看：
+
+- [docs/README.md](/home/zjp/raspa2-calc/.raspa_tools/docs/README.md)
 
 ### 执行优化
 - *SLURM作业数组*：`sbatch --array=1-N` 一次提交N个子任务，提交速度快50倍
@@ -156,36 +176,20 @@ raspa-plot-isotherm
 
 ### 多节点集群配置
 
-v2.5.0 支持在SLURM/PBS集群上进行多节点高通量计算。详见 [CLUSTER_DEPLOYMENT_GUIDE.md](CLUSTER_DEPLOYMENT_GUIDE.md)。
+v2.5.0 支持在 SLURM / PBS 集群上进行多节点高通量计算。
+
+这里不再维护第二套部署说明，统一入口如下：
+
+- Slurm 基础构建与维护：[docs/SLURM集群基础构建与维护.md](/home/zjp/raspa2-calc/.raspa_tools/docs/SLURM集群基础构建与维护.md)
+- RASPA 集群部署：[docs/CLUSTER_DEPLOYMENT_GUIDE.md](/home/zjp/raspa2-calc/.raspa_tools/docs/CLUSTER_DEPLOYMENT_GUIDE.md)
+- 文档导航：[docs/README.md](/home/zjp/raspa2-calc/.raspa_tools/docs/README.md)
 
 #### NFS共享存储配置
 
-> v2.5.0+ 推荐使用 `/.raspa_tools/nfs/` 目录下的脚本来配置 NFS（已整合并重命名）。
+推荐直接使用 `/.raspa_tools/nfs/` 下脚本，完整步骤不要再以本 README 为准，统一看：
 
-**服务器端**：
-```bash
-sudo mkdir -p /shared/raspa2-calc
-sudo chown -R zjp:zjp /shared/raspa2-calc
-echo "/shared/raspa2-calc 10.10.14.0/24(rw,sync,no_root_squash)" | sudo tee -a /etc/exports
-sudo systemctl enable --now nfs-server rpcbind
-sudo exportfs -ra
-```
-
-**客户端**：
-```bash
-sudo yum install -y nfs-utils
-echo "10.10.14.12:/shared/raspa2-calc /home/zjp/raspa2-calc nfs4 rw,hard,intr 0 0" | sudo tee -a /etc/fstab
-sudo mount -a
-```
-
-**脚本方式（推荐）**：
-```bash
-# 单节点客户端配置（在客户端执行）
-bash .raspa_tools/nfs/nfs_client_setup.sh
-
-# 批量把客户端脚本拷贝到各节点（在 NFS 服务器上执行）
-bash .raspa_tools/nfs/nfs_setup_all_nodes.sh
-```
+- [docs/存储架构说明_NVMe_NFS_分层存储.md](/home/zjp/raspa2-calc/.raspa_tools/docs/存储架构说明_NVMe_NFS_分层存储.md)
+- [docs/CLUSTER_DEPLOYMENT_GUIDE.md](/home/zjp/raspa2-calc/.raspa_tools/docs/CLUSTER_DEPLOYMENT_GUIDE.md)
 
 #### 使用方法
 

@@ -1392,7 +1392,7 @@ def main():
             label_issues = []
             total_label_issues = 0
             check_tasks = []
-            logger.info("正在检查 CIF 文件标签格式...")
+            logger.info("正在检查 CIF 文件原子标签/类型格式...")
 
             for framework in framework_names:
                 cif_path = framework_cif_paths.get(framework)
@@ -1412,10 +1412,10 @@ def main():
             if label_issues:
                 preview_limit = 10
                 print(
-                    f"⚠️  检测到 {len(label_issues)} 个 CIF 文件的 _atom_site_label 含编号，共 {total_label_issues} 条标签存在编号。"
+                    f"⚠️  检测到 {len(label_issues)} 个 CIF 文件的 _atom_site_label/_atom_site_type_symbol 含编号，共 {total_label_issues} 处原子标签或类型存在编号。"
                 )
                 for fw, path, cnt in label_issues[:preview_limit]:
-                    print(f"  - {fw}: {cnt} 个编号标签 ({path})")
+                    print(f"  - {fw}: {cnt} 处编号原子标签/类型 ({path})")
                 if len(label_issues) > preview_limit:
                     print(f"  ... 仅展示前 {preview_limit} 个框架，另有 {len(label_issues) - preview_limit} 个未列出")
 
@@ -1423,21 +1423,21 @@ def main():
                 if auto_clean:
                     logger.info("已启用 CIF 标签自动清理 (parameter_screening.auto_clean_cif_labels=true)")
                 else:
-                    user_choice = input("是否使用 clean_cif_labels.py 自动去除编号? (y/n): ").strip().lower()
+                    user_choice = input("是否使用 clean_cif_labels.py 自动去除原子标签/类型中的编号? (y/n): ").strip().lower()
                     if user_choice != "y":
-                        logger.error("用户拒绝自动清理 CIF 标签，程序终止。请先处理标签后重新运行。")
+                        logger.error("用户拒绝自动清理 CIF 原子标签/类型中的编号，程序终止。请先处理后重新运行。")
                         return 1
 
                 target_files = [os.path.basename(path) for _, path, _ in label_issues]
                 module_path = "raspa_calc.domain.utils.clean_cif_labels"
                 logger.info(
-                    "运行标签清理脚本（就地处理有编号的文件）: "
+                    "运行标签清理脚本（就地处理有编号的原子标签/类型）: "
                     f"python -m {module_path} {cif_dir} --in-place --files {', '.join(target_files)}"
                 )
                 cmd = [sys.executable, "-m", module_path, cif_dir, "--in-place", "--files", *target_files]
                 result = subprocess.run(cmd)
                 if result.returncode != 0:
-                    logger.error("标签清理脚本执行失败，程序终止。")
+                    logger.error("原子标签/类型清理脚本执行失败，程序终止。")
                     return 1
 
                 missing_cleaned = [f for f in target_files if not os.path.exists(os.path.join(cif_dir, f))]
@@ -1445,7 +1445,7 @@ def main():
                     logger.error(f"以下文件未成功完成就地清理: {', '.join(missing_cleaned)}")
                     return 1
 
-                logger.info(f"已完成 {len(target_files)} 个 CIF 的就地清理。")
+                logger.info(f"已完成 {len(target_files)} 个 CIF 的原子标签/类型就地清理。")
 
         # 计算组合数
         combo_count = 1

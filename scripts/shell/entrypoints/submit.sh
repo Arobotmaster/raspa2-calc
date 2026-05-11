@@ -344,12 +344,12 @@ if [ -n "$NODE_PLAN" ] && [ "$JOB_SYSTEM" = "SLURM" ] && command -v sinfo >/dev/
     fi
 fi
 
-# 选择提交模式（SLURM支持 job array 加速）
-SUBMIT_MODE_RAW="${RASPA_SUBMIT_MODE:-auto}"
+# 选择提交模式（默认逐次提交，便于在队列中保留数字作业名）
+SUBMIT_MODE_RAW="${RASPA_SUBMIT_MODE:-loop}"
 SUBMIT_MODE=$(printf '%s' "$SUBMIT_MODE_RAW" | tr '[:upper:]' '[:lower:]')
 case "$SUBMIT_MODE" in
     array|loop|auto) ;;
-    *) SUBMIT_MODE="auto";;
+    *) SUBMIT_MODE="loop";;
 esac
 
 if [ "$JOB_SYSTEM" != "SLURM" ]; then

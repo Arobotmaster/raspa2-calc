@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 from typing import Iterable, Optional, Set
 
@@ -22,10 +23,16 @@ def _normalize_symbol(symbol: str) -> str:
     cleaned = symbol.strip()
     if not cleaned:
         return ""
-    if len(cleaned) == 1:
-        return cleaned.upper()
     if cleaned[0].isalpha():
-        return cleaned[0].upper() + cleaned[1:]
+        if len(cleaned) == 1:
+            cleaned = cleaned.upper()
+        else:
+            cleaned = cleaned[0].upper() + cleaned[1:]
+    if len(cleaned) == 1:
+        return cleaned
+    match = re.match(r"^([A-Z][a-z]?)(\d+)$", cleaned)
+    if match:
+        return match.group(1)
     return cleaned
 
 

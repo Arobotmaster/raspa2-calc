@@ -1,5 +1,10 @@
 # RASPA 多节点集群部署指南 (支持 RASPA2/RASPA3)
 
+> 如果你当前还没有一套稳定可用的 Slurm 集群，先看：
+> `/home/zjp/raspa2-calc/.raspa_tools/docs/SLURM集群基础构建与维护.md`
+>
+> 这份文档侧重 RASPA 在现有 Slurm 集群上的部署；不替代 Slurm 自身的基础构建说明。
+
 ## 目录
 - [1. 部署概述](#1-部署概述)
 - [2. 环境准备](#2-环境准备)
@@ -108,7 +113,7 @@ done
 **推荐做法：**
 
 - 使用 LDAP/SSSD 统一账号；或
-- 使用 Ansible 同步本地用户/组（本项目提供模板与说明：`/home/zjp/docs/ansible-user-sync/README.md`）。
+- 使用 Ansible 同步本地用户/组（本项目提供模板与说明：`/home/zjp/Slurm-manage/ansible-user-sync/README.md`）。
 
 ---
 

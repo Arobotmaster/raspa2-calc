@@ -13,10 +13,15 @@ Usage:
 
 Description:
 This script scans a directory for .cif files, identifies the _atom_site_label column,
-and removes all numeric suffixes (e.g., 'Co1' -> 'Co').
+and related atom-type columns, and removes numeric suffixes (e.g., 'Co1' -> 'Co').
 Processed files are saved in a 'cleaned_cif' subfolder by default, or updated in place when --in-place is used.
 Original files remain untouched unless --in-place is specified.
 """
+
+
+def _clean_numbered_suffix(value):
+    """Remove a trailing numeric suffix but preserve non-numeric names."""
+    return re.sub(r'(?<=\D)\d+$', '', value)
 
 def clean_cif_labels(directory, target_files=None, in_place=False):
     if not os.path.isdir(directory):
@@ -71,7 +76,7 @@ def process_file(filepath, output_path):
     new_lines = []
     in_atom_loop = False
     headers = []
-    label_idx = -1
+    target_indices = []
 
     i = 0
     while i < len(lines):
@@ -86,10 +91,16 @@ def process_file(filepath, output_path):
                 loop_headers.append(lines[j].strip())
                 j += 1
             
-            if '_atom_site_label' in loop_headers:
+            target_headers = [
+                '_atom_site_label',
+                '_atom_site_type_symbol',
+                '_atom_type_symbol',
+            ]
+
+            if any(h in loop_headers for h in target_headers):
                 in_atom_loop = True
                 headers = loop_headers
-                label_idx = headers.index('_atom_site_label')
+                target_indices = [headers.index(h) for h in target_headers if h in headers]
                 # Keep headers
                 new_lines.append(line)
                 for _ in range(len(headers)):
@@ -109,12 +120,10 @@ def process_file(filepath, output_path):
                 # Process data row
                 parts = stripped.split()
                 if len(parts) >= len(headers):
-                    original_label = parts[label_idx]
-                    # Remove all numbers from the label
-                    cleaned_label = re.sub(r'\d+', '', original_label)
-                    
                     new_parts = list(parts)
-                    new_parts[label_idx] = cleaned_label
+                    for idx in target_indices:
+                        if idx < len(new_parts):
+                            new_parts[idx] = _clean_numbered_suffix(new_parts[idx])
                     
                     # Reconstruct line with tab/space separation
                     new_line = "  ".join(new_parts) + "\n"
