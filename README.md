@@ -16,13 +16,13 @@
 
 详细部署、集群构建、存储架构、调度逻辑和各模式用法，统一看：
 
-- [docs/README.md](/home/zjp/raspa2-calc/.raspa_tools/docs/README.md)
+- [docs/README.md](docs/README.md)
 
 推荐阅读顺序：
 
-1. [docs/SLURM集群基础构建与维护.md](/home/zjp/raspa2-calc/.raspa_tools/docs/SLURM集群基础构建与维护.md)
-2. [docs/CLUSTER_DEPLOYMENT_GUIDE.md](/home/zjp/raspa2-calc/.raspa_tools/docs/CLUSTER_DEPLOYMENT_GUIDE.md)
-3. [docs/README.md](/home/zjp/raspa2-calc/.raspa_tools/docs/README.md)
+1. [docs/SLURM集群基础构建与维护.md](docs/SLURM集群基础构建与维护.md)
+2. [docs/CLUSTER_DEPLOYMENT_GUIDE.md](docs/CLUSTER_DEPLOYMENT_GUIDE.md)
+3. [docs/README.md](docs/README.md)
 
 ## v2.5.0 核心特性（2025-12）
 
@@ -76,7 +76,7 @@
 
 对应详细用法统一看：
 
-- [docs/README.md](/home/zjp/raspa2-calc/.raspa_tools/docs/README.md)
+- [docs/README.md](docs/README.md)
 
 ### 执行优化
 - *SLURM作业数组*：`sbatch --array=1-N` 一次提交N个子任务，提交速度快50倍
@@ -180,23 +180,23 @@ v2.5.0 支持在 SLURM / PBS 集群上进行多节点高通量计算。
 
 这里不再维护第二套部署说明，统一入口如下：
 
-- Slurm 基础构建与维护：[docs/SLURM集群基础构建与维护.md](/home/zjp/raspa2-calc/.raspa_tools/docs/SLURM集群基础构建与维护.md)
-- RASPA 集群部署：[docs/CLUSTER_DEPLOYMENT_GUIDE.md](/home/zjp/raspa2-calc/.raspa_tools/docs/CLUSTER_DEPLOYMENT_GUIDE.md)
-- 文档导航：[docs/README.md](/home/zjp/raspa2-calc/.raspa_tools/docs/README.md)
+- Slurm 基础构建与维护：[docs/SLURM集群基础构建与维护.md](docs/SLURM集群基础构建与维护.md)
+- RASPA 集群部署：[docs/CLUSTER_DEPLOYMENT_GUIDE.md](docs/CLUSTER_DEPLOYMENT_GUIDE.md)
+- 文档导航：[docs/README.md](docs/README.md)
 
 #### NFS共享存储配置
 
 推荐直接使用 `/.raspa_tools/nfs/` 下脚本，完整步骤不要再以本 README 为准，统一看：
 
-- [docs/存储架构说明_NVMe_NFS_分层存储.md](/home/zjp/raspa2-calc/.raspa_tools/docs/存储架构说明_NVMe_NFS_分层存储.md)
-- [docs/CLUSTER_DEPLOYMENT_GUIDE.md](/home/zjp/raspa2-calc/.raspa_tools/docs/CLUSTER_DEPLOYMENT_GUIDE.md)
+- [docs/存储架构说明_NVMe_NFS_分层存储.md](docs/存储架构说明_NVMe_NFS_分层存储.md)
+- [docs/CLUSTER_DEPLOYMENT_GUIDE.md](docs/CLUSTER_DEPLOYMENT_GUIDE.md)
 
 #### 使用方法
 
 **重要**：多节点任务调度必须在NFS挂载目录下提交任务：
 
 ```bash
-cd /home/zjp/raspa2-calc
+cd /path/to/raspa2-calc
 raspa-calc
 ```
 

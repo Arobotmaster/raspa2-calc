@@ -7,6 +7,7 @@ name = "raspa2-calc"
 version = "2.5.0"
 description = "RASPA2/RASPA3 high-throughput calculation tools"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.8"
 dependencies = [
   "numpy>=1.21.0",
